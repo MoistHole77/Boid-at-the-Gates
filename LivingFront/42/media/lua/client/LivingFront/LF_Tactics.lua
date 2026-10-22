@@ -26,9 +26,11 @@
 --   two repositions have been tried (or the fight has stalled twice as long).
 --   A team out of earshot keeps doing its last order.
 -- Objectives (LF_Objective): a unit told to DEFEND mans its posts and fights from them; a unit
--- told to ATTACK marches on the objective (all teams bounding in) until it meets the enemy,
--- then fights as above, and storms the position (alpha teams go in while bravo teams cover)
--- once the defence is thin or suppressed.
+-- told to ATTACK marches on the objective (all teams bounding in) until it meets the enemy, gets
+-- its bearings, returns fire for a few seconds and then storms it: bravo teams bound straight
+-- for the nearest door, alpha teams swing round a flank to another door (or the same one).
+-- A pinned team waits; the rest keep going. A stalled assault is tried again after a pause.
+-- Attackers don't run the ordinary flank or advance (the storm is their maneuver).
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
 
@@ -83,10 +85,9 @@ local CFG = {
     shiftsBeforeStalemate = 2, -- repositions tried before a stalemate flank (or 2x stalemateTicks)        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
     -- Attacking an objective
-    assaultThin = 0.35,     -- storm it when defenders left near it <= this share of our fit men ...
-    assaultSuppressed = 0.5,-- ... or when at least this share of the enemy is suppressed
-    assaultCooldown = 1800, -- at most one assault order per ~30 s
-    assaultTimeout = 7200,  -- give up on an assault after ~2 min
+    assaultDelay = 300,     -- return fire this long (~5 s) after the opening before storming
+    assaultCooldown = 900,  -- after an assault ends or stalls, try again ~15 s later
+    assaultTimeout = 5400,  -- an assault not in after ~90 s has stalled
 }
 LF.Tactics.CFG = CFG
 
@@ -150,6 +151,13 @@ end
 
 local function facing(squad) return squad.facingX or 1, squad.facingY or 0 end
 
+-- The id of the building at (x, y, z), or nil.
+local function buildingAt(x, y, z)
+    local q = getCell():getGridSquare(math.floor(x), math.floor(y), z)
+    local b = q and q:getBuilding()
+    return b and b:getID() or nil
+end
+
 -- Centroid of a team's living members in one element, from their bodies.
 local function elementCentre(team, el)
     local sx, sy, n = 0, 0, 0
@@ -162,6 +170,13 @@ local function elementCentre(team, el)
     end
     if n == 0 then return nil end
     return sx / n, sy / n
+end
+
+-- A soldier's sideways place in his pair. Storming a building the pairs bunch up (doorways).
+local function latOf(rec, t)
+    local lat = LF.Units.slotLat(rec)
+    if t and t.tight then lat = lat * 0.35 end
+    return lat
 end
 
 -- ---- placement (asked by the brain) ---------------------------------------------------------
@@ -191,9 +206,10 @@ function LF.Tactics.place(rec)
     if sq.intent == "DEFEND" then
         local kind, obj = LF.Objective.taskOf(squad)
         if kind ~= "defend" then return nil end
-        local x, y, pz = LF.Objective.postFor(rec, squad, obj)
-        if sq.contact then return "post", x, y, pz, sq.contact end
-        return "post", x, y, pz, watchPoint(squad, sq, obj.x, obj.y, obj.z), true
+        local x, y, pz, isPost, ox, oy = LF.Objective.postFor(rec, squad, obj)
+        local role = isPost and "post" or "reserve"
+        if sq.contact then return role, x, y, pz, sq.contact, false, ox, oy end
+        return role, x, y, pz, watchPoint(squad, sq, obj.x, obj.y, obj.z), true, ox, oy
     end
     -- Marching on an objective with no enemy met yet: move by bounds, watch ahead, don't fire.
     local watching = sq.flank and sq.flank.blind
@@ -226,7 +242,7 @@ function LF.Tactics.place(rec)
         return "hold", x, y, sz, point, watching
     end
     local p = t.pos[rec.element]
-    local lat = LF.Units.slotLat(rec)
+    local lat = latOf(rec, t)
     local x, y = p.x - fy * lat, p.y + fx * lat
     return (t.moving == rec.element or t.shifting) and "move" or "hold", x, y, z, point, watching
 end
@@ -247,7 +263,7 @@ end
 function LF.Tactics.taskChanged(squad)
     local sq = squads[squad.id]
     if sq then
-        sq.intent, sq.flank, sq.fightStart, sq.contact = nil, nil, nil, nil
+        sq.intent, sq.flank, sq.fightStart, sq.contact, sq.engaged = nil, nil, nil, nil, nil
     end
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
 end
@@ -271,7 +287,7 @@ local function boundDone(team, t, squad)
                     pinned = pinned + 1
                 else
                     movers = movers + 1
-                    local lat = LF.Units.slotLat(r)
+                    local lat = latOf(r, t)
                     local x, y = p.x - fy * lat, p.y + fx * lat
                     if LF.dist(b:getX(), b:getY(), x, y) > CFG.arriveDistance and not (LF.Brain and LF.Brain.isStuck and LF.Brain.isStuck(rid, x, y)) then
                         return false
@@ -335,7 +351,7 @@ local function shiftDone(team, t, squad)
         if p and r.team == team.id and fit(r) then
             local b = LF.Bodies.get(rid)
             if b and not LF.Suppress.isPinned(b) then
-                local lat = LF.Units.slotLat(r)
+                local lat = latOf(r, t)
                 local x, y = p.x - fy * lat, p.y + fx * lat
                 if LF.dist(b:getX(), b:getY(), x, y) > CFG.arriveDistance
                     and not (LF.Brain and LF.Brain.isStuck and LF.Brain.isStuck(rid, x, y)) then
@@ -676,8 +692,8 @@ local function setIntent(squad, sq, cid, intent, why)
         local words = INTENT_WORDS[intent]
         if intent == "FLANK" and sq.flank then
             words = "Alpha teams, flank " .. (sq.flank.side < 0 and "left" or "right") .. "! Bravo teams, cover!"
-        elseif intent == "ASSAULT" and sq.flank and not sq.flank.blind then
-            words = "Alpha teams, take the position! Bravo teams, cover!"
+        elseif intent == "ASSAULT" and sq.flank and sq.flank.storm then
+            words = "Bravo teams, take the door! Alpha teams, round the " .. (sq.flank.side < 0 and "left" or "right") .. "!"
         end
         LF.Tactics.shout(cid, words)
     end
@@ -732,11 +748,146 @@ local function planAssault(squad, obj, blind)
             local lat = (k % 2 == 1 and -1 or 1) * (1 + math.floor((k - 1) / 2)) * 2.5
             plan.routes[tid] = { { x = obj.x + rx * lat, y = obj.y + ry * lat } }
             plan.teams[#plan.teams + 1] = tid
-            t.maneuverDone, t.pushes = nil, 0
+            t.maneuverDone, t.pushes, t.tight = nil, 0, nil
             t.order = nil                         -- start the maneuver afresh
         end
     end
     if k == 0 then return nil end
+    return plan
+end
+
+-- A free square near (x, y) (searching out to 3 tiles), or (x, y) itself.
+local function freeNear(x, y, z)
+    local cell = getCell()
+    local bx, by = math.floor(x), math.floor(y)
+    for r = 0, 3 do
+        for ix = bx - r, bx + r do
+            for iy = by - r, by + r do
+                if math.max(math.abs(ix - bx), math.abs(iy - by)) == r then
+                    local q = cell:getGridSquare(ix, iy, z)
+                    if q and q:isFree(false) then return ix + 0.5, iy + 0.5 end
+                end
+            end
+        end
+    end
+    return x, y
+end
+
+-- Storm an objective, in two prongs:
+--   bravo teams - bound straight for the entrance nearest them and go in;
+--   alpha teams - swing out round one flank, come in along the building's side and go in by
+--                 the entrance furthest round that side (the same door if it has only one).
+-- Teams bound pair by pair, so the pair on the ground covers the pair running; a team whose
+-- men are pinned waits until they can move again. Returns the plan or nil.
+local function planStorm(squad, obj, c)
+    local fx, fy = facing(squad)
+    local rx, ry = -fy, fx
+    local z = obj.z
+    local L = LF.Objective.layout(obj)
+    local ents = L.entrances
+    -- Our side of things: the centroid of the teams.
+    local sx, sy, n = 0, 0, 0
+    for _, tid in ipairs(squad.teams) do
+        local t = teams[tid]
+        if t then for _, el in ipairs({ "A", "B" }) do sx, sy, n = sx + t.pos[el].x, sy + t.pos[el].y, n + 1 end end
+    end
+    if n == 0 then return nil end
+    sx, sy = sx / n, sy / n
+    local function F(x, y) return (x - obj.x) * fx + (y - obj.y) * fy end
+    local function Lat(x, y) return (x - obj.x) * rx + (y - obj.y) * ry end
+    -- The building's extent in our frame (from the objective's centre).
+    local minF, maxL, minL = -2, 2, -2
+    if obj.building then
+        for _, cx in ipairs({ L.minX, L.maxX }) do
+            for _, cy in ipairs({ L.minY, L.maxY }) do
+                local f, l = F(cx, cy), Lat(cx, cy)
+                if f < minF then minF = f end
+                if l > maxL then maxL = l end
+                if l < minL then minL = l end
+            end
+        end
+    end
+    -- Front entrance: the nearest to us. Flank side: away from the front door if it is off to one
+    -- side, else the side with more cover.
+    local front, frontD = nil, math.huge
+    for _, e in ipairs(ents) do
+        local d = LF.dist(sx, sy, e.ox + 0.5, e.oy + 0.5)
+        if d < frontD then front, frontD = e, d end
+    end
+    local side
+    if front and math.abs(Lat(front.ox + 0.5, front.oy + 0.5)) > 2 then
+        side = Lat(front.ox + 0.5, front.oy + 0.5) > 0 and -1 or 1
+    else
+        local covL = coverAround(obj.x - rx * (maxL - minL), obj.y - ry * (maxL - minL), z, c.x, c.y)
+        local covR = coverAround(obj.x + rx * (maxL - minL), obj.y + ry * (maxL - minL), z, c.x, c.y)
+        side = covR >= covL and 1 or -1
+    end
+    -- Flank entrance: the one furthest round that side (furthest out, then furthest back).
+    local flankE, flankScore = nil, -math.huge
+    for _, e in ipairs(ents) do
+        local score = Lat(e.ox + 0.5, e.oy + 0.5) * side + F(e.ox + 0.5, e.oy + 0.5) * 0.5
+        if e ~= front then score = score + 3 end
+        if score > flankScore then flankE, flankScore = e, score end
+    end
+    local sideEdge = side > 0 and maxL or -minL      -- how far the building reaches out that side
+
+    local function at(f, l) return obj.x + fx * f + rx * l, obj.y + fy * f + ry * l end
+    local function doorRoute(route, e, k)
+        if not e then
+            local x, y = freeNear(obj.x, obj.y, z)
+            route[#route + 1] = { x = x, y = y }
+            return
+        end
+        -- Stack up beside the doorway (out from the wall, a little to one side), then go in.
+        local off = (k % 2 == 1) and 1.5 or -1.5
+        local px, py = e.ox + 0.5 + e.dx * 2 - e.dy * off, e.oy + 0.5 + e.dy * 2 + e.dx * off
+        px, py = freeNear(px, py, z)
+        route[#route + 1] = { x = px, y = py }
+        route[#route + 1] = { x = e.ox + 0.5, y = e.oy + 0.5 }
+        route[#route + 1] = { x = e.ix + 0.5, y = e.iy + 0.5 }
+        local ix, iy = freeNear(e.ix + 0.5 - e.dx * 2, e.iy + 0.5 - e.dy * 2, z)
+        route[#route + 1] = { x = ix, y = iy }
+    end
+
+    local plan = { assault = true, storm = true, started = LF.tick, routes = {}, teams = {}, side = side }
+    local kB, kA = 0, 0
+    for _, tid in ipairs(squad.teams) do
+        local team, t = LF.Units.get(tid), teams[tid]
+        local cpl = team and team.leader and LF.Records.get(team.leader)
+        if team and t and cpl and fit(cpl) then
+            local route = {}
+            local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
+            local inside = obj.building and buildingAt(cx, cy, z) == obj.building
+            if inside then
+                local x, y = freeNear(obj.x, obj.y, z)
+                route[1] = { x = x, y = y }
+            elseif team.element == "B" then
+                kB = kB + 1
+                doorRoute(route, front, kB)
+            else
+                kA = kA + 1
+                local wide = sideEdge + 6 + (kA - 1) * 3
+                -- Out to the side, then level with the near corner well clear of the wall, then
+                -- along the side of the building.
+                local w1x, w1y = cx + rx * side * CFG.flankOut, cy + ry * side * CFG.flankOut
+                local w2x, w2y = at(minF - 5, side * wide)
+                local w3x, w3y = at((minF + F(flankE and flankE.ox or obj.x, flankE and flankE.oy or obj.y)) / 2, side * wide)
+                for _, w in ipairs({ { w1x, w1y }, { w2x, w2y }, { w3x, w3y } }) do
+                    local x, y = freeNear(w[1], w[2], z)
+                    route[#route + 1] = { x = x, y = y }
+                end
+                doorRoute(route, flankE, kA)
+            end
+            plan.routes[tid] = route
+            plan.teams[#plan.teams + 1] = tid
+            t.maneuverDone, t.pushes, t.order, t.moving, t.shifting = nil, 0, nil, nil, nil
+            t.tight = obj.building ~= nil
+        end
+    end
+    if #plan.teams == 0 then return nil end
+    LF.log("ASSAULT " .. squad.name .. " storms " .. obj.name .. ": " .. kB .. " team(s) to the "
+        .. (front and ("door at " .. front.ox .. "," .. front.oy) or "centre") .. ", " .. kA .. " team(s) round the "
+        .. (side < 0 and "left" or "right") .. (flankE and (" to the door at " .. flankE.ox .. "," .. flankE.oy) or ""))
     return plan
 end
 
@@ -761,6 +912,7 @@ local function updateDefender(squad, sq, cid, cmd, obj)
         sq.contact = nil
     end
     sq.fightStart = nil
+    LF.Objective.updatePosts(squad, obj, sq.contact and sq.contact.x, sq.contact and sq.contact.y)
     setIntent(squad, sq, cid, "DEFEND", "holding " .. obj.name)
 end
 
@@ -800,9 +952,16 @@ local function updateSquad(squad)
 
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     if not c and kind == "attack" then
-        sq.fightStart = nil
-        return marchOn(squad, sq, cid, cmd, obj)
+        if sq.engaged and sq.contact then
+            -- Lost sight of the defenders: they're still in there. Keep at it rather than
+            -- starting the march over.
+            c = sq.contact
+        else
+            sq.fightStart = nil
+            return marchOn(squad, sq, cid, cmd, obj)
+        end
     end
+    if c and kind == "attack" then sq.engaged = true end
     if c and sq.flank and sq.flank.blind then
         -- Ran into the enemy on the march: stop and get bearings before any new order.
         setIntent(squad, sq, cid, nil, "contact on the march")
@@ -869,18 +1028,29 @@ local function updateSquad(squad)
         -- flank checks below, and a flank under way carries on.)
         intent, why = "HOLD", pinnedN .. "/" .. fitN .. " pinned"
     elseif intent == "ASSAULT" then
-        -- Storming the objective: carry on until the assault teams are on it (or too long).
-        if planDone(sq) then intent, why = "HOLD", "assault teams on the objective"
-        elseif sq.flank and LF.tick - sq.flank.started > CFG.assaultTimeout then intent, why = "HOLD", "assault stalled" end
-    elseif kind == "attack" and intent == "HOLD" and LF.tick - (sq.lastAssault or -100000) >= CFG.assaultCooldown
-        and fitN > 0 and (defendersAt(squad, obj) <= math.max(1, math.floor(fitN * CFG.assaultThin))
-            or (enemies > 0 and sq.supShare >= CFG.assaultSuppressed)) then
-        local plan = planAssault(squad, obj, false)
-        sq.lastAssault = LF.tick
-        if plan then
-            sq.flank = plan
-            intent, why = "ASSAULT", defendersAt(squad, obj) .. " defenders left at " .. obj.name
-                .. string.format(", %.0f%% of the enemy suppressed", sq.supShare * 100)
+        -- Storming the objective: carry on until the teams are in (or it has stalled).
+        if planDone(sq) then
+            intent, why = "HOLD", "assault teams in " .. obj.name
+            sq.lastAssault = LF.tick
+        elseif sq.flank and LF.tick - sq.flank.started > CFG.assaultTimeout then
+            intent, why = "HOLD", "assault stalled"
+            sq.lastAssault = LF.tick
+        end
+    elseif kind == "attack" then
+        -- Attacking: after a few seconds of returning fire, storm it - and again after a pause
+        -- if the first go stalls. Not while most of the squad is pinned.
+        local steady = fitN > 0 and pinnedN / fitN < CFG.pinnedHold
+        if intent ~= "HOLD" then
+            intent, why = "HOLD", "contact at " .. math.floor(front) .. " tiles"
+        elseif steady and LF.tick - (sq.holdSince or LF.tick) >= CFG.assaultDelay
+            and LF.tick - (sq.lastAssault or -100000) >= CFG.assaultCooldown then
+            local plan = planStorm(squad, obj, c)
+            sq.lastAssault = LF.tick
+            if plan then
+                sq.flank = plan
+                intent, why = "ASSAULT", defendersAt(squad, obj) .. " defenders at " .. obj.name
+                    .. string.format(", %.0f%% of them suppressed", sq.supShare * 100)
+            end
         end
     elseif intent == "FLANK" then
         -- Carry on until every flanking team is in position (or it takes too long).

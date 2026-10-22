@@ -24,7 +24,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
 | Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots | Built, awaiting in-game test |
 | Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Built, awaiting in-game test |
-| Objectives: defenders man window/door posts; attackers march in, fight, and storm the position; ownership changes hands | Built, awaiting in-game test |
+| Objectives: defenders man window/door posts; attackers march in, fight, and storm the position; ownership changes hands | Working as a rough concept (0.14) |
+| Objectives 2: defenders stand in the windows facing the enemy (second rank, reserve steps up, posts turn to face a flank); attackers storm in two prongs - bravo teams to the nearest door, alpha teams round a flank to another door | Built, awaiting in-game test |
 | Morale and surrender, casualty care by others, ammo supply, MG teams, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
