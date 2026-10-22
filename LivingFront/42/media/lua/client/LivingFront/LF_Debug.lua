@@ -5,6 +5,7 @@ require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Brain"
+require "LivingFront/LF_Cover"
 
 LF.Debug = LF.Debug or {}
 
@@ -95,6 +96,28 @@ local function armNearestCivilian(_, playerNum)
     LF.say("Gave a civilian a rifle")
 end
 
+-- What cover does the clicked square offer against the nearest soldier?
+local function checkCover(x, y, z)
+    local best, bestD, bestRec = nil, math.huge, nil
+    for id, body in pairs(LF.Bodies.all()) do
+        local rec = LF.Records.get(id)
+        if rec and rec.faction ~= "CIV" and not body:isDead() then
+            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
+            if d < bestD then best, bestD, bestRec = body, d, rec end
+        end
+    end
+    if not best then
+        LF.say("No soldier nearby to check cover against")
+        return
+    end
+    local q = LF.Cover.quality(x, y, z, best:getX(), best:getY())
+    local sight = LF.Cover.canSeeFrom(x, y, z, best)
+    local msg = "Cover here vs " .. LF.Records.fullName(bestRec) .. ": " .. LF.Cover.name(q)
+        .. ", line of sight " .. (sight and "clear" or "blocked")
+    LF.log("COVER CHECK " .. x .. "," .. y .. " " .. msg)
+    LF.say(msg)
+end
+
 local function deleteAll()
     LF.Bodies.despawnAll()
     for id in pairs(LF.Records.all()) do LF.Records.remove(id) end
@@ -128,6 +151,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     combat:addOption("Skirmish: 3 Germans (west) vs 3 Soviets (east)", nil, function() createSkirmish(x, y, z) end)
     combat:addOption("Arm all soldiers with rifles", nil, LF.Combat.armAllSoldiers)
     combat:addOption("Give nearest civilian a rifle (resistance)", nil, armNearestCivilian, playerNum)
+    combat:addOption("Check cover on this square (vs nearest soldier)", nil, function() checkCover(x, y, z) end)
     combat:addOption((LF.Brain.enabled and "Turn NPC brains OFF" or "Turn NPC brains ON"), nil, LF.Brain.toggle)
     combat:addOption("Brain report", nil, LF.Brain.report)
     sub:addOption("Delete ALL NPCs", nil, deleteAll)

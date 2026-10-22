@@ -17,6 +17,7 @@ require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
+require "LivingFront/LF_Cover"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -33,6 +34,8 @@ local CFG = {
     wanderChance = 4,       -- percent per think, when idle
     wanderRadius = 6,       -- tiles around home
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
+    coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
+    coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
 }
 LF.Brain.CFG = CFG
 
@@ -118,13 +121,100 @@ function LF.Brain.walkNear(body, x, y, z, spread)
 end
 local walkNear = LF.Brain.walkNear
 
-local function setState(id, rec, m, state, detail)
+-- Walk to an exact square.
+function LF.Brain.walkTo(body, x, y, z)
+    local sq = getCell():getGridSquare(x, y, z)
+    if not sq then return false end
+    ISTimedActionQueue.clear(body)
+    ISTimedActionQueue.add(ISWalkToTimedAction:new(body, sq))
+    return true
+end
+local walkTo = LF.Brain.walkTo
+
+local function isAt(body, spot)
+    return spot ~= nil and math.floor(body:getX()) == spot.x and math.floor(body:getY()) == spot.y
+end
+
+-- Drop any claimed position and stand up.
+local function leavePosition(id, body, m)
+    if m.cover or m.hide then LF.Cover.release(id) end
+    m.cover, m.hide = nil, nil
+    if body:isSneaking() then body:setSneaking(false) end
+end
+
+local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
     LF.log("BRAIN #" .. id .. " " .. LF.Records.fullName(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
+    leavePosition(id, body, m)
     m.state = state
     m.combat = {}
     m.lastPath = -10000
+end
+
+-- Claim a spot and walk to it (or settle if already there).
+local function takeSpot(id, body, m, field, x, y, z, label)
+    m[field] = { x = x, y = y, z = z, since = LF.tick }
+    LF.Cover.reserve(x, y, z, id)
+    if isAt(body, m[field]) then
+        LF.log("BRAIN #" .. id .. " " .. label .. " here (" .. x .. "," .. y .. ")")
+    else
+        walkTo(body, x, y, z)
+        m.lastPath = LF.tick
+        LF.log("BRAIN #" .. id .. " moving to " .. label .. " at " .. x .. "," .. y)
+    end
+end
+
+-- If the walk to a claimed spot was interrupted (a flinch clears the action queue), resume it.
+local function resumeWalk(body, m, spot)
+    if not isAt(body, spot) and not body:isPerformingAnAction() and LF.tick - m.lastPath > 60 then
+        walkTo(body, spot.x, spot.y, spot.z)
+        m.lastPath = LF.tick
+    end
+end
+
+-- Fighters: keep or find a firing position behind low cover facing the threat.
+local function planCover(id, body, m, threat)
+    if m.cover then
+        local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
+        local reached = isAt(body, m.cover)
+        if q ~= LF.Cover.LOW or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks) then
+            leavePosition(id, body, m)   -- threat moved around it, or we can't get there
+        else
+            resumeWalk(body, m, m.cover)
+            return
+        end
+    end
+    -- Already standing behind usable cover?
+    local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
+    if LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
+        takeSpot(id, body, m, "cover", bx, by, bz, "cover")
+        return
+    end
+    if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
+    m.lastCoverSearch = LF.tick
+    local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange)
+    if x then takeSpot(id, body, m, "cover", x, y, z, "cover") end
+end
+
+-- Wounded fighters: find somewhere out of the threat's sight before simply running.
+local function planHide(id, body, m, threat)
+    if m.hide then
+        if isAt(body, m.hide) then return true end
+        if LF.tick - m.hide.since <= CFG.coverGiveUpTicks then
+            resumeWalk(body, m, m.hide)
+            return true
+        end
+        leavePosition(id, body, m)
+    end
+    if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return false end
+    m.lastCoverSearch = LF.tick
+    local x, y, z = LF.Cover.findHidingSpot(id, body, threat)
+    if x then
+        takeSpot(id, body, m, "hide", x, y, z, "hiding spot")
+        return true
+    end
+    return false
 end
 
 -- Walk directly away from a point (re-pathing at most every reissueTicks).
@@ -157,16 +247,18 @@ local function decide(id, body, rec, m)
     m.fighter = fighter
 
     if threat and ((not fighter and dist < CFG.civFleeRange) or (fighter and hp < CFG.fleeHealth)) then
-        setState(id, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
+        setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
-        fleeFrom(m, body, threat:getX(), threat:getY())
+        if not (fighter and planHide(id, body, m, threat)) then
+            fleeFrom(m, body, threat:getX(), threat:getY())
+        end
         return
     end
     if not fighter then
         -- Unarmed civilians get away from any nearby gunfire, not just from enemies.
         local sx, sy, sd = LF.Combat.nearestRecentShot(body:getX(), body:getY(), CFG.gunfireRange)
         if sx then
-            setState(id, rec, m, "flee", "gunfire " .. math.floor(sd) .. " tiles away")
+            setState(id, body, rec, m, "flee", "gunfire " .. math.floor(sd) .. " tiles away")
             m.targetId = nil
             fleeFrom(m, body, sx, sy)
             return
@@ -174,29 +266,42 @@ local function decide(id, body, rec, m)
     end
     if threat and fighter then
         if m.state ~= "engage" then
-            setState(id, rec, m, "engage", "target #" .. threatId .. " at " .. math.floor(dist)
+            setState(id, body, rec, m, "engage", "target #" .. threatId .. " at " .. math.floor(dist)
                 .. " tiles, sight " .. tostring(select(2, LF.Brain.canSee(body, threat))))
         end
         m.targetId = threatId
         m.targetDist = dist
-        if dist > CFG.fireRange then approach(m, body, threat) end
+        planCover(id, body, m, threat)
+        if not m.cover and dist > CFG.fireRange then approach(m, body, threat) end
         return
     end
-    setState(id, rec, m, "idle")
+    setState(id, body, rec, m, "idle")
     m.targetId = nil
     if not body:isPerformingAnAction() and ZombRand(100) < CFG.wanderChance then
         walkNear(body, rec.homeX, rec.homeY, rec.homeZ, CFG.wanderRadius)
     end
 end
 
+-- Crouch while holding a position, but only when not mid-action: the aim/fire actions play
+-- standing clips, so a crouched soldier pops up to shoot and drops back down afterwards.
+local function hunkerDown(body)
+    if not body:isPerformingAnAction() and not body:isSneaking() then body:setSneaking(true) end
+end
+
 -- Per-tick behaviour for states that need it.
 local function act(id, body, rec, m)
     if m.state == "engage" and m.targetId then
+        if m.cover then
+            if not isAt(body, m.cover) then return end   -- still moving into position
+            hunkerDown(body)
+        end
         local target = LF.Bodies.get(m.targetId)
         if target and not target:isDead()
             and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
             LF.Combat.engage(body, target, m.combat, m.combatOpts)
         end
+    elseif m.state == "flee" and m.hide and isAt(body, m.hide) then
+        hunkerDown(body)
     end
 end
 
@@ -222,7 +327,10 @@ local function onTick()
     end
     if LF.tick % CFG.cleanupTicks == 0 then
         for id in pairs(minds) do
-            if not LF.Bodies.get(id) then minds[id] = nil end
+            if not LF.Bodies.get(id) then
+                LF.Cover.release(id)
+                minds[id] = nil
+            end
         end
     end
 end
@@ -238,8 +346,11 @@ function LF.Brain.report()
         local rec = LF.Records.get(id)
         local m = minds[id]
         if rec then
+            local spot = m and (m.cover or m.hide)
             LF.log("BRAIN #" .. id .. " " .. LF.Records.fullName(rec) .. " [" .. rec.faction .. "] state="
                 .. (m and m.state or "none") .. " target=" .. tostring(m and m.targetId)
+                .. " position=" .. (spot and (spot.x .. "," .. spot.y .. (isAt(body, spot) and " (there)" or " (en route)")) or "none")
+                .. " crouched=" .. tostring(body:isSneaking())
                 .. " health=" .. math.floor(LF.Combat.health(body)) .. " dead=" .. tostring(body:isDead()))
         end
     end

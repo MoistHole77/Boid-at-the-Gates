@@ -124,14 +124,14 @@ function LF.Combat.nearestRecentShot(x, y, range)
 end
 
 -- Hit chance (percent): falls off with distance; a badly hurt shooter aims worse.
--- Target modifiers (cover, crouching) are applied by LF.Combat.targetModifier when present.
+-- Target modifiers (cover, crouching) come from LF.Combat.targetModifier (LF_Cover.lua).
 local function hitChance(shooter, target, dist)
     local chance = 75 - dist * 2.5
     if chance < 20 then chance = 20 elseif chance > 75 then chance = 75 end
     local hp = LF.Combat.health(shooter)
     if hp < 50 then chance = chance * (0.5 + hp / 100) end
     if LF.Combat.targetModifier then
-        chance = chance * LF.Combat.targetModifier(shooter, target)
+        chance = chance * (LF.guard("cover modifier", LF.Combat.targetModifier, shooter, target) or 1)
     end
     return chance
 end
@@ -143,7 +143,7 @@ end
 
 local function flinch(target)
     ISTimedActionQueue.clear(target)
-    ISTimedActionQueue.add(LF_FlinchAction:new(target, LF.Combat.flinchAnim and LF.Combat.flinchAnim(target)))
+    ISTimedActionQueue.add(LF_FlinchAction:new(target))
 end
 
 local function shotEffects(shooter, gun)
@@ -160,7 +160,8 @@ function LF.Combat.resolveShot(shooter, target, gun)
     local chance = hitChance(shooter, target, dist)
     local result = "MISS"
     if ZombRand(100) < chance then
-        local partName = LF.pick(BODY_PARTS)
+        local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
+        local partName = LF.pick(parts or BODY_PARTS)
         LF.guard("wound", wound, target, partName, gun)
         LF.guard("flinch", flinch, target)
         result = "HIT " .. partName
