@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: fire-team and squad tactics (bounding,
--- suppression, orders).
+-- commands for the test at hand. Current test: stances - the defensive all-round defence
+-- against an attacking (offensive) unit.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -15,7 +15,6 @@ require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Weapons"
-require "LivingFront/LF_Objective"
 
 LF.Debug = LF.Debug or {}
 
@@ -76,7 +75,6 @@ local function deleteAll()
     LF.Suppress.forgetAll()
     LF.Tactics.forgetAll()
     LF.Weapons.forgetAll()
-    LF.Objective.clear()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
 end
@@ -149,31 +147,12 @@ local function resetWorld(playerNum)
     for id, rec in pairs(LF.Records.all()) do
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
     end
-    -- Objectives nobody is fighting over any more go too.
-    for oid in pairs(LF.Objective.all()) do
-        local used = false
-        for _, u in pairs(LF.Units.all()) do
-            if u.task and u.task.obj == oid then used = true; break end
-        end
-        if not used then LF.Objective.all()[oid] = nil end
-    end
     getGameTime():setTimeOfDay(8.0)
     LF.guard("heal player", healPlayer, p)
     LF.guard("clean player", cleanPlayer, p)
     LF.log("RESET WORLD removed " .. counts.corpses .. " corpses, " .. counts.items .. " items, "
         .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed; time set to 08:00")
     LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
-end
-
--- Objective test: the clicked spot (a building works best) becomes the objective. A Soviet
--- squad defends it, facing west; a German squad starts 26 tiles west and attacks.
-local function objectiveTest(x, y, z)
-    local obj = LF.Objective.create(x + 0.5, y + 0.5, z, "The objective", 10)
-    local def = LF.Units.createSquad("SOV", x + 0.5, y + 0.5, z, -1, 0)
-    LF.Objective.assign(def, "defend", obj)
-    local att = LF.Units.createSquad("GER", x - 25.5, y + 0.5, z, 1, 0)
-    LF.Objective.assign(att, "attack", obj)
-    LF.say("Objective test: Germans attack, Soviets defend")
 end
 
 -- Two units facing each other across the clicked square, Germans west and Soviets east,
@@ -184,6 +163,37 @@ local function battle(x, y, z, teamOnly, gap)
     local what = teamOnly and "Team vs team (4 vs 4)" or "Squad vs squad (17 vs 17)"
     LF.log("DEBUG " .. what .. " around " .. x .. "," .. y)
     LF.say(what)
+end
+
+-- Perimeter test: a German unit digs in around the clicked spot in the defensive stance; a
+-- Soviet unit of the same size starts 28 tiles east and attacks (offensive stance).
+local function perimeterTest(x, y, z, teamOnly)
+    local def = LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, teamOnly)
+    LF.Tactics.setStance(def, "defensive")
+    LF.Units.createSquad("SOV", x + 28.5, y + 0.5, z, -1, 0, teamOnly)
+    local what = teamOnly and "team" or "squad"
+    LF.log("DEBUG perimeter test (" .. what .. ") around " .. x .. "," .. y)
+    LF.say("Perimeter test: German " .. what .. " defends, Soviet " .. what .. " attacks from the east")
+end
+
+-- The unit of the living soldier nearest (x, y).
+local function nearestUnit(x, y)
+    local best, bestD = nil, math.huge
+    for id, body in pairs(LF.Bodies.all()) do
+        local rec = LF.Records.get(id)
+        if rec and rec.squad and not body:isDead() then
+            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
+            if d < bestD then best, bestD = LF.Units.get(rec.squad), d end
+        end
+    end
+    return best
+end
+
+local function setStanceNearest(x, y, stance)
+    local squad = nearestUnit(x, y)
+    if not squad then LF.say("No unit nearby"); return end
+    LF.Tactics.setStance(squad, stance)
+    LF.say(squad.name .. ": " .. stance .. " stance")
 end
 
 local function onMenu(playerNum, context, worldObjects, test)
@@ -203,7 +213,13 @@ local function onMenu(playerNum, context, worldObjects, test)
     -- Current test.
     sub:addOption("Test: team vs team (4 vs 4)", nil, function() battle(x, y, z, true, 14) end)
     sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
-    sub:addOption("Test: objective here - Germans attack, Soviets defend", nil, function() objectiveTest(x, y, z) end)
+    sub:addOption("Test: squad perimeter - Germans defend, Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
+    sub:addOption("Test: team perimeter - Germans defend, Soviets attack", nil, function() perimeterTest(x, y, z, true) end)
+    local so = sub:addOption("Set stance of nearest unit")
+    local stanceMenu = ISContextMenu:getNew(sub)
+    sub:addSubMenu(so, stanceMenu)
+    stanceMenu:addOption("Defensive (all-round defence here)", nil, function() setStanceNearest(x, y, "defensive") end)
+    stanceMenu:addOption("Offensive", nil, function() setStanceNearest(x, y, "offensive") end)
     sub:addOption("Unit report (orders, suppression)", nil, function() LF.Units.report(); LF.Brain.report() end)
 
     -- Basics, per type.

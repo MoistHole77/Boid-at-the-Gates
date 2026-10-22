@@ -205,7 +205,8 @@ function LF.Units.report()
                     lines[#lines + 1] = "  " .. team.name .. ": " .. table.concat(names, ", ")
                 end
             end
-            LF.log("UNIT " .. squad.name .. " (#" .. squad.id .. ") " .. alive .. "/" .. total .. " alive, leader "
+            LF.log("UNIT " .. squad.name .. " (#" .. squad.id .. ") " .. (squad.stance or "offensive") .. " stance, "
+                .. alive .. "/" .. total .. " alive, leader "
                 .. (lead and (LF.Units.title(lead) .. (lead.alive and "" or " (dead)")) or "none"))
             for _, line in ipairs(lines) do LF.log(line) end
         end

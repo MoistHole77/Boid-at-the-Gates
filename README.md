@@ -22,11 +22,11 @@ Pure Lua. No Java, no ZombieBuddy.
 | Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Working (stress-tested: ~60-80 bodies is the practical budget) |
 | Squad-aware soldiers: formation slots and leash, shared contacts, spread fire, enemy-leader spotting, succession (incl. badly wounded leaders) | Working |
 | Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
-| Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots | Built, awaiting in-game test |
-| Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Built, awaiting in-game test |
-| Objectives: defenders man window/door posts; attackers march in, fight, and storm the position; ownership changes hands | Working as a rough concept (0.14) |
-| Objectives 2: defenders stand in the windows facing the enemy and stay put once posted; attackers close in two prongs (bravo teams to the door, alpha teams round a flank) firing on the windows, and go in only when 3 or fewer defenders are left, each team to its own part of the building | Built, awaiting in-game test |
-| Morale and surrender, casualty care by others, ammo supply, MG teams, platoon level | Later |
+| Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots; corporal repositions | Working |
+| Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Working |
+| Stances: offensive (everything above) and defensive - an all-round defence (alpha teams north and west, bravo teams south and east, turned to face a known threat), men stay in cover, wounded go down in place, no maneuver orders, fight to the death | Built, awaiting in-game test |
+| Defensive stance inside buildings (each team takes a wall's windows) | Next |
+| Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
@@ -60,10 +60,10 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Posture.lua` | NPC crouch/stand, immune to the player's crouch key |
 | `LF_Names.lua` | German and Russian names |
 | `LF_Suppress.lua` | Suppression: near misses pin soldiers, slowing and spoiling their fire |
-| `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders |
+| `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders, the defensive perimeter |
+| `LF_Stance.lua` | Unit stances (offensive / defensive) and their settings |
 | `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
 | `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |
-| `LF_Objective.lua` | Objectives: defensive posts, attack/defend tasks, ownership, map labels |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
 | `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
 | `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |

@@ -34,6 +34,7 @@ require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Aid"
 require "LivingFront/LF_Weapons"
+require "LivingFront/LF_Stance"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -151,14 +152,14 @@ local function leavePosition(id, body, m)
     LF.Posture.set(body, false)
 end
 
--- States between which a soldier keeps his position (losing or regaining sight, contact).
+-- States between which a soldier keeps his position (seeing / covering / watching).
 local KEEP_POSITION = { engage = true, alert = true, guard = true }
 
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
     LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
-    -- Losing and regaining sight (engage <-> alert) keeps the soldier's position and rhythm;
+    -- Losing and regaining sight (engage <-> alert <-> guard) keeps the soldier's position and rhythm;
     -- any other change starts fresh.
     if KEEP_POSITION[m.state] and KEEP_POSITION[state] then
         m.state = state
@@ -238,12 +239,14 @@ end
 
 -- Fighters: keep or find a firing position behind low cover facing the threat (a body, or a
 -- last-known position). Squad soldiers pass their slot (ax, ay): positions stay on the leash.
-local function planCover(id, body, m, threat, ax, ay, leash)
+-- sticky (defensive stance): keep a cover spot as long as it gives any cover at all, don't keep
+-- hunting for a better one, and look for shelter only close to the spot.
+local function planCover(id, body, m, threat, ax, ay, leash, sticky)
     if m.cover then
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
-        local usable = q == LF.Cover.LOW or (m.cover.loose and q ~= LF.Cover.NONE)
-        if m.cover.loose and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.coverSearchTicks then
+        local usable = q == LF.Cover.LOW or ((m.cover.loose or sticky) and q ~= LF.Cover.NONE)
+        if m.cover.loose and not sticky and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.coverSearchTicks then
             -- Sheltering without a shot: keep looking for a real firing position.
             m.lastCoverSearch = LF.tick
             local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
@@ -275,7 +278,7 @@ local function planCover(id, body, m, threat, ax, ay, leash)
     if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
     -- No firing position: at least get out of the open (any cover, a little further out).
     x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.sightRange + 10, ax, ay,
-        ax and ((leash or CFG.leash) + 3), true)
+        ax and ((leash or CFG.leash) + (sticky and 1 or 3)), true)
     if x then
         takeSpot(id, body, m, "cover", x, y, z, "shelter")
         m.cover.loose = true
@@ -427,16 +430,17 @@ local function moveTo(m, body, x, y, z)
     return false
 end
 
--- Defenders (LF_Objective): go to the exact square of his post - standing in a window or
--- doorway - or his reserve spot, and fight from there. The post is his cover; he doesn't go
--- looking for a "better" square inside.
-local function manPost(id, body, rec, m, role, sx, sy, sz, point, watching, ox, oy, pick, threatId, dist)
-    m.holdingSince = nil
-    m.order, m.point = role, point
-    local where = role == "post" and "at his post" or "in reserve"
+-- Defensive stance: hold his place in the perimeter (LF_Tactics.perimeterPlace). He gets into
+-- cover facing out of his quarter and stays there; he fires at any enemy he sees, covers enemies
+-- in his own arc and otherwise watches it. With the enemy in his arc but no shot for a while, he
+-- may shift to another covered square close by in his quarter (rarely).
+local function holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPoint, pick, threat, threatId, dist)
+    local st = LF.Stance.of(rec)
+    if m.prevOrder ~= "sector" or not m.sectorSince then m.sectorSince = LF.tick end
+    m.order, m.point = "sector", point
     if pick and dist <= CFG.fireRange then
         if m.state ~= "engage" then
-            setState(id, body, rec, m, "engage", where .. ", target #" .. threatId .. " " .. title(pick.rec) .. " at "
+            setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
         elseif m.targetId ~= threatId then
             LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
@@ -444,25 +448,28 @@ local function manPost(id, body, rec, m, role, sx, sy, sz, point, watching, ox, 
         end
         m.targetId, m.targetDist = threatId, dist
     elseif watching then
-        setState(id, body, rec, m, "guard", where .. ", watching " .. math.floor(point.x) .. "," .. math.floor(point.y))
-        m.targetId, m.point = nil, nil
+        setState(id, body, rec, m, "guard", "watching his quarter toward " .. math.floor(point.x) .. "," .. math.floor(point.y))
+        m.targetId = nil
     else
-        setState(id, body, rec, m, "alert", where .. ", covering " .. math.floor(point.x) .. "," .. math.floor(point.y))
+        setState(id, body, rec, m, "alert", "covering " .. math.floor(point.x) .. "," .. math.floor(point.y))
         m.targetId = nil
     end
-    local px, py, pz = math.floor(sx), math.floor(sy), math.floor(sz)
-    local spot = m.cover
-    if spot and spot.post and spot.x == px and spot.y == py then
-        LF.Cover.reserve(px, py, pz, id)
-        resumeWalk(body, m, spot)
-    else
-        leavePosition(id, body, m)
-        takeSpot(id, body, m, "cover", px, py, pz, role == "post" and "post" or "reserve spot", "run")
-        m.cover.post = true
-        m.cover.reserve = role == "reserve"
-        m.cover.loose = role == "reserve"       -- no blind fire through the walls from inside
+    -- Cover against the enemy he covers, or out of his quarter when there is none.
+    planCover(id, body, m, watching and coverPoint or point, sx, sy, st.sectorLeash, true)
+    if not m.cover and not LF.Suppress.isPinned(body) then followSlot(m, body, rec, sx, sy, sz) end
+    -- No shot for a while with the enemy in his arc: look for a covered square with a shot,
+    -- close by in his quarter.
+    if not watching and m.cover and isAt(body, m.cover)
+        and LF.tick - math.max(m.lastSight or -100000, m.sectorSince) > CFG.blindTicks
+        and LF.tick - (m.lastSectorShift or -100000) >= st.shiftInterval then
+        m.lastSectorShift = LF.tick
+        local x, y, z = LF.Cover.findFiringPosition(id, body, point, CFG.fireRange + 10, sx, sy, st.shiftLeash)
+        if x and not (x == m.cover.x and y == m.cover.y) then
+            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " has no shot from his cover; shifting within his quarter")
+            leavePosition(id, body, m)
+            takeSpot(id, body, m, "cover", x, y, z, "better shot in his quarter")
+        end
     end
-    m.cover.faceX, m.cover.faceY = ox, oy
 end
 
 local function decide(id, body, rec, m)
@@ -487,6 +494,17 @@ local function decide(id, body, rec, m)
     local ax, ay, az = nil, nil, nil
     if inSquad and not leader then ax, ay, az = LF.Squad.slot(rec) end
 
+    -- Defensive stance: a badly wounded man goes down where he is (no pulling back), patches
+    -- himself up and fires at what comes into view. A leader hands over command.
+    if fighter and inSquad and hp < CFG.fleeHealth and not LF.Stance.of(rec).woundedWithdraw then
+        if LF.Units.relieve(rec) then leader = false end
+        if m.state ~= "down" then
+            setState(id, body, rec, m, "down", "wounded, health " .. math.floor(hp) .. "; stays where he is")
+            if isMoving(body) then ISTimedActionQueue.clear(body) end
+        end
+        m.targetId = (pick and dist <= CFG.fireRange) and threatId or nil
+        return
+    end
     if threat and ((not fighter and dist < CFG.civFleeRange) or (fighter and hp < CFG.fleeHealth)) then
         setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
@@ -563,14 +581,15 @@ local function decide(id, body, rec, m)
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
-        local role, sx, sy, sz, point, watching, ox, oy = LF.Tactics.place(rec)
+        local role, sx, sy, sz, point, watching, coverPoint = LF.Tactics.place(rec)
         local leash = CFG.holdLeash
         if role and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
-            if role ~= "command" then role = "hold" end
-        elseif role == "post" or role == "reserve" then
-            manPost(id, body, rec, m, role, sx, sy, sz, point, watching, ox, oy, pick, threatId, dist)
+            if role == "move" then role = "hold" end
+        end
+        if role == "sector" then
+            holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPoint, pick, threat, threatId, dist)
             return
         end
         if role then
@@ -587,11 +606,7 @@ local function decide(id, body, rec, m)
                 moveTo(m, body, sx, sy, sz)
                 return
             end
-            if watching and not (pick and dist <= CFG.fireRange) then
-                -- No enemy met yet (marching in, or manning a post): watch, don't fire.
-                setState(id, body, rec, m, "guard", "watching " .. math.floor(point.x) .. "," .. math.floor(point.y))
-                m.targetId, m.point = nil, nil
-            elseif pick and dist <= CFG.fireRange then
+            if pick and dist <= CFG.fireRange then
                 if m.state ~= "engage" then
                     setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                         .. math.floor(dist) .. " tiles")
@@ -681,12 +696,6 @@ end
 -- Per-tick behaviour for states that need it.
 local function act(id, body, rec, m)
     local st = m.state
-    -- A defender at a window or doorway stands to fire out of it (ducking only under fire).
-    local c = m.cover
-    local standing = c ~= nil and c.post and not c.reserve and isAt(body, c)
-    if standing and not LF.Suppress.isSuppressed(body) and LF.Posture.crouched(body) and not body:isPerformingAnAction() then
-        LF.Posture.set(body, false)
-    end
     -- Under fire, soldiers keep their heads down between shots (and pinned men stay down).
     if (st == "engage" or st == "alert") and LF.Suppress.isSuppressed(body) then hunkerDown(body) end
     -- Holding with no cover at all: crouch rather than stand in the open.
@@ -695,7 +704,7 @@ local function act(id, body, rec, m)
         -- Covering: area fire on where the enemy was last seen (not from a blind shelter).
         if m.cover then
             if not isAt(body, m.cover) then return end
-            if not standing then hunkerDown(body) end
+            hunkerDown(body)
             if m.cover.loose then return end
         end
         if m.fighter and topUp(body, m, false) then return end
@@ -708,7 +717,7 @@ local function act(id, body, rec, m)
     if m.state == "engage" and m.targetId then
         if m.cover then
             if not isAt(body, m.cover) then return end   -- still moving into position
-            if not standing then hunkerDown(body) end
+            hunkerDown(body)
         end
         local target = LF.Bodies.get(m.targetId)
         if target and not target:isDead()
@@ -718,16 +727,27 @@ local function act(id, body, rec, m)
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
         if m.fighter then topUp(body, m, false) end
-    elseif m.state == "guard" then
-        if standing then
-            -- On watch at his post: face out of the window.
-            if c.faceX and LF.tick % 30 == 0 and not body:isPerformingAnAction() then body:faceLocation(c.faceX, c.faceY) end
-        elseif (m.cover and isAt(body, m.cover)) or (not m.cover and not isMoving(body)) then
-            hunkerDown(body)
-        end
-        if m.fighter then topUp(body, m, false) end
     elseif m.state == "idle" and m.fighter and LF.Combat.isArmed(body) then
         topUp(body, m, true)
+    elseif m.state == "guard" then
+        -- Watching his quarter: down in cover, facing out.
+        if m.cover and isAt(body, m.cover) then hunkerDown(body) end
+        local p = m.point
+        if p and LF.tick % 40 == 0 and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
+        if m.fighter then topUp(body, m, false) end
+    elseif m.state == "down" then
+        -- Wounded in a defence: stays down where he is, bandages himself, fires at what he sees.
+        hunkerDown(body)
+        if not body:isPerformingAnAction() and LF.tick - (m.lastAid or -10000) > 90 then
+            m.lastAid = LF.tick
+            local part = LF.Aid.bleedingPart(body)
+            if part then ISTimedActionQueue.add(LF_AidAction:new(body, part)); return end
+        end
+        local target = m.targetId and LF.Bodies.get(m.targetId)
+        if target and not target:isDead()
+            and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
+            LF.Combat.engage(body, target, m.combat, m.combatOpts)
+        end
     elseif m.state == "flee" then
         local safe = (m.hide and isAt(body, m.hide)) or m.atRear
         if m.hide and isAt(body, m.hide) then hunkerDown(body) end
