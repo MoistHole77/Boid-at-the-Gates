@@ -65,6 +65,7 @@ local CFG = {
     spotChanceFar = 4,      -- ... (far)
 }
 LF.Brain.CFG = CFG
+LF.Units.woundedHealth = CFG.fleeHealth
 
 local minds = {}   -- record id -> mind
 
@@ -356,6 +357,11 @@ local function decide(id, body, rec, m)
     if threat and ((not fighter and dist < CFG.civFleeRange) or (fighter and hp < CFG.fleeHealth)) then
         setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
+        -- A leader this badly hurt hands over command now instead of his men waiting on him.
+        if fighter and inSquad and LF.Units.relieve(rec) then
+            leader = false
+            ax, ay, az = LF.Squad.slot(rec)
+        end
         local rx, ry, rz = nil, nil, nil
         if inSquad then rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance) end
         if not (fighter and planHide(id, body, m, threat, rx, ry)) then
@@ -378,6 +384,15 @@ local function decide(id, body, rec, m)
             fleeFrom(m, body, sx, sy, "run")
             return
         end
+    end
+    if fighter and hp < CFG.fleeHealth and m.state == "flee" then
+        -- Badly hurt and already hiding: stay down out of sight instead of rejoining the fight
+        -- the moment the enemy drops out of view.
+        if not (m.hide and isAt(body, m.hide)) and inSquad then
+            local rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance)
+            if rx and not m.hide then fallBack(m, body, rx, ry, rz) end
+        end
+        return
     end
     if threat and fighter then
         if m.state ~= "engage" then

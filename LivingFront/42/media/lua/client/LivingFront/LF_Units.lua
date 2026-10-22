@@ -225,55 +225,102 @@ local function promote(rec, rank, why)
     LF.log("PROMOTED " .. LF.Records.fullName(rec) .. " #" .. rec.id .. " " .. tostring(was) .. " -> " .. rank .. " (" .. why .. ")")
 end
 
--- Give a team a new corporal: the first living private, alphas first.
+-- Health below which a leader hands over command (kept equal to the brain's flee threshold).
+LF.Units.woundedHealth = 35
+
+-- Can this man take command? Alive, not relieved for wounds, and not badly hurt right now.
+local function able(r)
+    if not (r and r.alive and not r.wounded) then return false end
+    local body = LF.Bodies and LF.Bodies.get(r.id)
+    if body and LF.Combat and LF.Combat.health(body) < LF.Units.woundedHealth then return false end
+    return true
+end
+
+-- Give a team a new corporal: the first able private, alphas first.
 local function refillTeam(team, why)
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
-        if r and r.alive and r.rank == "PVT" and r.team == team.id then
+        if r and r.rank == "PVT" and r.team == team.id and able(r) then
             promote(r, "CPL", why)
             team.leader = r.id
             return r
         end
     end
     team.leader = nil
-    LF.log("UNITS " .. team.name .. " (#" .. team.id .. ") has no one left to lead it")
+    LF.log("UNITS " .. team.name .. " (#" .. team.id .. ") has no one fit to lead it")
     return nil
 end
 
--- Called when a soldier dies: if he led something, the next most senior man takes over.
-function LF.Units.onDeath(rec)
-    if not rec.squad then return end
-    if rec.rank == "CPL" and rec.team then
-        local team = LF.Units.get(rec.team)
-        if team and team.leader == rec.id then
-            refillTeam(team, team.name .. " corporal killed")
-        end
-    elseif rec.rank == "SGT" then
-        local squad = LF.Units.get(rec.squad)
-        if not (squad and squad.leader == rec.id) then return end
-        local why = squad.name .. " sergeant killed"
-        -- First living corporal, team by team; failing that, any living private.
-        local new, fromTeam = nil, nil
-        for _, teamId in ipairs(squad.teams) do
-            local team = LF.Units.get(teamId)
-            local r = team and team.leader and LF.Records.get(team.leader)
-            if r and r.alive then new, fromTeam = r, team; break end
-        end
-        if not new then
-            for _, rid in ipairs(LF.Units.members(squad.id)) do
-                local r = LF.Records.get(rid)
-                if r and r.alive and r.id ~= rec.id then new, fromTeam = r, LF.Units.get(r.team); break end
-            end
-        end
-        if not new then
-            squad.leader = nil
-            LF.log("UNITS " .. squad.name .. " has no one left")
-            return
-        end
-        promote(new, "SGT", why)
-        new.team, new.element, new.slot = nil, "L", 0
-        squad.leader = new.id
-        if fromTeam and fromTeam.leader == new.id then refillTeam(fromTeam, fromTeam.name .. " corporal moved up to lead the squad") end
-        memberCache[squad.id] = nil
+-- Does this soldier currently lead a team or the squad?
+function LF.Units.leads(rec)
+    local squad = rec.squad and LF.Units.get(rec.squad)
+    if squad and squad.leader == rec.id then return true end
+    local team = rec.team and LF.Units.get(rec.team)
+    return team ~= nil and team.leader == rec.id
+end
+
+-- rec stops leading (killed, or relieved for wounds): the next man in line takes over.
+-- Returns false if nobody was fit to take over (a relieved leader then keeps command).
+local function handOver(rec, why)
+    if not rec.squad then return true end
+    local team = rec.team and LF.Units.get(rec.team)
+    if team and team.leader == rec.id then refillTeam(team, why) end
+
+    local squad = LF.Units.get(rec.squad)
+    if not (squad and squad.leader == rec.id) then return true end
+    -- First able corporal, team by team; failing that, any able soldier.
+    local new, fromTeam = nil, nil
+    for _, teamId in ipairs(squad.teams) do
+        local t = LF.Units.get(teamId)
+        local r = t and t.leader and LF.Records.get(t.leader)
+        if r and r.id ~= rec.id and able(r) then new, fromTeam = r, t; break end
     end
+    if not new then
+        for _, rid in ipairs(LF.Units.members(squad.id)) do
+            local r = LF.Records.get(rid)
+            if r and r.id ~= rec.id and able(r) then new, fromTeam = r, LF.Units.get(r.team); break end
+        end
+    end
+    if not new then
+        if rec.alive then return false end
+        squad.leader = nil
+        LF.log("UNITS " .. squad.name .. " has no one left to lead it")
+        return true
+    end
+    local oldSlot = new.slot
+    promote(new, "SGT", why)
+    new.team, new.element, new.slot = nil, "L", 0
+    squad.leader = new.id
+    if fromTeam then
+        if rec.alive then
+            -- The relieved sergeant takes his successor's old place in that team.
+            for i, rid in ipairs(fromTeam.members) do
+                if rid == new.id then fromTeam.members[i] = rec.id end
+            end
+            local ms = MAN_SLOTS[oldSlot]
+            rec.team, rec.slot, rec.element = fromTeam.id, oldSlot, ms and ms.element or "B"
+        end
+        if fromTeam.leader == new.id then refillTeam(fromTeam, fromTeam.name .. " corporal moved up to lead the squad") end
+    end
+    memberCache[squad.id] = nil
+    return true
+end
+
+-- Called when a soldier dies.
+function LF.Units.onDeath(rec)
+    handOver(rec, LF.Units.title(rec) .. " killed")
+end
+
+-- A leader so badly wounded that he seeks cover hands over command at once, rather than his
+-- men waiting on him. He stays with the squad as an ordinary member. Returns true if relieved.
+function LF.Units.relieve(rec)
+    if rec.wounded or not LF.Units.leads(rec) then return false end
+    local who = LF.Units.title(rec)
+    rec.wounded = true
+    if not handOver(rec, who .. " too badly wounded to lead") then
+        rec.wounded = nil
+        return false
+    end
+    LF.log("RELIEVED " .. who .. " #" .. rec.id .. " hands over command (badly wounded)")
+    return true
 end
