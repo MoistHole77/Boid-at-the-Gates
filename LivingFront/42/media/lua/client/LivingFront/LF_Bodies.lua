@@ -137,6 +137,7 @@ local function managerPass()
             rec.alive = false
             bodies[id] = nil
             LF.log("#" .. id .. " " .. LF.Records.fullName(rec) .. " DIED at " .. math.floor(rec.x) .. "," .. math.floor(rec.y))
+            if LF.Units then LF.guard("succession", LF.Units.onDeath, rec) end
         elseif body then
             if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq then
                 LF.Bodies.despawn(id)

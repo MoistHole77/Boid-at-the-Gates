@@ -8,6 +8,7 @@ require "LivingFront/LF_Brain"
 require "LivingFront/LF_MoveAction"
 require "LivingFront/LF_Cover"
 require "LivingFront/LF_Units"
+require "LivingFront/LF_Squad"
 require "LivingFront/LF_Perf"
 
 LF.Debug = LF.Debug or {}
@@ -140,10 +141,33 @@ local function squadBattle(x, y, z)
     LF.say("Squad battle: 17 vs 17")
 end
 
+-- Test succession: kill the living squad leader nearest the player.
+local function killNearestSergeant(_, playerNum)
+    local p = getSpecificPlayer(playerNum)
+    local best, bestD = nil, math.huge
+    for _, squad in pairs(LF.Units.all()) do
+        if squad.kind == "squad" and squad.leader then
+            local body = LF.Bodies.get(squad.leader)
+            if body and not body:isDead() then
+                local d = LF.distSq(body:getX(), body:getY(), p:getX(), p:getY())
+                if d < bestD then best, bestD = body, d end
+            end
+        end
+    end
+    if not best then
+        LF.say("No squad leader nearby")
+        return
+    end
+    local rec = LF.Records.get(best:getModData().LF_id)
+    LF.log("DEBUG killing " .. (rec and LF.Units.title(rec) or "?") .. " to test succession")
+    best:getBodyDamage():ReduceGeneralHealth(500)
+end
+
 local function deleteAll()
     LF.Bodies.despawnAll()
     for id in pairs(LF.Records.all()) do LF.Records.remove(id) end
     LF.Units.clear()
+    LF.Squad.forgetAll()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
 end
@@ -191,6 +215,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     squads:addOption("Spawn German squad here (facing east)", nil, function() spawnSquad("GER", x, y, z, 1) end)
     squads:addOption("Spawn Soviet squad here (facing west)", nil, function() spawnSquad("SOV", x, y, z, -1) end)
     squads:addOption("Unit report", nil, LF.Units.report)
+    squads:addOption("Kill nearest squad leader (test succession)", nil, killNearestSergeant, playerNum)
     squads:addOption((LF.Config.logPerf and "Performance log OFF" or "Performance log ON"), nil, LF.Perf.toggle)
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
 end

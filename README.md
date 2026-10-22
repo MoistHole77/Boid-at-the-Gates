@@ -19,8 +19,9 @@ Pure Lua. No Java, no ZombieBuddy.
 | Civilians flee gunfire; armed civilians fight Germans | Working |
 | Cover: soldiers crouch behind low cover, wounded hide behind walls; cover reduces hit chance | Built, awaiting in-game test |
 | Running and sprinting (real run animations, endurance limits) | Built, awaiting in-game test |
-| Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Built, awaiting stress test |
-| Squad tactics (cohesion, shared contacts, bounding, suppression, flanking) | Next (see design doc) |
+| Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Working (stress-tested: ~60-80 bodies is the practical budget) |
+| Squad-aware soldiers: formation slots and leash, shared contacts, spread fire, enemy-leader spotting, succession | Built, awaiting in-game test |
+| Leader orders: bounding, suppression, flanking | Next (see design doc) |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
@@ -49,6 +50,10 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Combat.lua` | Gunfire: turning, aiming stance, hit resolution, damage, gunfire memory |
 | `LF_ShootAction.lua` | Timed actions: aim + fire (with target tracking), flinch |
 | `LF_MoveAction.lua` | Walk / run / sprint to a square (the timed action that makes running work) |
+| `LF_Sense.lua` | Perception: grid of live bodies, capped line-of-sight checks |
+| `LF_Squad.lua` | Squad knowledge (contacts, recognised enemy leaders) and formation slots |
+| `LF_Posture.lua` | NPC crouch/stand, immune to the player's crouch key |
+| `LF_Names.lua` | German and Russian names |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
 | `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
 | `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |
@@ -99,6 +104,11 @@ Hard-won facts from reading the game's code and testing. Each one shapes the des
     comes from the animation's own root motion, so this is a real run, not a speed change.
     The engine still refuses to run when the endurance moodle is 3 or higher.
 13. **Crouching:** `setSneaking` is only changed by the crouch key handler, so it sticks on
-    NPCs. There is no crouched rifle-aim clip; crouched NPCs stand to fire and drop back down.
+    NPCs (but see 15). There is no crouched rifle-aim clip; crouched NPCs stand to fire and drop back down.
 14. **Cover** is read from square edges toward the threat (`isWallTo`, `isWindowTo`,
     `isHoppableTo`, `isSolidTrans`, vehicles, trees).
+15. **NPC bodies share the player's input slot** (player index 0), so the engine's crouch-key
+    handler reads the real keyboard for them. Posture is enforced from `OnPlayerUpdate`, which
+    fires for each NPC just before that check.
+16. **Performance:** each live NPC body costs the engine about 0.23 ms per frame regardless of
+    our code; around 60-80 bodies near the player is the practical budget.

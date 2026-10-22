@@ -42,11 +42,16 @@ function LF.Units.all()
     return units().units
 end
 
+local memberCache = {}     -- squad id -> array of record ids (runtime only)
+
 function LF.Units.clear()
     local data = units()
     data.units = {}
     data.nextUnitId = 1
+    memberCache = {}
 end
+
+Events.OnInitGlobalModData.Add(function() memberCache = {} end)
 
 -- "Sgt. Hans Becker" for soldiers, the plain name for everyone else.
 function LF.Units.title(rec)
@@ -166,4 +171,109 @@ function LF.Units.report()
         end
     end
     LF.say(squads .. " squads; unit report written to log")
+end
+
+-- ---- membership and formation -------------------------------------------------------------
+
+-- Every record id in a squad: its current leader first, then the team members (dead included;
+-- check rec.alive).
+function LF.Units.members(squadId)
+    local list = memberCache[squadId]
+    if list then return list end
+    local squad = LF.Units.get(squadId)
+    list = {}
+    if squad then
+        local inList = {}
+        if squad.leader then list[1] = squad.leader; inList[squad.leader] = true end
+        for _, teamId in ipairs(squad.teams) do
+            local team = LF.Units.get(teamId)
+            if team then
+                for _, rid in ipairs(team.members) do
+                    if not inList[rid] then list[#list + 1] = rid; inList[rid] = true end
+                end
+            end
+        end
+    end
+    memberCache[squadId] = list
+    return list
+end
+
+-- A soldier's formation slot relative to his squad leader: forward, lateral (tiles).
+function LF.Units.slotOffset(rec)
+    if rec.rank == "SGT" or not rec.team then return 0, 0 end
+    local team = LF.Units.get(rec.team)
+    local ts = team and TEAM_SLOTS[team.slot]
+    local ms = MAN_SLOTS[rec.slot]
+    if not (ts and ms) then return 0, 0 end
+    return ts.fwd + ms.fwd, ts.lat + ms.lat
+end
+
+-- ---- succession -----------------------------------------------------------------------------
+
+local function promote(rec, rank, why)
+    local was = rec.rank
+    rec.rank = rank
+    local body = LF.Bodies and LF.Bodies.get(rec.id)
+    if body then
+        local name = LF.Units.title(rec)
+        LF.try("rename on promotion", function()
+            body:setDisplayName(name)
+            body:setUsername(name)
+            return true
+        end)
+    end
+    LF.log("PROMOTED " .. LF.Records.fullName(rec) .. " #" .. rec.id .. " " .. tostring(was) .. " -> " .. rank .. " (" .. why .. ")")
+end
+
+-- Give a team a new corporal: the first living private, alphas first.
+local function refillTeam(team, why)
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and r.rank == "PVT" and r.team == team.id then
+            promote(r, "CPL", why)
+            team.leader = r.id
+            return r
+        end
+    end
+    team.leader = nil
+    LF.log("UNITS " .. team.name .. " (#" .. team.id .. ") has no one left to lead it")
+    return nil
+end
+
+-- Called when a soldier dies: if he led something, the next most senior man takes over.
+function LF.Units.onDeath(rec)
+    if not rec.squad then return end
+    if rec.rank == "CPL" and rec.team then
+        local team = LF.Units.get(rec.team)
+        if team and team.leader == rec.id then
+            refillTeam(team, team.name .. " corporal killed")
+        end
+    elseif rec.rank == "SGT" then
+        local squad = LF.Units.get(rec.squad)
+        if not (squad and squad.leader == rec.id) then return end
+        local why = squad.name .. " sergeant killed"
+        -- First living corporal, team by team; failing that, any living private.
+        local new, fromTeam = nil, nil
+        for _, teamId in ipairs(squad.teams) do
+            local team = LF.Units.get(teamId)
+            local r = team and team.leader and LF.Records.get(team.leader)
+            if r and r.alive then new, fromTeam = r, team; break end
+        end
+        if not new then
+            for _, rid in ipairs(LF.Units.members(squad.id)) do
+                local r = LF.Records.get(rid)
+                if r and r.alive and r.id ~= rec.id then new, fromTeam = r, LF.Units.get(r.team); break end
+            end
+        end
+        if not new then
+            squad.leader = nil
+            LF.log("UNITS " .. squad.name .. " has no one left")
+            return
+        end
+        promote(new, "SGT", why)
+        new.team, new.element, new.slot = nil, "L", 0
+        squad.leader = new.id
+        if fromTeam and fromTeam.leader == new.id then refillTeam(fromTeam, fromTeam.name .. " corporal moved up to lead the squad") end
+        memberCache[squad.id] = nil
+    end
 end

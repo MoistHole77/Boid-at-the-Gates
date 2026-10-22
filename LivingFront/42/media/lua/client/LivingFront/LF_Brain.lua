@@ -1,12 +1,18 @@
 -- Living Front: the NPC brain.
 --
 -- Every NPC with a body runs a perceive -> decide -> act loop:
---   perceive (on its think tick): the nearest hostile NPC it can actually see, plus gunfire
+--   perceive (on its think tick): the hostile NPCs it can actually see (LF_Sense), plus gunfire.
+--              Squad soldiers share what they see with their squad (LF_Squad) and may
+--              recognise enemy leaders.
 --   decide   (on its think tick): pick a state
---              fighters (soldiers, armed civilians): badly hurt + threat -> flee;
---                                                    threat -> engage; otherwise idle
+--              fighters (soldiers, armed civilians): badly hurt + threat -> flee (squad soldiers
+--                fall back toward their squad's rear); threat -> engage, choosing a target the
+--                squad isn't already shooting, preferring known leaders and exposed men;
+--                no threat but the squad knows where the enemy is -> alert (take cover facing
+--                it); otherwise idle (squad soldiers keep their formation slot)
 --              unarmed civilians: threat or gunfire nearby -> flee; otherwise idle
 --   act      (every tick for states that need it): engage steps combat; others act on think
+-- Squad soldiers stay on a leash: positions they take are within CFG.leash of their slot.
 -- The player is ignored (neutral) for now.
 --
 -- Minds are runtime-only (not saved): after a load or respawn an NPC simply re-evaluates.
@@ -21,6 +27,9 @@ require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
 require "LivingFront/LF_MoveAction"
 require "LivingFront/LF_Posture"
+require "LivingFront/LF_Sense"
+require "LivingFront/LF_Units"
+require "LivingFront/LF_Squad"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -40,6 +49,20 @@ local CFG = {
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
+    -- Squads
+    leash = 7,              -- squad soldiers take positions within this many tiles of their slot
+    followDistance = 2.5,   -- idle squad soldiers walk back to their slot beyond this distance
+    followReissueTicks = 90,
+    rearDistance = 8,       -- the squad's rear is this far behind its leader
+    contactMemory = 600,    -- a squad remembers where it last saw an enemy for this long (~10 s)
+    claimPenalty = 6,       -- target choice: tiles added per squad mate already on that target
+    leaderBonus = 8,        -- target choice: tiles taken off for a recognised enemy leader
+    lowCoverPenalty = 5,    -- target choice: tiles added for a target behind low cover
+    highCoverPenalty = 12,  --                 ... behind high cover
+    stickyBonus = 4,        -- target choice: tiles taken off for the current target
+    spotRange = 12,         -- enemy leaders closer than this are recognised faster
+    spotChanceNear = 10,    -- percent per think to recognise a visible enemy leader (near)
+    spotChanceFar = 4,      -- ... (far)
 }
 LF.Brain.CFG = CFG
 
@@ -55,59 +78,22 @@ local function mindOf(id)
 end
 LF.Brain.mindOf = mindOf
 
--- Line of sight between two characters, using the game's own line test.
--- Blocked and closed doors stop sight; open doors and windows don't.
-local function lineResult(a, b)
-    return tostring(LosUtil.lineClear(getCell(),
-        math.floor(a:getX()), math.floor(a:getY()), math.floor(a:getZ()),
-        math.floor(b:getX()), math.floor(b:getY()), math.floor(b:getZ()), false))
+LF.Brain.canSee = function(a, b) return LF.Sense.canSee(a, b) end
+
+-- A last-known enemy position that cover and aiming code can treat like a body.
+local GHOST = {}
+GHOST.__index = GHOST
+function GHOST:getX() return self.x end
+function GHOST:getY() return self.y end
+function GHOST:getZ() return self.z end
+local function ghostOf(m, c)
+    local g = m.ghost
+    if not g then g = setmetatable({}, GHOST); m.ghost = g end
+    g.x, g.y, g.z = c.x, c.y, c.z
+    return g
 end
 
-local losFailed = false
-function LF.Brain.canSee(a, b)
-    if losFailed then return true, "unknown" end
-    local ok, res = pcall(lineResult, a, b)
-    if not ok then
-        losFailed = true
-        LF.log("BRAIN line of sight check FAILED (" .. tostring(res) .. "); assuming clear sight")
-        return true, "unknown"
-    end
-    return res ~= "Blocked" and res ~= "ClearThroughClosedDoor", res
-end
-
--- The nearest visible hostile body: body, id, distance. Candidates are sorted by distance and
--- line of sight is only tested until the first visible one (it is the most expensive check).
-local candidates = {}
-local function byDist(a, b) return a.dsq < b.dsq end
-
-local function nearestThreat(id, body, rec)
-    local bx, by = body:getX(), body:getY()
-    local rangeSq = CFG.sightRange * CFG.sightRange
-    local n = 0
-    for otherId, other in pairs(LF.Bodies.all()) do
-        if otherId ~= id and not other:isDead() then
-            local otherRec = LF.Records.get(otherId)
-            if otherRec and LF.isHostile(rec.faction, otherRec.faction) then
-                local dsq = LF.distSq(bx, by, other:getX(), other:getY())
-                if dsq < rangeSq then
-                    n = n + 1
-                    local c = candidates[n] or {}
-                    c.body, c.id, c.dsq = other, otherId, dsq
-                    candidates[n] = c
-                end
-            end
-        end
-    end
-    for i = #candidates, n + 1, -1 do candidates[i] = nil end
-    if n > 1 then table.sort(candidates, byDist) end
-    for i = 1, n do
-        local c = candidates[i]
-        if LF.Brain.canSee(body, c.body) then
-            return c.body, c.id, math.sqrt(c.dsq)
-        end
-    end
-    return nil
-end
+local function title(rec) return LF.Units.title(rec) end
 
 -- Gaits: "walk", "run" or "sprint" (LF_MoveAction). Running is off unless LF.Brain.running.
 LF.Brain.running = true
@@ -155,8 +141,14 @@ end
 
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
-    LF.log("BRAIN #" .. id .. " " .. LF.Records.fullName(rec) .. " [" .. rec.faction .. "] "
+    LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
+    -- Losing and regaining sight (engage <-> alert) keeps the soldier's position and rhythm;
+    -- any other change starts fresh.
+    if (m.state == "engage" or m.state == "alert") and (state == "engage" or state == "alert") then
+        m.state = state
+        return
+    end
     leavePosition(id, body, m)
     m.state = state
     m.combat = {}
@@ -184,13 +176,21 @@ local function resumeWalk(body, m, spot)
     end
 end
 
--- Fighters: keep or find a firing position behind low cover facing the threat.
-local function planCover(id, body, m, threat)
+local function withinLeash(x, y, ax, ay, extra)
+    if not ax then return true end
+    local r = CFG.leash + (extra or 0)
+    return LF.distSq(x + 0.5, y + 0.5, ax, ay) <= r * r
+end
+
+-- Fighters: keep or find a firing position behind low cover facing the threat (a body, or a
+-- last-known position). Squad soldiers pass their slot (ax, ay): positions stay on the leash.
+local function planCover(id, body, m, threat, ax, ay)
     if m.cover then
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
-        if q ~= LF.Cover.LOW or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks) then
-            leavePosition(id, body, m)   -- threat moved around it, or we can't get there
+        if q ~= LF.Cover.LOW or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
+            or not withinLeash(m.cover.x, m.cover.y, ax, ay, 3) then
+            leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
             resumeWalk(body, m, m.cover)
             return
@@ -198,18 +198,19 @@ local function planCover(id, body, m, threat)
     end
     -- Already standing behind usable cover?
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
-    if LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
+    if withinLeash(bx, by, ax, ay) and LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
         takeSpot(id, body, m, "cover", bx, by, bz, "cover")
         return
     end
     if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
     m.lastCoverSearch = LF.tick
-    local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange)
+    local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and CFG.leash)
     if x then takeSpot(id, body, m, "cover", x, y, z, "cover") end
 end
 
 -- Wounded fighters: find somewhere out of the threat's sight before simply running.
-local function planHide(id, body, m, threat)
+-- (rx, ry): the squad's rear, preferred so the wounded stay near their own men.
+local function planHide(id, body, m, threat, rx, ry)
     if m.hide then
         if isAt(body, m.hide) then return true end
         if LF.tick - m.hide.since <= CFG.coverGiveUpTicks then
@@ -220,7 +221,7 @@ local function planHide(id, body, m, threat)
     end
     if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return false end
     m.lastCoverSearch = LF.tick
-    local x, y, z = LF.Cover.findHidingSpot(id, body, threat)
+    local x, y, z = LF.Cover.findHidingSpot(id, body, threat, rx, ry)
     if x then
         takeSpot(id, body, m, "hide", x, y, z, "hiding spot")
         return true
@@ -252,20 +253,119 @@ local function approach(m, body, target, dist)
     end
 end
 
+-- Is the body's current action a move (so it may be replaced by a new move)?
+local function isMoving(body)
+    local q = ISTimedActionQueue.getTimedActionQueue(body)
+    local a = q and q.queue and q.queue[1]
+    return a ~= nil and (a.Type == "LF_MoveAction" or a.Type == "ISWalkToTimedAction")
+end
+
+-- Squad soldiers: get back to the formation slot. Returns true when there.
+local function followSlot(m, body, rec, sx, sy, sz)
+    if not sx then return false end
+    local d = LF.dist(body:getX(), body:getY(), sx, sy)
+    if d <= CFG.followDistance then return true end
+    if body:isPerformingAnAction() and not isMoving(body) then return false end   -- busy (shooting, flinching)
+    if LF.tick - m.lastPath < CFG.followReissueTicks then return false end
+    if walkNear(body, sx, sy, sz, 1, d > 10 and "run" or "walk") then m.lastPath = LF.tick end
+    return false
+end
+
+-- Wounded squad soldiers with nowhere to hide: run back to the squad's rear.
+local function fallBack(m, body, rx, ry, rz)
+    if LF.tick - m.lastPath <= CFG.reissueTicks then return end
+    if LF.dist(body:getX(), body:getY(), rx, ry) < 3 then return end
+    if walkNear(body, rx, ry, rz, 2, "run") then m.lastPath = LF.tick end
+end
+
+-- How many of this soldier's squad mates are engaging that enemy.
+local function claimCount(squadId, enemyId, selfId)
+    local n = 0
+    local members = LF.Units.members(squadId)
+    for i = 1, #members do
+        local rid = members[i]
+        if rid ~= selfId then
+            local mm = minds[rid]
+            if mm and mm.state == "engage" and mm.targetId == enemyId then n = n + 1 end
+        end
+    end
+    return n
+end
+
+-- Pick a target among the visible enemies: near, not already covered by squad mates, exposed
+-- rather than behind cover, recognised leaders first. Lowest score wins.
+local function chooseTarget(id, body, rec, m, visible)
+    local best, bestScore = nil, nil
+    for i = 1, #visible do
+        local s = visible[i]
+        local score = s.dist
+        if rec.squad then
+            score = score + CFG.claimPenalty * claimCount(rec.squad, s.id, id)
+            if LF.Squad.knowsLeader(rec.squad, s.id) then score = score - CFG.leaderBonus end
+        end
+        local q = LF.Cover.of(s.body, body)
+        if q == LF.Cover.HIGH then score = score + CFG.highCoverPenalty
+        elseif q == LF.Cover.LOW then score = score + CFG.lowCoverPenalty end
+        if s.id == m.targetId then score = score - CFG.stickyBonus end
+        if not bestScore or score < bestScore then best, bestScore = s, score end
+    end
+    return best
+end
+
+-- Tell the squad what this soldier sees; maybe recognise an enemy leader.
+local function shareSightings(id, rec, visible)
+    for i = 1, #visible do
+        local s = visible[i]
+        LF.Squad.report(rec.squad, s.id, s.body)
+        local rank = s.rec.rank
+        if (rank == "SGT" or rank == "CPL") and not LF.Squad.knowsLeader(rec.squad, s.id) then
+            local chance = s.dist < CFG.spotRange and CFG.spotChanceNear or CFG.spotChanceFar
+            if ZombRand(100) < chance then
+                LF.Squad.markLeader(rec.squad, s.id)
+                LF.log("SPOTTED #" .. id .. " " .. title(rec) .. " recognised enemy leader #" .. s.id .. " "
+                    .. title(s.rec) .. " at " .. math.floor(s.dist) .. " tiles")
+            end
+        end
+    end
+end
+
+local function isSquadLeader(id, rec)
+    local squad = rec.squad and LF.Units.get(rec.squad)
+    return squad ~= nil and squad.leader == id
+end
+
 local function decide(id, body, rec, m)
-    local threat, threatId, dist = nearestThreat(id, body, rec)
-    local hp = LF.Combat.health(body)
     -- Fighters: soldiers, and civilians who are holding a gun (resistance).
     local fighter = rec.faction ~= "CIV" or LF.Combat.isArmed(body)
     m.fighter = fighter
+    local inSquad = rec.squad ~= nil and LF.Units.get(rec.squad) ~= nil
+    local leader = inSquad and isSquadLeader(id, rec)
+
+    local visible = LF.Sense.look(id, body, rec, CFG.sightRange)
+    if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
+    local pick = nil
+    if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
+    local threat, threatId, dist = nil, nil, nil
+    if pick then threat, threatId, dist = pick.body, pick.id, pick.dist end
+    local hp = LF.Combat.health(body)
+
+    -- The slot this soldier is leashed to (none for the squad leader, who sets the pace).
+    local ax, ay, az = nil, nil, nil
+    if inSquad and not leader then ax, ay, az = LF.Squad.slot(rec) end
 
     if threat and ((not fighter and dist < CFG.civFleeRange) or (fighter and hp < CFG.fleeHealth)) then
         setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
-        if not (fighter and planHide(id, body, m, threat)) then
-            -- Civilians sprint for it; a wounded soldier runs (the engine turns an injured
-            -- sprint into a run anyway).
-            fleeFrom(m, body, threat:getX(), threat:getY(), fighter and "run" or "sprint")
+        local rx, ry, rz = nil, nil, nil
+        if inSquad then rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance) end
+        if not (fighter and planHide(id, body, m, threat, rx, ry)) then
+            if rx then
+                fallBack(m, body, rx, ry, rz)
+            else
+                -- Civilians sprint for it; a wounded soldier runs (the engine turns an injured
+                -- sprint into a run anyway).
+                fleeFrom(m, body, threat:getX(), threat:getY(), fighter and "run" or "sprint")
+            end
         end
         return
     end
@@ -281,17 +381,51 @@ local function decide(id, body, rec, m)
     end
     if threat and fighter then
         if m.state ~= "engage" then
-            setState(id, body, rec, m, "engage", "target #" .. threatId .. " at " .. math.floor(dist)
-                .. " tiles, sight " .. tostring(select(2, LF.Brain.canSee(body, threat))))
+            setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
+                .. math.floor(dist) .. " tiles")
+        elseif m.targetId ~= threatId then
+            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
+                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles")
         end
         m.targetId = threatId
         m.targetDist = dist
-        planCover(id, body, m, threat)
-        if not m.cover and dist > CFG.fireRange then approach(m, body, threat, dist) end
+        planCover(id, body, m, threat, ax, ay)
+        if not m.cover then
+            if ax then
+                followSlot(m, body, rec, ax, ay, az)      -- no cover near the slot: fight from the slot
+            elseif dist > CFG.fireRange then
+                approach(m, body, threat, dist)           -- squad leader (or a lone fighter) closes in
+            end
+        end
         return
+    end
+    if fighter and inSquad then
+        -- Nothing in sight, but the squad knows where the enemy was: take cover facing it.
+        local c = LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
+        if c then
+            setState(id, body, rec, m, "alert", "squad contact on #" .. c.id)
+            m.targetId = nil
+            local g = ghostOf(m, c)
+            planCover(id, body, m, g, ax, ay)
+            local placed = m.cover and isAt(body, m.cover)
+            if not m.cover and ax then placed = followSlot(m, body, rec, ax, ay, az) end
+            if not m.cover and leader then
+                -- The squad leader closes in on the contact; his squad follows on its slots.
+                local d = LF.dist(body:getX(), body:getY(), c.x, c.y)
+                if d > CFG.fireRange - 2 then approach(m, body, g, d) end
+            end
+            if (placed or (not m.cover and not ax)) and not body:isPerformingAnAction() then
+                LF.Combat.readyToFire(body, g)            -- rifle on the last-known position
+            end
+            return
+        end
     end
     setState(id, body, rec, m, "idle")
     m.targetId = nil
+    if inSquad then
+        if ax then followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
+        return
+    end
     if not body:isPerformingAnAction() and ZombRand(100) < CFG.wanderChance then
         walkNear(body, rec.homeX, rec.homeY, rec.homeZ, CFG.wanderRadius, "walk")
     end
@@ -315,6 +449,8 @@ local function act(id, body, rec, m)
             and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
             LF.Combat.engage(body, target, m.combat, m.combatOpts)
         end
+    elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
+        hunkerDown(body)
     elseif m.state == "flee" and m.hide and isAt(body, m.hide) then
         hunkerDown(body)
     end
@@ -365,7 +501,9 @@ function LF.Brain.report()
         local m = minds[id]
         if rec then
             local spot = m and (m.cover or m.hide)
-            LF.log("BRAIN #" .. id .. " " .. LF.Records.fullName(rec) .. " [" .. rec.faction .. "] state="
+            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "]"
+                .. (rec.squad and (" squad#" .. rec.squad .. (isSquadLeader(id, rec) and " (leader)" or "")) or "")
+                .. " state="
                 .. (m and m.state or "none") .. " target=" .. tostring(m and m.targetId)
                 .. " position=" .. (spot and (spot.x .. "," .. spot.y .. (isAt(body, spot) and " (there)" or " (en route)")) or "none")
                 .. " crouched=" .. tostring(body:isSneaking())

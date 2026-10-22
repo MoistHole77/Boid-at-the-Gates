@@ -4,6 +4,7 @@
 -- always rebuilt from its record.
 
 require "LivingFront/LF_Core"
+require "LivingFront/LF_Names"
 
 LF.Records = LF.Records or {}
 
@@ -42,14 +43,15 @@ local function newIdentity(factionKey)
     local faction = LF.Factions[factionKey]
     local female = ZombRand(100) < math.floor((faction.femaleChance or 0.5) * 100)
 
-    local forename, surname = "Survivor", "Unknown"
-    LF.try("random name", function()
+    local forename, surname = LF.Names.random(factionKey, female)
+    if not forename then forename, surname = "Survivor", "Unknown" end
+    if not LF.Names.byFaction[factionKey] then LF.try("random name", function()
         local desc = SurvivorFactory.CreateSurvivor()
         desc:setFemale(female)
         SurvivorFactory.randomName(desc)
         forename, surname = desc:getForename(), desc:getSurname()
         return true
-    end)
+    end) end
 
     local hairStyles = {}
     for _, style in ipairs(LF.try("hair styles", function() return javaListToTable(getAllHairStyles(female)) end) or {}) do

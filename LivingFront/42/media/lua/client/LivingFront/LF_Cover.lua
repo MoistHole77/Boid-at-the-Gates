@@ -122,19 +122,30 @@ end
 
 -- Best firing position for a fighter against a threat: LOW cover toward the threat, line of
 -- sight over it, within maxRange of the threat, preferring nearby squares and ones that don't
--- walk toward the enemy. Returns x, y, z, quality or nil.
-function LF.Cover.findFiringPosition(id, body, threat, maxRange)
+-- walk toward the enemy. With an anchor (ax, ay) and leash, only squares within leash tiles of
+-- the anchor count, and the search is centred there (a soldier stays near his team).
+-- `threat` may be a body or anything with getX/getY/getZ (a last-known position).
+-- Returns x, y, z, quality or nil.
+function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
     local cell = getCell()
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     local tx, ty = threat:getX(), threat:getY()
     local r = CFG.searchRadius
+    local cx, cy = bx, by
+    local leashSq = nil
+    if ax and leash then
+        cx, cy = math.floor(ax), math.floor(ay)
+        leashSq = leash * leash
+        if leash < r then r = math.ceil(leash) end
+    end
     local maxRangeSq = maxRange * maxRange
     local myThreatDist = LF.dist(bx, by, tx, ty)
     local bestScore, best = nil, nil
-    for x = bx - r, bx + r do
-        for y = by - r, by + r do
+    for x = cx - r, cx + r do
+        for y = cy - r, cy + r do
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
-            if tdsq <= maxRangeSq and tdsq > 9 then
+            if tdsq <= maxRangeSq and tdsq > 9
+                and (not leashSq or LF.distSq(x + 0.5, y + 0.5, ax, ay) <= leashSq) then
                 local q = LF.Cover.quality(x, y, bz, tx, ty)
                 if q == LOW and not isTaken(x, y, bz, id) then
                     local sq = cell:getGridSquare(x, y, bz)
@@ -155,8 +166,9 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange)
 end
 
 -- Best hiding spot for a wounded or unarmed NPC: out of the threat's sight (or behind HIGH
--- cover), not closer to the threat. Returns x, y, z or nil.
-function LF.Cover.findHidingSpot(id, body, threat)
+-- cover), not closer to the threat. With (rx, ry) - the squad's rear - spots nearer the rear
+-- are preferred, so the wounded fall back toward their own men. Returns x, y, z or nil.
+function LF.Cover.findHidingSpot(id, body, threat, rx, ry)
     local cell = getCell()
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     local tx, ty = threat:getX(), threat:getY()
@@ -172,6 +184,7 @@ function LF.Cover.findHidingSpot(id, body, threat)
                     local hidden = LF.Cover.quality(x, y, bz, tx, ty) == HIGH or not LF.Cover.canSeeFrom(x, y, bz, threat)
                     if hidden then
                         local score = -LF.dist(bx, by, x, y)
+                        if rx then score = score - 0.5 * LF.dist(x, y, rx, ry) end
                         if not bestScore or score > bestScore then
                             bestScore, best = score, { x, y, bz }
                         end
