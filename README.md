@@ -23,7 +23,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Squad-aware soldiers: formation slots and leash, shared contacts, spread fire, enemy-leader spotting, succession (incl. badly wounded leaders) | Working |
 | Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
 | Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots | Built, awaiting in-game test |
-| Casualty care by others, ammo, MG teams, platoon level | Later |
+| Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Built, awaiting in-game test |
+| Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
@@ -59,14 +60,16 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Suppress.lua` | Suppression: near misses pin soldiers, slowing and spoiling their fire |
 | `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders |
 | `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
+| `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
 | `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
 | `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |
 | `LF_Brain.lua` | Perceive / decide / act loop per NPC |
 | `LF_Debug.lua` | Right-click debug menu |
 
-`LivingFront/42/media/AnimSets/player/actions/` registers the game's own rifle aim, rifle fire
-and shot-reaction clips as action animations (`LF_AimRifle`, `LF_FireRifle`, `LF_HitShot`).
+`LivingFront/42/media/AnimSets/player/actions/` registers the game's own rifle aim, rifle fire,
+bolt-rack, magazine-reload and shot-reaction clips as action animations (`LF_AimRifle`,
+`LF_FireRifle`, `LF_RackBolt`, `LF_Reload`, `LF_HitShot`).
 
 ## Engine findings (Build 42.21)
 

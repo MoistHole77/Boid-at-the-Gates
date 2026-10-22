@@ -20,16 +20,15 @@ require "LivingFront/LF_Bodies"
 require "LivingFront/LF_ShootAction"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Sense"
+require "LivingFront/LF_Weapons"
 
 LF.Combat = LF.Combat or {}
 
-local RIFLE = "Base.HuntingRifle"
-local FIRE_TICKS = 150          -- minimum ticks between one shooter's shots (about 2.5 s)
 local TURN_TIMEOUT = 180        -- fire anyway if the turn has not finished after this many ticks
 local AIM_YAW_OFFSET = 45       -- +45 is to the right on the map grid (y points south)
 local SHOT_MEMORY = 600         -- how long gunfire is remembered (ticks, about 10 s)
 local AREA_FIRE_SLOWER = 1.5    -- area fire (at a last-known position) is paced slower than aimed fire
--- Suppression added per shot (see LF_Suppress).
+-- Suppression added per round (see LF_Suppress), scaled by the weapon's `suppress`.
 local SUPPRESS_HIT, SUPPRESS_MISS, SUPPRESS_SPLASH = 45, 30, 15
 local SPLASH_RADIUS = 2         -- tiles around the target that a shot also suppresses
 local AREA_RADIUS, SUPPRESS_AREA = 3, 25
@@ -73,21 +72,23 @@ local function loadGun(gun)
     gun:setJammed(false)
 end
 
-local function equipRifle(body)
-    local gun = body:getInventory():AddItem(RIFLE)
+local function equipGun(body, itemType)
+    local gun = body:getInventory():AddItem(itemType)
     body:setPrimaryHandItem(gun)
     if gun:isTwoHandWeapon() then body:setSecondaryHandItem(gun) end
     return gun
 end
 
--- Give a body a loaded rifle in both hands (if it has no firearm yet). Returns the gun.
+-- Make sure a body holds its own weapon (LF_Weapons: Kar98k, Mosin, MP40 or PPSh), loaded and in
+-- both hands. Returns the gun.
 function LF.Combat.arm(body)
+    local profile = LF.Weapons.profileOf(body)
     local gun = body:getPrimaryHandItem()
-    if not (gun and instanceof(gun, "HandWeapon") and gun:isRanged()) then
-        gun = LF.guard("equip rifle", equipRifle, body)
+    if not (gun and instanceof(gun, "HandWeapon") and gun:isRanged() and gun:getFullType() == profile.item) then
+        gun = LF.guard("equip " .. profile.name, equipGun, body, profile.item)
         if not gun then return nil end
+        LF.guard("load gun", loadGun, gun)
     end
-    LF.guard("load gun", loadGun, gun)
     return gun
 end
 
@@ -130,11 +131,12 @@ function LF.Combat.nearestRecentShot(x, y, range)
     return bx, by, math.sqrt(bestSq)
 end
 
--- Hit chance (percent): falls off with distance; a badly hurt shooter aims worse.
--- Target modifiers (cover, crouching) come from LF.Combat.targetModifier (LF_Cover.lua).
-local function hitChance(shooter, target, dist)
-    local chance = 75 - dist * 2.5
-    if chance < 20 then chance = 20 elseif chance > 75 then chance = 75 end
+-- Hit chance (percent) for one round: the weapon's accuracy falls off with distance (steeply
+-- for submachine guns); a badly hurt or suppressed shooter aims worse. Target modifiers (cover,
+-- crouching) come from LF.Combat.targetModifier (LF_Cover.lua).
+local function hitChance(shooter, target, dist, profile)
+    local chance = profile.accBase - dist * profile.accFall
+    if chance < profile.accMin then chance = profile.accMin elseif chance > profile.accBase then chance = profile.accBase end
     local hp = LF.Combat.health(shooter)
     if hp < 50 then chance = chance * (0.5 + hp / 100) end
     chance = chance * LF.Suppress.accuracy(shooter)
@@ -144,9 +146,9 @@ local function hitChance(shooter, target, dist)
     return chance
 end
 
-local function wound(target, partName, gun)
-    target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(gun:getMaxDamage() * 25)
-    target:getBodyDamage():ReduceGeneralHealth(IMPACT[partName] or 15)
+local function wound(target, partName, profile)
+    target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(profile.wound)
+    target:getBodyDamage():ReduceGeneralHealth((IMPACT[partName] or 15) * profile.impact)
 end
 
 local function flinch(target)
@@ -177,31 +179,35 @@ local function splash(shooter, x, y, radius, amount, skip)
     return splashCtx.n
 end
 
--- Resolve one shot: sound, noise, hit roll, and on a hit a wound, impact damage and a flinch.
--- The target and anyone hostile right next to it are suppressed either way.
+-- Resolve one round: sound, noise, hit roll, and on a hit a wound, impact damage and a flinch.
+-- The target and anyone hostile right next to it are suppressed either way. Returns false (and
+-- fires nothing) if the magazine is empty.
 function LF.Combat.resolveShot(shooter, target, gun)
+    if not LF.Weapons.useRound(shooter) then return false end
+    local profile = LF.Weapons.profileOf(shooter)
     LF.guard("shot effects", shotEffects, shooter, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
     if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
 
     local dist = LF.dist(shooter:getX(), shooter:getY(), target:getX(), target:getY())
-    local chance = hitChance(shooter, target, dist)
+    local chance = hitChance(shooter, target, dist, profile)
     local result = "MISS"
     if ZombRand(100) < chance then
         local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
         local partName = LF.pick(parts or BODY_PARTS)
-        LF.guard("wound", wound, target, partName, gun)
+        LF.guard("wound", wound, target, partName, profile)
         LF.guard("flinch", flinch, target)
         result = "HIT " .. partName
     end
-    LF.Suppress.add(target, result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT)
-    splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH, target)
+    LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)
+    splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH * profile.suppress, target)
     if LF.Config.logShots then
-        LF.log("SHOT #" .. tostring(shooter:getModData().LF_id) .. " -> #" .. tostring(target:getModData().LF_id)
+        LF.log("SHOT #" .. tostring(shooter:getModData().LF_id) .. " " .. profile.name .. " -> #" .. tostring(target:getModData().LF_id)
             .. " dist=" .. fmt(dist) .. " chance=" .. fmt(chance) .. " " .. result
             .. " stanceErr=" .. fmt(LF.Combat.stanceError(shooter, target))
             .. " targetHealth=" .. fmt(LF.Combat.health(target)))
     end
+    return true
 end
 
 -- One engagement step, called every tick while an NPC is fighting a target.
@@ -209,6 +215,10 @@ end
 -- opts (optional): aimAnim / fireAnim to use (e.g. crouched clips).
 function LF.Combat.engage(shooter, target, state, opts)
     if shooter:isPerformingAnAction() then return end
+    if LF.Weapons.rounds(shooter) <= 0 then
+        LF.Weapons.reload(shooter, LF.Combat.arm(shooter), "empty")
+        return
+    end
     if state.nextFire and LF.tick < state.nextFire then
         -- Between shots: hold the aiming stance, only correcting for target movement.
         LF.Combat.readyToFire(shooter, target)
@@ -222,30 +232,38 @@ function LF.Combat.engage(shooter, target, state, opts)
     end
 
     state.turnStart = nil
-    state.nextFire = LF.tick + (FIRE_TICKS + ZombRand(60)) * LF.Suppress.cadence(shooter)
+    local profile = LF.Weapons.profileOf(shooter)
+    state.nextFire = LF.tick + (profile.interval + ZombRand(40)) * LF.Suppress.cadence(shooter)
     local gun = LF.Combat.arm(shooter)
     if not gun then return end
     ISTimedActionQueue.add(LF_ShootAction:new(shooter, target, gun, function(s, t)
-        LF.Combat.resolveShot(s, t, gun)
-    end, opts and opts.aimAnim, opts and opts.fireAnim))
+        return LF.Combat.resolveShot(s, t, gun)
+    end, opts and opts.aimAnim, opts and opts.fireAnim, profile))
 end
 
 -- Area fire: one shot at a point (anything with getX/getY/getZ/isDead, e.g. where the enemy was
 -- last seen). No hit roll; it suppresses everyone hostile near the point.
 function LF.Combat.resolveAreaShot(shooter, point, gun)
+    if not LF.Weapons.useRound(shooter) then return false end
+    local profile = LF.Weapons.profileOf(shooter)
     LF.guard("shot effects", shotEffects, shooter, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
     if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
-    local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA, nil)
+    local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA * profile.suppress, nil)
     if LF.Config.logAreaFire then
         LF.log("AREA #" .. tostring(shooter:getModData().LF_id) .. " -> " .. math.floor(point:getX()) .. ","
             .. math.floor(point:getY()) .. " suppressing " .. n)
     end
+    return true
 end
 
 -- One area-fire step (same rhythm as engage, paced slower).
 function LF.Combat.engageArea(shooter, point, state)
     if shooter:isPerformingAnAction() then return end
+    if LF.Weapons.rounds(shooter) <= 0 then
+        LF.Weapons.reload(shooter, LF.Combat.arm(shooter), "empty")
+        return
+    end
     if state.nextFire and LF.tick < state.nextFire then
         LF.Combat.readyToFire(shooter, point)
         return
@@ -254,12 +272,13 @@ function LF.Combat.engageArea(shooter, point, state)
     local ready = LF.Combat.readyToFire(shooter, point)
     if not ready and LF.tick - state.turnStart < TURN_TIMEOUT then return end
     state.turnStart = nil
-    state.nextFire = LF.tick + (FIRE_TICKS + ZombRand(60)) * AREA_FIRE_SLOWER * LF.Suppress.cadence(shooter)
+    local profile = LF.Weapons.profileOf(shooter)
+    state.nextFire = LF.tick + (profile.interval + ZombRand(40)) * AREA_FIRE_SLOWER * LF.Suppress.cadence(shooter)
     local gun = LF.Combat.arm(shooter)
     if not gun then return end
     ISTimedActionQueue.add(LF_ShootAction:new(shooter, point, gun, function(s, p)
-        LF.Combat.resolveAreaShot(s, p, gun)
-    end))
+        return LF.Combat.resolveAreaShot(s, p, gun)
+    end, nil, nil, profile))
 end
 
 function LF.Combat.armAllSoldiers()
@@ -268,6 +287,6 @@ function LF.Combat.armAllSoldiers()
         local rec = LF.Records.get(id)
         if rec and rec.faction ~= "CIV" and LF.Combat.arm(body) then n = n + 1 end
     end
-    LF.log("COMBAT armed " .. n .. " soldiers with " .. RIFLE)
+    LF.log("COMBAT armed " .. n .. " soldiers")
     LF.say("Armed " .. n .. " soldiers")
 end

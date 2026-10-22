@@ -14,6 +14,7 @@ require "LivingFront/LF_Units"
 require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
+require "LivingFront/LF_Weapons"
 
 LF.Debug = LF.Debug or {}
 
@@ -73,6 +74,7 @@ local function deleteAll()
     LF.Squad.forgetAll()
     LF.Suppress.forgetAll()
     LF.Tactics.forgetAll()
+    LF.Weapons.forgetAll()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
 end

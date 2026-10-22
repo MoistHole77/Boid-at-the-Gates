@@ -33,6 +33,7 @@ require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Aid"
+require "LivingFront/LF_Weapons"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -601,6 +602,17 @@ local function hunkerDown(body)
     if not body:isPerformingAnAction() and not LF.Posture.crouched(body) then LF.Posture.set(body, true) end
 end
 
+-- In a lull (nothing in his own sights), top up a magazine that is half empty or worse - or any
+-- part-used one when there is no fight at all.
+local function topUp(body, m, full)
+    if body:isPerformingAnAction() or LF.tick - (m.lastTopUp or -10000) < 120 then return false end
+    local profile = LF.Weapons.profileOf(body)
+    local left = LF.Weapons.rounds(body)
+    if left >= profile.clip or (not full and left > profile.clip * 0.5) then return false end
+    m.lastTopUp = LF.tick
+    return LF.Weapons.reload(body, LF.Combat.arm(body), "topping up")
+end
+
 -- Per-tick behaviour for states that need it.
 local function act(id, body, rec, m)
     local st = m.state
@@ -615,6 +627,7 @@ local function act(id, body, rec, m)
             hunkerDown(body)
             if m.cover.loose then return end
         end
+        if m.fighter and topUp(body, m, false) then return end
         local p = m.point
         if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= CFG.sightRange * CFG.sightRange then
             LF.Combat.engageArea(body, p, m.combat)
@@ -633,6 +646,9 @@ local function act(id, body, rec, m)
         end
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
+        if m.fighter then topUp(body, m, false) end
+    elseif m.state == "idle" and m.fighter and LF.Combat.isArmed(body) then
+        topUp(body, m, true)
     elseif m.state == "flee" then
         local safe = (m.hide and isAt(body, m.hide)) or m.atRear
         if m.hide and isAt(body, m.hide) then hunkerDown(body) end
@@ -697,6 +713,7 @@ local function onTick()
                 LF.Cover.release(id)
                 LF.Posture.forget(id)
                 LF.Suppress.forget(id)
+                LF.Weapons.forget(id)
                 minds[id] = nil
             end
         end
@@ -722,6 +739,8 @@ function LF.Brain.report()
                 .. (m and m.state or "none") .. " target=" .. tostring(m and m.targetId)
                 .. " position=" .. (spot and (spot.x .. "," .. spot.y .. (isAt(body, spot) and " (there)" or " (en route)")) or "none")
                 .. " order=" .. tostring(m and m.order) .. " suppression=" .. math.floor(LF.Suppress.value(body))
+                .. ((rec.faction ~= "CIV" or LF.Combat.isArmed(body))
+                    and (" weapon=" .. LF.Weapons.profile(rec).name .. " rounds=" .. LF.Weapons.rounds(body)) or "")
                 .. " crouched=" .. tostring(body:isSneaking())
                 .. " running=" .. tostring(body:isRunning()) .. " sprinting=" .. tostring(body:isSprinting())
                 .. " anim=" .. tostring(body:getCurrentActionContextStateName())
