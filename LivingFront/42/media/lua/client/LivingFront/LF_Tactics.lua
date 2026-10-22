@@ -1,12 +1,17 @@
 -- Living Front: unit tactics - the sergeant's intent and the corporals' drills.
 --
+-- When a fight breaks out, nobody gives orders for the first few seconds (CFG.bearingsTicks):
+-- every soldier returns fire, gets into the nearest cover and keeps firing on his own. Only
+-- then does the commander take stock and start giving orders.
 -- Orders flow one level down (see the squad tactics design doc):
 --   Commander (sergeant, or the corporal of a lone team) picks the unit's intent from what the
 --   unit knows: ADVANCE while the enemy is out of range, HOLD once in range or when most fit men
 --   are pinned, FALL BACK after heavy losses. He shouts it; corporals within earshot take it up.
---   If a fight in range stalls (HOLD for a while, the unit healthy and not pinned), a sergeant
---   orders a FLANK: his alpha teams maneuver around one side (the side with more cover) while
---   his bravo teams hold and pin the enemy down; when the alphas are in position, all hold.
+--   Once his squad has fire superiority (enough of the enemy near the contact is suppressed)
+--   and it is healthy and not pinned itself, a sergeant orders a FLANK: his alpha teams
+--   maneuver around one side (the side with more cover) while his bravo teams hold and keep the
+--   enemy pinned; when the alphas are in position, all hold. Only one side of a fight can be
+--   flanking at a time.
 --   Corporal turns the order into a drill for his team's two elements (pairs):
 --     HOLD     - both pairs take cover around their positions and fire
 --     ADVANCE  - bounding: one pair runs a bound forward past the other while the other covers
@@ -25,6 +30,7 @@ require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
+require "LivingFront/LF_Sense"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -43,8 +49,11 @@ local CFG = {
     pinnedHold = 0.5,       -- hold when this share of the fit men is pinned
     fitHealth = 35,
     shoutTicks = 150,       -- how long shouted words stay over a head
+    bearingsTicks = 300,    -- the first ~5 s of a fight: everyone for himself, no orders
     -- Flanking (squads only)
-    stalemateTicks = 600,   -- HOLD this long with the enemy in range -> consider a flank (~10 s)
+    flankMinHold = 180,     -- HOLD at least ~3 s before considering a flank
+    flankSuperiority = 0.5, -- ... and at least this share of the enemy near the contact suppressed
+    superiorityRadius = 25, -- enemies within this of the contact count toward that share
     flankCooldown = 1800,   -- ... at most once per 30 s
     flankFit = 0.6,         -- ... only while at least this share of the squad is fit
     flankPinned = 0.34,     -- ... and less than this share of the fit men is pinned
@@ -172,6 +181,13 @@ end
 function LF.Tactics.intent(squadId)
     local sq = squads[squadId]
     return sq and sq.intent
+end
+
+-- Is this unit in the opening seconds of a fight (no orders yet; everyone returns fire and
+-- takes cover on his own)?
+function LF.Tactics.bearings(squadId)
+    local sq = squads[squadId]
+    return sq ~= nil and sq.fightStart ~= nil and not sq.intent and LF.tick - sq.fightStart < CFG.bearingsTicks
 end
 
 -- ---- corporal: drills -----------------------------------------------------------------------
@@ -329,6 +345,31 @@ local function planFlank(squad, c)
     return plan
 end
 
+-- Fire superiority: the share of enemy soldiers near the contact who are suppressed.
+local supCtx = {}
+local function countSuppressed(e, _dsq, ctx)
+    if LF.isHostile(ctx.faction, e.rec.faction) and not e.body:isDead() then
+        ctx.total = ctx.total + 1
+        if LF.Suppress.isSuppressed(e.body) then ctx.supp = ctx.supp + 1 end
+    end
+end
+local function enemySuppression(squad, c)
+    supCtx.faction, supCtx.total, supCtx.supp = squad.faction, 0, 0
+    LF.Sense.near(c.x, c.y, CFG.superiorityRadius, countSuppressed, supCtx)
+    return supCtx.supp, supCtx.total
+end
+
+-- Is a squad of another faction flanking right now? (Only one side flanks at a time.)
+local function otherSideFlanking(faction)
+    for sid, s in pairs(squads) do
+        if s.intent == "FLANK" then
+            local u = LF.Units.get(sid)
+            if u and u.faction ~= faction then return true end
+        end
+    end
+    return false
+end
+
 -- What a team should do under the squad's intent.
 local function orderFor(team, sq)
     if sq.intent == "FLANK" then
@@ -370,7 +411,16 @@ local function updateSquad(squad)
             setIntent(squad, sq, cid, nil, "no contact")
             for _, tid in ipairs(squad.teams) do teams[tid] = nil end
         end
+        sq.fightStart = nil
         return
+    end
+    -- A fight has just broken out: no orders until the men have got their bearings.
+    if not sq.intent then
+        if not sq.fightStart then
+            sq.fightStart = LF.tick
+            LF.log("CONTACT " .. squad.name .. ": fight breaks out, every man returns fire and takes cover")
+        end
+        if LF.tick - sq.fightStart < CFG.bearingsTicks then return end
     end
     if not sq.contact then sq.contact = LF.Tactics.point(c.x, c.y, c.z)
     else sq.contact.x, sq.contact.y, sq.contact.z = c.x, c.y, c.z end
@@ -432,15 +482,19 @@ local function updateSquad(squad)
         if done then intent, why = "HOLD", "flankers in position"
         elseif sq.flank and LF.tick - sq.flank.started > CFG.flankTimeout then intent, why = "HOLD", "flank took too long" end
     elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume
-        and LF.tick - (sq.holdSince or LF.tick) >= CFG.stalemateTicks
+        and LF.tick - (sq.holdSince or LF.tick) >= CFG.flankMinHold
         and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
-        and total > 0 and fitN / total >= CFG.flankFit and (fitN == 0 or pinnedN / fitN < CFG.flankPinned) then
-        local plan = planFlank(squad, c)
-        if plan then
-            sq.flank = plan
-            intent, why = "FLANK", "stalemate"
-        else
-            sq.lastFlank = LF.tick
+        and total > 0 and fitN / total >= CFG.flankFit and (fitN == 0 or pinnedN / fitN < CFG.flankPinned)
+        and not otherSideFlanking(squad.faction) then
+        local supp, enemies = enemySuppression(squad, c)
+        if enemies > 0 and supp / enemies >= CFG.flankSuperiority then
+            local plan = planFlank(squad, c)
+            if plan then
+                sq.flank = plan
+                intent, why = "FLANK", "fire superiority: " .. supp .. "/" .. enemies .. " enemy suppressed"
+            else
+                sq.lastFlank = LF.tick
+            end
         end
     elseif intent == "ADVANCE" and front <= CFG.advanceStop then
         intent, why = "HOLD", "in range (" .. math.floor(front) .. " tiles)"

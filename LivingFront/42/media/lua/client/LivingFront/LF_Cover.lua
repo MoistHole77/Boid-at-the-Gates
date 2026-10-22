@@ -165,35 +165,65 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
     return nil
 end
 
--- Best hiding spot for a wounded or unarmed NPC: out of the threat's sight (or behind HIGH
--- cover), not closer to the threat. With (rx, ry) - the squad's rear - spots nearer the rear
--- are preferred, so the wounded fall back toward their own men. Returns x, y, z or nil.
-function LF.Cover.findHidingSpot(id, body, threat, rx, ry)
+-- Is anyone else's spot within a tile of (x, y)? (Two wounded men don't share a corner.)
+local function crowded(x, y, z, id)
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if isTaken(x + dx, y + dy, z, id) then return true end
+        end
+    end
+    return false
+end
+
+local hideCands = {}
+local function byScoreDesc(a, b) return a.score > b.score end
+
+-- Best hiding spot for a wounded or unarmed NPC. It must be hidden (behind HIGH cover or out of
+-- sight) from the threat AND from every other known enemy position in `others` (points with
+-- getX/getY/getZ), no closer to the threat, and - when (rx, ry), the squad's rear, is given -
+-- no further from the rear than the soldier already is: the wounded fall back toward their own
+-- men, never across the field. Candidates are scored cheaply first and sight lines are only
+-- checked from the best down, so extra enemies cost little. Returns x, y, z or nil.
+function LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
     local cell = getCell()
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     local tx, ty = threat:getX(), threat:getY()
     local r = CFG.searchRadius
     local myThreatDistSq = LF.distSq(bx, by, tx, ty)
-    local bestScore, best = nil, nil
+    local myRear = rx and LF.dist(bx, by, rx, ry)
+    local n = 0
     for x = bx - r, bx + r do
         for y = by - r, by + r do
-            local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
-            if tdsq >= myThreatDistSq and not isTaken(x, y, bz, id) then
+            if LF.distSq(x + 0.5, y + 0.5, tx, ty) >= myThreatDistSq
+                and (not rx or LF.dist(x, y, rx, ry) <= myRear + 1)
+                and not crowded(x, y, bz, id) then
                 local sq = cell:getGridSquare(x, y, bz)
                 if sq and standable(sq, body) then
-                    local hidden = LF.Cover.quality(x, y, bz, tx, ty) == HIGH or not LF.Cover.canSeeFrom(x, y, bz, threat)
-                    if hidden then
-                        local score = -LF.dist(bx, by, x, y)
-                        if rx then score = score - 0.5 * LF.dist(x, y, rx, ry) end
-                        if not bestScore or score > bestScore then
-                            bestScore, best = score, { x, y, bz }
-                        end
-                    end
+                    n = n + 1
+                    local c = hideCands[n]
+                    if not c then c = {}; hideCands[n] = c end
+                    c.x, c.y = x, y
+                    c.score = -LF.dist(bx, by, x, y) - (rx and 0.5 * LF.dist(x, y, rx, ry) or 0)
                 end
             end
         end
     end
-    if best then return best[1], best[2], best[3] end
+    for i = #hideCands, n + 1, -1 do hideCands[i] = nil end
+    table.sort(hideCands, byScoreDesc)
+    for i = 1, math.min(n, 25) do        -- sight checks only for the 25 best candidates
+        local c = hideCands[i]
+        local hidden = LF.Cover.quality(c.x, c.y, bz, tx, ty) == HIGH or not LF.Cover.canSeeFrom(c.x, c.y, bz, threat)
+        if hidden and others then
+            for j = 1, #others do
+                local o = others[j]
+                if not (LF.Cover.quality(c.x, c.y, bz, o:getX(), o:getY()) == HIGH or not LF.Cover.canSeeFrom(c.x, c.y, bz, o)) then
+                    hidden = false
+                    break
+                end
+            end
+        end
+        if hidden then return c.x, c.y, bz end
+    end
     return nil
 end
 

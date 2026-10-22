@@ -30,11 +30,19 @@ function LF.Squad.forgetAll() know = {} end
 
 -- ---- contacts -------------------------------------------------------------------------------
 
+-- Contacts double as points (getX/getY/getZ) for cover and sight-line checks.
+local CPOINT = {}
+CPOINT.__index = CPOINT
+function CPOINT:getX() return self.x end
+function CPOINT:getY() return self.y end
+function CPOINT:getZ() return self.z end
+function CPOINT:isDead() return false end
+
 -- A member saw an enemy body: remember where it was.
 function LF.Squad.report(squadId, enemyId, enemy)
     local c = knowledge(squadId).contacts[enemyId]
     if not c then
-        c = { id = enemyId }
+        c = setmetatable({ id = enemyId }, CPOINT)
         knowledge(squadId).contacts[enemyId] = c
     end
     c.x, c.y, c.z, c.tick = enemy:getX(), enemy:getY(), enemy:getZ(), LF.tick
@@ -56,6 +64,20 @@ function LF.Squad.bestContact(squadId, x, y, maxAge, range)
         end
     end
     return best
+end
+
+-- Up to maxN contacts seen within maxAge ticks (a fresh array each call).
+function LF.Squad.contactPoints(squadId, maxAge, maxN)
+    local out = {}
+    local k = know[squadId]
+    if not k then return out end
+    for _, c in pairs(k.contacts) do
+        if LF.tick - c.tick <= maxAge then
+            out[#out + 1] = c
+            if #out >= maxN then break end
+        end
+    end
+    return out
 end
 
 -- ---- enemy leaders --------------------------------------------------------------------------

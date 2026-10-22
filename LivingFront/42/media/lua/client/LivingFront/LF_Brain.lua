@@ -56,6 +56,7 @@ local CFG = {
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
     holdLeash = 4,          -- ... and within this of their spot while their unit has orders
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
+    bearingsLeash = 5,      -- opening seconds of a fight: take the nearest cover within this many tiles
     followDistance = 2.5,   -- idle squad soldiers walk back to their slot beyond this distance
     followReissueTicks = 90,
     rearDistance = 8,       -- the squad's rear is this far behind its leader
@@ -218,7 +219,7 @@ end
 
 -- Wounded fighters: find somewhere out of the threat's sight before simply running.
 -- (rx, ry): the squad's rear, preferred so the wounded stay near their own men.
-local function planHide(id, body, m, threat, rx, ry)
+local function planHide(id, body, m, threat, rx, ry, others)
     if m.hide then
         if isAt(body, m.hide) then return true end
         if LF.tick - m.hide.since <= CFG.coverGiveUpTicks then
@@ -229,7 +230,7 @@ local function planHide(id, body, m, threat, rx, ry)
     end
     if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return false end
     m.lastCoverSearch = LF.tick
-    local x, y, z = LF.Cover.findHidingSpot(id, body, threat, rx, ry)
+    local x, y, z = LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
     if x then
         takeSpot(id, body, m, "hide", x, y, z, "hiding spot")
         return true
@@ -388,7 +389,8 @@ local function decide(id, body, rec, m)
         end
         local rx, ry, rz = nil, nil, nil
         if inSquad then rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance) end
-        if not (fighter and planHide(id, body, m, threat, rx, ry)) then
+        local others = inSquad and LF.Squad.contactPoints(rec.squad, CFG.contactMemory, 6) or nil
+        if not (fighter and planHide(id, body, m, threat, rx, ry, others)) then
             if rx then
                 fallBack(m, body, rx, ry, rz)
             else
@@ -417,6 +419,35 @@ local function decide(id, body, rec, m)
             if rx and not m.hide then fallBack(m, body, rx, ry, rz) end
         end
         return
+    end
+    -- The opening seconds of a fight, before any orders: return fire at once, then get into the
+    -- nearest cover and keep firing from there.
+    local bearings = fighter and inSquad and LF.Tactics.bearings(rec.squad)
+    if not bearings then
+        m.bearX = nil
+    else
+        if not m.bearX then
+            m.bearX, m.bearY = body:getX(), body:getY()
+            if isMoving(body) then ISTimedActionQueue.clear(body) end   -- stop and shoot
+        end
+        if pick and dist <= CFG.fireRange then
+            if m.state ~= "engage" then
+                setState(id, body, rec, m, "engage", "returning fire at #" .. threatId .. " " .. title(pick.rec))
+            end
+            m.targetId, m.targetDist = threatId, dist
+            -- First shot first; then the nearest cover.
+            if m.combat.nextFire then planCover(id, body, m, threat, m.bearX, m.bearY, CFG.bearingsLeash) end
+            return
+        end
+        local c = pick and { x = threat:getX(), y = threat:getY(), z = threat:getZ() }
+            or LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
+        if c then
+            local g = ghostOf(m, c)
+            setState(id, body, rec, m, "alert", "returning fire at " .. math.floor(c.x) .. "," .. math.floor(c.y))
+            m.targetId, m.order, m.point = nil, "bearings", g
+            if m.combat.nextFire then planCover(id, body, m, g, m.bearX, m.bearY, CFG.bearingsLeash) end
+            return
+        end
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
@@ -518,7 +549,7 @@ local function act(id, body, rec, m)
             hunkerDown(body)
         end
         local p = m.point
-        if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= (CFG.fireRange + 5) * (CFG.fireRange + 5) then
+        if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= CFG.sightRange * CFG.sightRange then
             LF.Combat.engageArea(body, p, m.combat)
         end
         return

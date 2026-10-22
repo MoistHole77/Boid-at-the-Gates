@@ -22,7 +22,7 @@ Pure Lua. No Java, no ZombieBuddy.
 | Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Working (stress-tested: ~60-80 bodies is the practical budget) |
 | Squad-aware soldiers: formation slots and leash, shared contacts, spread fire, enemy-leader spotting, succession (incl. badly wounded leaders) | Working |
 | Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
-| Squad maneuver: flanking (alpha teams go round, bravo teams pin); self-aid for the wounded | Built, awaiting in-game test |
+| Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots | Built, awaiting in-game test |
 | Casualty care by others, ammo, MG teams, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
