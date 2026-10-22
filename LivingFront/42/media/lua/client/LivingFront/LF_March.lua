@@ -466,7 +466,7 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
             if not M.joined[rid] and math.min(M.head, M.total) >= M.proj[rid] - 1 then
                 M.joined[rid] = true
             end
-            if M.joined[rid] then
+            if M.joined[rid] and rid ~= M.order[1] then
                 local x, y = placeOf(M, rid)
                 local d = LF.dist(b:getX(), b:getY(), x, y)
                 if d > CFG.waitBehind then
@@ -481,16 +481,26 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         end
     end
     if M.head < M.total then
+        -- The point man is the base: the formation is wherever he has got to along the route
+        -- (he walks toward a point just ahead of his place, so he keeps drawing it on). If he is
+        -- held up for ~5 s, the head edges on by itself so the patrol can't freeze on him.
         local base = M.order[1]
         local pb = LF.Bodies.get(base)
-        local keeping = true
-        if pb then
-            local x, y = placeOf(M, base)
-            keeping = LF.dist(pb:getX(), pb:getY(), x, y) <= CFG.baseSlack
+        local rb = LF.Records.get(base)
+        local before = M.head
+        if pb and rb and rb.alive and not pb:isDead() then
+            local ps = project(M, pb:getX(), pb:getY())
+            if ps > M.head then M.head = math.min(M.total, ps) end
+        else
+            M.head = math.min(M.total, M.head + (LF.Move and (LF.Move.adsPace or LF.Move.DEFAULT_ADS) or 0.9) * 0.5)
         end
-        -- The head walks at the aiming pace (tactics updates are every 30 ticks = 0.5 s).
-        local step = (LF.Move and (LF.Move.adsPace or LF.Move.DEFAULT_ADS) or 0.9) * 0.5
-        if keeping then M.head = math.min(M.total, M.head + step) end
+        if M.head > before + 0.05 then
+            M.headMovedAt = LF.tick
+        elseif LF.tick - (M.headMovedAt or LF.tick) > 300 then
+            M.head = math.min(M.total, M.head + 1)
+            M.headMovedAt = LF.tick
+        end
+        M.headMovedAt = M.headMovedAt or LF.tick
         return true
     end
     if done or LF.tick - (M.endAt or LF.tick) > 1800 then

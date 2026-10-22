@@ -617,7 +617,13 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     if body:isPerformingAnAction() and not isMoving(body) then return end
     if not isMoving(body) and LF.tick - m.lastPath > 60 then
         if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
-        walkTo(body, tx, ty, math.floor(sz), walkGait)
+        -- His exact square if he can stand there and got there last time; otherwise near it.
+        local sq = getCell():getGridSquare(tx, ty, math.floor(sz))
+        if sq and sq:isFree(false) and not stuckNear(m, tx + 0.5, ty + 0.5) then
+            walkTo(body, tx, ty, math.floor(sz), walkGait)
+        else
+            walkNear(body, tx + 0.5, ty + 0.5, sz, 2, walkGait)
+        end
         m.lastPath = LF.tick
         if m.scanUntil and LF.tick < m.scanUntil then carryScan(body, m) end
     end
@@ -745,7 +751,7 @@ local function decide(id, body, rec, m)
             m.stuck = nil
             return
         end
-        if role and stuckNear(m, sx, sy) then
+        if role and role ~= "file" and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
             if role == "move" then role = "hold" end
