@@ -13,19 +13,21 @@ require "LivingFront/LF_Appearance"
 LF.Bodies = LF.Bodies or {}
 
 local bodies = {}      -- record id -> IsoPlayer
-local tick = 0
+
+local function readStat(body, name)
+    return body:getStats():get(CharacterStat[name])
+end
+
+local function writeStat(body, name, value)
+    body:getStats():set(CharacterStat[name], value)
+end
 
 local function getStat(body, name)
-    return LF.try("stat get " .. name, function()
-        return body:getStats():get(CharacterStat[name])
-    end)
+    return LF.guard("stat get " .. name, readStat, body, name)
 end
 
 local function setStat(body, name, value)
-    LF.try("stat set " .. name, function()
-        body:getStats():set(CharacterStat[name], value)
-        return true
-    end)
+    LF.guard("stat set " .. name, writeStat, body, name, value)
 end
 
 -- Copy a body's live state back into its record.
@@ -57,12 +59,15 @@ function LF.Bodies.spawn(rec)
     end)
     if not body then return nil end
 
-    LF.try("setNpc", function() body:setNpc(true); return true end)
-    LF.try("setSceneCulled", function() body:setSceneCulled(false); return true end)
-    -- No upper-body twist: for an NPC the twist target is an arbitrary aim point, which made
-    -- soldiers aim off to the side even though their bodies faced the target.
-    LF.try("setMaxTwist", function() body:setMaxTwist(0); return true end)
-    LF.try("addToWorld", function() body:addToWorld(); return true end)
+    LF.try("setup body", function()
+        body:setNpc(true)
+        body:setSceneCulled(false)
+        -- No upper-body twist: for an NPC the twist target is an arbitrary aim point, which made
+        -- soldiers aim off to the side even though their bodies faced the target.
+        body:setMaxTwist(0)
+        body:addToWorld()
+        return true
+    end)
     LF.try("identity", function()
         local name = LF.Records.fullName(rec)
         body:setUsername(name)
@@ -87,8 +92,11 @@ function LF.Bodies.despawn(id)
     if not body then return end
     local rec = LF.Records.get(id)
     if rec then LF.Bodies.sync(rec, body) end
-    LF.try("removeFromWorld", function() body:removeFromWorld(); return true end)
-    LF.try("removeFromSquare", function() body:removeFromSquare(); return true end)
+    LF.try("remove body", function()
+        body:removeFromWorld()
+        body:removeFromSquare()
+        return true
+    end)
     bodies[id] = nil
     LF.log("despawned #" .. id)
 end
@@ -111,6 +119,8 @@ local function managerPass()
     if not player or player:isDead() then return end
     local px, py = player:getX(), player:getY()
     local cfg = LF.Config
+    local spawnSq = cfg.spawnRadius * cfg.spawnRadius
+    local despawnSq = cfg.despawnRadius * cfg.despawnRadius
     local spawned = 0
 
     for id, rec in pairs(LF.Records.all()) do
@@ -122,12 +132,11 @@ local function managerPass()
             bodies[id] = nil
             LF.log("#" .. id .. " " .. LF.Records.fullName(rec) .. " DIED at " .. math.floor(rec.x) .. "," .. math.floor(rec.y))
         elseif body then
-            local d = LF.dist(body:getX(), body:getY(), px, py)
-            if d > cfg.despawnRadius then
+            if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq then
                 LF.Bodies.despawn(id)
             end
         elseif rec.alive and spawned < cfg.maxSpawnsPerPass then
-            if LF.dist(rec.x, rec.y, px, py) < cfg.spawnRadius then
+            if LF.distSq(rec.x, rec.y, px, py) < spawnSq then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end
             end
         end
@@ -135,24 +144,26 @@ local function managerPass()
 end
 
 local function onTick()
-    tick = tick + 1
-    if tick % LF.Config.managerInterval == 0 then
-        LF.try("managerPass", function() managerPass(); return true end)
+    if LF.tick % LF.Config.managerInterval == 0 then
+        LF.guard("managerPass", managerPass)
     end
 end
 
--- Draw every body, mirroring FBORenderCell.renderPlayer(): shadow, then render.
+-- Draw one body, mirroring FBORenderCell.renderPlayer(): shadow, then render.
+local function drawBody(body, playerIndex)
+    local sq = body:getCurrentSquare()
+    if not sq or not body:isOnScreen() then return end
+    local light = sq:getLightInfo(playerIndex)
+    if not light then return end
+    local x, y, z = body:getX(), body:getY(), body:getZ()
+    body:renderShadow(x, y, z)
+    body:render(x, y, z, light, true, false, nil)
+end
+
+-- One guarded call per body per frame, with no closures created.
 local function onRenderOpaque(playerIndex, _x, _y, _z, _square)
     for _, body in pairs(bodies) do
-        local sq = body:getCurrentSquare()
-        if sq and body:isOnScreen() then
-            local light = sq:getLightInfo(playerIndex)
-            if light then
-                local x, y, z = body:getX(), body:getY(), body:getZ()
-                LF.try("renderShadow", function() body:renderShadow(x, y, z); return true end)
-                LF.try("render", function() body:render(x, y, z, light, true, false, nil); return true end)
-            end
-        end
+        LF.guard("draw body", drawBody, body, playerIndex)
     end
 end
 

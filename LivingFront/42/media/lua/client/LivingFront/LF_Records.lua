@@ -10,12 +10,20 @@ LF.Records = LF.Records or {}
 local DATA_KEY = "LivingFront"
 LF.Records.SCHEMA = 2   -- bump when the record layout changes
 
+-- The ModData table is fetched once and cached: records are read every tick by the brain, and
+-- ModData.getOrCreate is a Java call. The cache is dropped whenever the game (re)loads world data.
+local cached = nil
+
 local function store()
+    if cached then return cached end
     local data = ModData.getOrCreate(DATA_KEY)
     if not data.nextId then data.nextId = 1 end
     if not data.npcs then data.npcs = {} end
+    cached = data
     return data
 end
+
+Events.OnInitGlobalModData.Add(function() cached = nil end)
 
 local function javaListToTable(list)
     local out = {}

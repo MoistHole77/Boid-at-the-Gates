@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.3.2"
+LF.VERSION = "0.3.3"
 
 LF.Config = {
     spawnRadius = 30,        -- a record gets a body when the player is within this many tiles
@@ -10,6 +10,7 @@ LF.Config = {
     maxSpawnsPerPass = 2,    -- spread spawns over frames to avoid hitches
     -- Off-screen need rates per 10 in-game minutes, measured from a spawned body in testing.
     rates = { hunger = 0.0037, thirst = 0.0031, fatigue = 0.0042 },
+    logShots = true,         -- one log line per shot (debugging); turn off for long sessions
 }
 
 -- femaleChance: share of new NPCs who are women. Soldiers are all men; civilians lean female
@@ -57,18 +58,41 @@ function LF.log(msg)
     print(TAG .. tostring(msg))
 end
 
+local function reportOnce(label, err)
+    if not seenErrors[label] then
+        seenErrors[label] = true
+        LF.log(label .. " FAILED: " .. tostring(err))
+    end
+end
+
 -- Runs fn in pcall. Logs each distinct failure label once, returns nil on failure.
+-- For rare, one-off calls (spawning, dressing): it costs a closure per call.
 function LF.try(label, fn)
     local ok, result = pcall(fn)
     if not ok then
-        if not seenErrors[label] then
-            seenErrors[label] = true
-            LF.log(label .. " FAILED: " .. tostring(result))
-        end
+        reportOnce(label, result)
         return nil
     end
     return result
 end
+
+-- Like LF.try, but passes arguments straight to fn, so hot paths (per tick, per frame) don't
+-- allocate a closure on every call. Returns up to three results.
+function LF.guard(label, fn, ...)
+    local ok, a, b, c = pcall(fn, ...)
+    if not ok then
+        reportOnce(label, a)
+        return nil
+    end
+    return a, b, c
+end
+
+-- One shared game clock (ticks since load) for every module.
+LF.tick = 0
+function LF.now()
+    return LF.tick
+end
+Events.OnTick.Add(function() LF.tick = LF.tick + 1 end)
 
 -- Speech bubble over the real player, for debug feedback.
 function LF.say(text)
@@ -83,4 +107,10 @@ end
 function LF.dist(x1, y1, x2, y2)
     local dx, dy = x1 - x2, y1 - y2
     return math.sqrt(dx * dx + dy * dy)
+end
+
+-- Squared distance: compare against range * range to skip the square root in loops.
+function LF.distSq(x1, y1, x2, y2)
+    local dx, dy = x1 - x2, y1 - y2
+    return dx * dx + dy * dy
 end
