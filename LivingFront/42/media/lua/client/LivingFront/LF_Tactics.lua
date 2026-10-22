@@ -61,7 +61,11 @@ local CFG = {
     flankStandoff = 10,     -- final waypoint: this far short of the enemy (along the squad's facing) ...
     flankWide = 16,         -- ... and this far off to the side of him
     counterFlankTicks = 1500, -- after one side starts a flank, the other must wait this long (~25 s)
-    flankPushes = 2,        -- a flanking team that can't see the enemy at the end pushes on this many times
+    flankPushes = 2,
+    -- Stalemate: if neither side reaches fire superiority for this long, the side with the better
+    -- share of the enemy suppressed flanks anyway (battles should still last a while).
+    stalemateTicks = 2700,  -- ~45 s of holding in range with no flank by either side
+    stalemateRadius = 45,   -- enemy squads whose last contact is within this of our commander count        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
@@ -457,6 +461,23 @@ local function otherSideFlanking(faction)
     return false
 end
 
+-- Stalemate check: has this fight gone ~45 s with no flank by either side, and does this squad
+-- have at least as much fire superiority as any enemy squad facing it? Returns ok, enemy best.
+local function stalemate(squad, sq, x, y)
+    local quietSince = math.max(sq.holdSince or LF.tick, sq.flankStartTick or -100000)
+    local enemyBest = 0
+    for sid, s in pairs(squads) do
+        local u = LF.Units.get(sid)
+        if u and u.faction ~= squad.faction and s.intent and s.contact
+            and LF.dist(s.contact.x, s.contact.y, x, y) < CFG.stalemateRadius then
+            if s.flankStartTick and s.flankStartTick > quietSince then quietSince = s.flankStartTick end
+            if (s.supShare or 0) > enemyBest then enemyBest = s.supShare or 0 end
+        end
+    end
+    if LF.tick - quietSince < CFG.stalemateTicks then return false, enemyBest end
+    return (sq.supShare or 0) >= enemyBest, enemyBest
+end
+
 -- What a team should do under the squad's intent.
 local function orderFor(team, sq)
     if sq.intent == "FLANK" then
@@ -550,6 +571,11 @@ local function updateSquad(squad)
         end
     end
 
+    -- Fire superiority: how much of the enemy near the contact this squad has suppressed
+    -- (kept, so enemy squads can compare in a stalemate).
+    local supp, enemies = enemySuppression(squad, c)
+    sq.supShare = enemies > 0 and supp / enemies or 0
+
     local intent = sq.intent
     local why
     if total > 0 and fitN / total < CFG.fallbackFit then
@@ -572,15 +598,25 @@ local function updateSquad(squad)
     elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume
         and LF.tick - (sq.holdSince or LF.tick) >= CFG.flankMinHold
         and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
-        and total > 0 and fitN / total >= CFG.flankFit and (fitN == 0 or pinnedN / fitN < CFG.flankPinned)
+        and total > 0 and fitN / total >= CFG.flankFit
         and not otherSideFlanking(squad.faction) then
-        local supp, enemies = enemySuppression(squad, c)
-        if enemies > 0 and supp / enemies >= CFG.flankSuperiority then
+        local reason = nil
+        local steady = fitN == 0 or pinnedN / fitN < CFG.flankPinned
+        if steady and enemies > 0 and sq.supShare >= CFG.flankSuperiority then
+            reason = "fire superiority: " .. supp .. "/" .. enemies .. " enemy suppressed"
+        else
+            local ok, enemyBest = stalemate(squad, sq, cmd:getX(), cmd:getY())
+            if ok then
+                reason = string.format("stalemate: our fire superiority %.0f%% vs theirs %.0f%%",
+                    sq.supShare * 100, enemyBest * 100)
+            end
+        end
+        if reason then
             local plan = planFlank(squad, c, sq)
             if plan then
                 sq.flank = plan
                 sq.flankStartTick = LF.tick
-                intent, why = "FLANK", "fire superiority: " .. supp .. "/" .. enemies .. " enemy suppressed"
+                intent, why = "FLANK", reason
             else
                 sq.lastFlank = LF.tick
             end
