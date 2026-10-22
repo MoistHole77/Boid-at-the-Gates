@@ -207,17 +207,25 @@ local function buildingTest(x, y, z, teamOnly)
             if (q.x + q.y) % 2 == 0 and not (q.x == x and q.y == y) then spots[#spots + 1] = q end
         end
         table.sort(spots, function(a, b) return LF.dist(a.x, a.y, x, y) < LF.dist(b.x, b.y, x, y) end)
+        -- The sergeant on the inside square nearest the click, the rest spread around him.
+        local all = {}
+        for _, q in ipairs(L.inside) do all[#all + 1] = q end
+        table.sort(all, function(a, b) return LF.dist(a.x, a.y, x, y) < LF.dist(b.x, b.y, x, y) end)
+        local sgt = def.leader and LF.Records.get(def.leader)
+        local sgtSpot = all[1]
+        if sgt and sgtSpot then sgt.x, sgt.y, sgt.homeX, sgt.homeY = sgtSpot.x + 0.5, sgtSpot.y + 0.5, sgtSpot.x + 0.5, sgtSpot.y + 0.5 end
         local k = 0
         for _, rid in ipairs(LF.Units.members(def.id)) do
             local r = LF.Records.get(rid)
             if r and rid ~= def.leader then
                 k = k + 1
                 local q = spots[k]
+                if q and sgtSpot and q.x == sgtSpot.x and q.y == sgtSpot.y then k = k + 1; q = spots[k] end
                 if q then r.x, r.y, r.homeX, r.homeY = q.x + 0.5, q.y + 0.5, q.x + 0.5, q.y + 0.5 end
             end
         end
     end
-    LF.Tactics.setStance(def, "defensive")
+    LF.Tactics.setStance(def, "defensive", { x = x, y = y, z = z })
     LF.Units.createSquad("SOV", x + 30.5, y + 0.5, z, -1, 0, teamOnly)
     local what = teamOnly and "team" or "squad"
     LF.log("DEBUG building defence test (" .. what .. ") at " .. x .. "," .. y)
@@ -261,10 +269,12 @@ local function clearOrder(x, y, z)
     end
 end
 
-local function setStanceNearest(x, y, stance)
+local function setStanceNearest(x, y, z, stance)
     local squad = nearestUnit(x, y)
     if not squad then LF.say("No unit nearby"); return end
-    LF.Tactics.setStance(squad, stance)
+    -- Defensive, clicked on a building: hold that building.
+    local hold = stance == "defensive" and LF.Building.idAt(x, y, z) and { x = x, y = y, z = z } or nil
+    LF.Tactics.setStance(squad, stance, hold)
     LF.say(squad.name .. ": " .. stance .. " stance")
 end
 
@@ -292,8 +302,8 @@ local function onMenu(playerNum, context, worldObjects, test)
     local so = sub:addOption("Set stance of nearest unit")
     local stanceMenu = ISContextMenu:getNew(sub)
     sub:addSubMenu(so, stanceMenu)
-    stanceMenu:addOption("Defensive (all-round defence here)", nil, function() setStanceNearest(x, y, "defensive") end)
-    stanceMenu:addOption("Offensive", nil, function() setStanceNearest(x, y, "offensive") end)
+    stanceMenu:addOption("Defensive (all-round defence; click a building to hold it)", nil, function() setStanceNearest(x, y, z, "defensive") end)
+    stanceMenu:addOption("Offensive", nil, function() setStanceNearest(x, y, z, "offensive") end)
     sub:addOption("Unit report (orders, suppression)", nil, function() LF.Units.report(); LF.Brain.report() end)
 
     -- Basics, per type.

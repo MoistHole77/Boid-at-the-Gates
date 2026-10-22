@@ -758,8 +758,9 @@ end
 local function compassOf(dx, dy)
     local names = { "east", "south-east", "south", "south-west", "west", "north-west", "north", "north-east" }
     local a = math.atan2(dy, dx)
-    local k = math.floor((a / (2 * math.pi)) * 8 + 0.5) % 8
-    return names[k + 1]
+    local k = math.floor((a / (2 * math.pi)) * 8 + 0.5)
+    k = ((k % 8) + 8) % 8        -- (Kahlua's % can return a negative remainder)
+    return names[k + 1] or "front"
 end
 
 local function reusePoint(cache, id)
@@ -1092,7 +1093,20 @@ local function updateDefensive(squad, sq, cid, cmd)
     sq.lost = sq.lost or {}
     if not sq.perim then
         sq.perim = { x = cmd:getX(), y = cmd:getY(), z = math.floor(cmd:getZ()) }
-        local L = LF.Building.at(cmd:getX(), cmd:getY(), cmd:getZ())
+        -- In a building? The spot the unit was told to hold, else where its commander stands
+        -- (or right next to it: a doorstep).
+        local L = nil
+        local h = squad.holdAt
+        if h then L = LF.Building.at(h.x, h.y, h.z) end
+        if not L then
+            local bx, by, bz = math.floor(cmd:getX()), math.floor(cmd:getY()), math.floor(cmd:getZ())
+            L = LF.Building.at(bx, by, bz)
+            for dx = -1, 1 do
+                for dy = -1, 1 do
+                    if not L then L = LF.Building.at(bx + dx, by + dy, bz) end
+                end
+            end
+        end
         if L then
             sq.perim.layout = L
             local front = c and threatWall(L, c.x, c.y) or 1
@@ -1158,8 +1172,9 @@ end
 
 -- Change a unit's stance (offensive / defensive). The unit starts afresh: a defensive unit forms
 -- its perimeter where its commander stands.
-function LF.Tactics.setStance(squad, stance)
+function LF.Tactics.setStance(squad, stance, holdAt)
     squad.stance = stance
+    squad.holdAt = holdAt
     squads[squad.id] = nil
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
     LF.log("STANCE " .. squad.name .. " -> " .. stance)
