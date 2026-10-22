@@ -384,12 +384,11 @@ local function chooseShift(squad, sq)
         roll = roll - w
         if roll <= 0 then pick = cands[i]; break end
     end
-    if planShift(pick, teams[pick.id], squad, sq) then
-        sq.lastShift = LF.tick
-        sq.shiftsSinceFlank = (sq.shiftsSinceFlank or 0) + 1
-    else
-        sq.lastShift = LF.tick - CFG.shiftInterval + 300   -- nowhere better from there; ask again in ~5 s
-    end
+    -- Whether or not the team found somewhere better, that was this unit's try for the next
+    -- ~30 s (a failed try counts toward the stalemate flank too).
+    planShift(pick, teams[pick.id], squad, sq)
+    sq.lastShift = LF.tick
+    sq.shiftsSinceFlank = (sq.shiftsSinceFlank or 0) + 1
 end
 
 local function driveTeam(team, t, squad, sq)
