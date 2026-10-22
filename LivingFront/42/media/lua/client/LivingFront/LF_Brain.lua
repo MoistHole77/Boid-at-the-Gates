@@ -531,6 +531,41 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
     end
 end
 
+-- Clearing a building (LF_Tactics.clearPlace): walk (or run) to his place in the file - the
+-- stack by the door, then his spot in the room, rifle up - and face where he's told. An enemy
+-- in view close by: stop and shoot, then carry on.
+local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
+    m.order, m.point = "file", nil
+    if pick and dist <= CFG.clearFireRange then
+        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        if m.state ~= "engage" then
+            setState(id, body, rec, m, "engage", "clearing - target #" .. threatId .. " " .. title(pick.rec) .. " at "
+                .. math.floor(dist) .. " tiles")
+        end
+        m.targetId, m.targetDist = threatId, dist
+        return
+    end
+    setState(id, body, rec, m, "file", gait == "aim" and "going in" or "stacking up")
+    m.targetId = nil
+    m.fileFace, m.fileGait = face, gait
+    local tx, ty = math.floor(sx), math.floor(sy)
+    local there = math.floor(body:getX()) == tx and math.floor(body:getY()) == ty
+    m.fileThere = there
+    if there then return end
+    local key = tx .. "," .. ty .. "," .. gait
+    if m.fileDest ~= key then
+        m.fileDest = key
+        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        m.lastPath = -10000
+    end
+    if body:isPerformingAnAction() and not isMoving(body) then return end
+    if not isMoving(body) and LF.tick - m.lastPath > 60 then
+        if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
+        walkTo(body, tx, ty, math.floor(sz), gait)
+        m.lastPath = LF.tick
+    end
+end
+
 local function decide(id, body, rec, m)
     m.prevOrder = m.order
     m.order, m.point = nil, nil

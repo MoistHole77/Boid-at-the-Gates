@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: the defensive stance inside a building (and
--- in the open) against an attacking (offensive) unit.
+-- commands for the test at hand. Current test: sergeants choosing their stance; the building
+-- defence; clearing a building.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -187,6 +187,7 @@ end
 local function perimeterTest(x, y, z, teamOnly)
     local def = LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, teamOnly)
     LF.Tactics.setStance(def, "defensive")
+    LF.Tactics.noteStanceSet(def)
     LF.Units.createSquad("SOV", x + 28.5, y + 0.5, z, -1, 0, teamOnly)
     local what = teamOnly and "team" or "squad"
     LF.log("DEBUG perimeter test (" .. what .. ") around " .. x .. "," .. y)
@@ -226,10 +227,21 @@ local function buildingTest(x, y, z, teamOnly)
         end
     end
     LF.Tactics.setStance(def, "defensive", { x = x, y = y, z = z })
+    LF.Tactics.noteStanceSet(def)
     LF.Units.createSquad("SOV", x + 30.5, y + 0.5, z, -1, 0, teamOnly)
     local what = teamOnly and "team" or "squad"
     LF.log("DEBUG building defence test (" .. what .. ") at " .. x .. "," .. y)
     LF.say("Building test: German " .. what .. " holds the building, Soviet " .. what .. " attacks from the east")
+end
+
+-- Stance-switching test: a German fire team (offensive) next to the clicked spot - click just
+-- outside a house - and a Soviet squad (offensive) 30 tiles east. Outnumbered, the Germans should
+-- dig in, in the house.
+local function stanceTest(x, y, z)
+    LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, true)
+    LF.Units.createSquad("SOV", x + 30.5, y + 0.5, z, -1, 0, false)
+    LF.log("DEBUG stance test at " .. x .. "," .. y)
+    LF.say("Stance test: German team vs Soviet squad - watch the Germans dig in")
 end
 
 -- The unit of the living soldier nearest (x, y).
@@ -262,10 +274,11 @@ local function clearOrder(x, y, z)
     end
     if not best then LF.say("No attacking unit nearby"); return end
     local team = LF.Units.get(best.teams[1])
-    if team and LF.Tactics.orderClear(best, team, L, "debug order") then
-        LF.say(best.name .. ": " .. team.name .. " clears the building")
+    local goes = team and LF.Tactics.orderClear(best, team, L, "debug order")
+    if goes then
+        LF.say(best.name .. ": " .. goes.name .. " clears the building")
     else
-        LF.say("Couldn't plan it (no usable door, or too few men)")
+        LF.say("Couldn't plan it - see the log (CLEAR ...)")
     end
 end
 
@@ -275,6 +288,7 @@ local function setStanceNearest(x, y, z, stance)
     -- Defensive, clicked on a building: hold that building.
     local hold = stance == "defensive" and LF.Building.idAt(x, y, z) and { x = x, y = y, z = z } or nil
     LF.Tactics.setStance(squad, stance, hold)
+    LF.Tactics.noteStanceSet(squad)
     LF.say(squad.name .. ": " .. stance .. " stance")
 end
 
@@ -298,6 +312,12 @@ local function onMenu(playerNum, context, worldObjects, test)
     sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
     sub:addOption("Test: team holds this building - Soviets attack", nil, function() buildingTest(x, y, z, true) end)
     sub:addOption("Test: squad perimeter (open ground) - Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
+    sub:addOption("Test: stance switching - German team here (by a house) vs Soviet squad", nil, function() stanceTest(x, y, z) end)
+    sub:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
+        LF.Tactics.autoStance = not LF.Tactics.autoStance
+        LF.log("DEBUG automatic stance " .. (LF.Tactics.autoStance and "on" or "off"))
+        LF.say("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON" or "OFF"))
+    end)
     sub:addOption("Order nearest attacking unit's Alpha 1 to clear this building", nil, function() clearOrder(x, y, z) end)
     local so = sub:addOption("Set stance of nearest unit")
     local stanceMenu = ISContextMenu:getNew(sub)

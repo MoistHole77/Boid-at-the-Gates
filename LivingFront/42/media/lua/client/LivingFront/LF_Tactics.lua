@@ -78,7 +78,16 @@ local CFG = {
     clearCooldown = 3600,   -- at most one clearing order per ~60 s
     clearStackTimeout = 1200, -- go in after ~20 s even if not everyone is stacked
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
-    clearTimeout = 7200,    -- give up on a clearing after ~2 min     -- a defence re-forms toward a new attack direction at most every ~45 s
+    clearTimeout = 7200,    -- give up on a clearing after ~2 min
+    -- The sergeant choosing his stance
+    digInOdds = 1.5,        -- dig in when the known enemy is this many times our fit men
+    lossShare = 0.34,       -- ... or this share of the unit is down and the enemy isn't giving
+    attackOdds = 1.5,       -- go (back) on the attack with this many times the known enemy
+    quietOpen = 2700,       -- a defence in the open moves up after ~45 s without seeing the enemy
+    quietBuilding = 5400,   -- a building is only left after ~90 s without seeing the enemy
+    stanceConfirm = 180,    -- a reason must hold ~3 s before he acts on it
+    stanceCooldown = 3600,  -- at most one change of stance per ~60 s
+    buildingNear = 3,       -- a building within this of the sergeant counts as "here"     -- a defence re-forms toward a new attack direction at most every ~45 s
     -- Stalemate: if neither side reaches fire superiority for this long, the side with the better
     -- share of the enemy suppressed flanks anyway (battles should still last a while).
     stalemateTicks = 2700,  -- ~45 s of holding in range with no flank by either side
@@ -845,9 +854,10 @@ end
 -- (he stands in it to fire, ducking only under fire), then a back line 2 tiles in from the wall.
 -- A wall with no windows or doors gets one man watching it from inside; the rest of that team
 -- reinforce the wall with the most openings. The sergeant takes the middle.
--- Posts are dealt once. They are re-dealt only when the attack comes at a different wall (the
--- first time the enemy shows, then at most once per ~45 s) - a man whose post is unchanged
--- stays put. A man's post is his cover: he doesn't go looking for anything better.
+-- Posts are dealt once. Nobody changes walls afterwards: when the enemy shows up at a different
+-- wall, or a man at a window falls, the spares on the back line go to the free windows facing
+-- him. A man at a window keeps it - only death (or, later, a withdrawal) takes him from it. A
+-- man's post is his cover: he doesn't go looking for anything better.
 
 local WALL_DIR = LF.Building.WALL_DIR
 local WALL_NAME = LF.Building.WALL_NAME
@@ -869,6 +879,19 @@ local function threatWall(L, tx, ty)
     return best
 end
 
+-- The post for a window: in it, or - with furniture in it - on the square behind (a narrower
+-- view), shoving the furniture aside first if it can be shoved. nil if neither is possible.
+local function windowPost(L, o)
+    if not o.blocked then
+        return { x = o.x, y = o.y, wall = o.wall, stand = true, kind = "window", win = o, depth = 0 }
+    end
+    local bx, by = o.x - o.dx, o.y - o.dy
+    if LF.Building.isInside(L, bx, by) then
+        return { x = bx, y = by, wall = o.wall, stand = true, kind = "window", win = o, depth = 1, shove = o.movable or nil }
+    end
+    return nil
+end
+
 -- Posts on one wall, best first: doors (covered from inside), windows, then the back line.
 local function wallPosts(L, w)
     local list = {}
@@ -881,17 +904,8 @@ local function wallPosts(L, w)
     end
     for _, o in ipairs(L.openings) do
         if o.wall == w and o.kind == "window" then
-            if not o.blocked then
-                list[#list + 1] = { x = o.x, y = o.y, wall = w, stand = true, kind = "window", win = o, depth = 0 }
-            else
-                -- Furniture in the window: fire out of it from the square behind (a narrower view)
-                -- - and if the furniture can be shoved aside, shove it and take the window.
-                local bx, by = o.x - o.dx, o.y - o.dy
-                if LF.Building.isInside(L, bx, by) then
-                    list[#list + 1] = { x = bx, y = by, wall = w, stand = true, kind = "window", win = o, depth = 1,
-                                        shove = o.movable or nil }
-                end
-            end
+            local p = windowPost(L, o)
+            if p then list[#list + 1] = p end
         end
     end
     -- Back line: 2 tiles in from the wall, spread out from its middle.
@@ -955,9 +969,11 @@ local function dealBuilding(squad, sq, front)
     for _, g in ipairs(groups) do
         local w = walls[g.slot] or walls[1]
         local list = wallPosts(L, w)
-        local room = L.wallOpenings[w] > 0 and #g.men or 1      -- a blank wall: one man watches it
+        local blank = L.wallOpenings[w] == 0
+        local room = blank and 1 or #g.men      -- a blank wall: one man watches it
         for k, rid in ipairs(g.men) do
             local p = k <= room and free(list) or nil
+            if p and blank then p.kind = "watch" end
             if p then take(rid, p) else spares[#spares + 1] = rid end
         end
     end
@@ -1030,6 +1046,61 @@ function LF.Tactics.shoveWindow(rec)
     end
     LF.log("BUILDING #" .. rec.id .. " " .. LF.Units.title(rec) .. " can't shift the furniture in his window; firing from behind it")
     return false
+end
+
+-- The enemy is at a different wall, or a man at a window has fallen: the men on the back line
+-- (the spares) go to the free windows facing the enemy, nearest spare first. Nobody already at a
+-- window, covering a door or watching a blank wall moves: once a man has a window he keeps it.
+-- Returns how many men moved.
+local function reinforceWindows(squad, sq, tx, ty)
+    local P = sq.perim
+    local L = P.layout
+    local posts = sq.posts or {}
+    local held, taken, spares = {}, {}, {}
+    for rid, p in pairs(posts) do
+        local r = LF.Records.get(rid)
+        local able = r and r.alive and fit(r)
+        if able then taken[p.x .. "," .. p.y] = true end
+        if p.kind == "window" and able then
+            held[p.win.x .. "," .. p.win.y] = true
+        elseif p.kind == "back" and able and rid ~= squad.leader then
+            spares[#spares + 1] = rid
+        end
+    end
+    if #spares == 0 then return 0 end
+    local dx, dy = tx - L.cx, ty - L.cy
+    local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+    dx, dy = dx / len, dy / len
+    local cands = {}
+    for _, o in ipairs(L.openings) do
+        if o.kind == "window" and not held[o.x .. "," .. o.y] then
+            local score = o.dx * dx + o.dy * dy
+            if score > -0.3 then cands[#cands + 1] = { o = o, score = score } end
+        end
+    end
+    table.sort(cands, function(a, b) return a.score > b.score end)
+    local moved = 0
+    for _, c in ipairs(cands) do
+        if #spares == 0 then break end
+        local p = windowPost(L, c.o)
+        if p and not taken[p.x .. "," .. p.y] then
+            local bi, bd = nil, math.huge
+            for i, rid in ipairs(spares) do
+                local b = LF.Bodies.get(rid)
+                local r = LF.Records.get(rid)
+                local x, y = b and b:getX() or r.x, b and b:getY() or r.y
+                local d = LF.dist(x, y, p.x + 0.5, p.y + 0.5)
+                if d < bd then bi, bd = i, d end
+            end
+            local rid = table.remove(spares, bi)
+            local old = posts[rid]
+            if old then taken[old.x .. "," .. old.y] = nil end
+            posts[rid] = p
+            taken[p.x .. "," .. p.y] = true
+            moved = moved + 1
+        end
+    end
+    return moved
 end
 
 -- Where a soldier stands in the building's defence: "post", x, y, z, point, watching,
@@ -1127,17 +1198,32 @@ local function updateDefensive(squad, sq, cid, cmd)
             .. math.floor(sq.perim.y) .. ", " .. how)
         return
     end
-    if c and sq.perim.layout then
-        -- In a building: re-deal the walls if the enemy is at a different wall (the first time he
-        -- shows, then at most every ~45 s).
+    if sq.perim.layout then
+        -- In a building: nobody changes walls. When the enemy shows up at a different wall, or a
+        -- man at a window falls, the spare men on the back line go to the free windows facing him.
         local P = sq.perim
-        local tw = threatWall(P.layout, c.x, c.y)
-        if tw ~= P.front and (not P.faced or LF.tick - P.formedAt >= CFG.reformTicks) then
-            dealBuilding(squad, sq, tw)
-            LF.log("BUILDING " .. squad.name .. " turns to face the enemy at the " .. WALL_NAME[tw] .. " wall")
-            LF.Tactics.shout(cid, "Enemy " .. WALL_NAME[tw] .. "! Alpha 1 the " .. WALL_NAME[tw] .. " wall - everyone to the windows!")
+        local held = 0
+        for rid, p in pairs(sq.posts or {}) do
+            local r = LF.Records.get(rid)
+            if p.kind == "window" and r and r.alive and fit(r) then held = held + 1 end
         end
-        P.faced = true
+        local fell = P.held and held < P.held
+        if c then P.tx, P.ty = c.x, c.y end
+        local tw = c and threatWall(P.layout, c.x, c.y)
+        local turned = tw and (tw ~= P.front or not P.faced)     -- (first sight of him counts too)
+        if (turned or fell) and P.tx then
+            if turned then P.front = tw end
+            local moved = reinforceWindows(squad, sq, P.tx, P.ty)
+            if moved > 0 then
+                local where = WALL_NAME[threatWall(P.layout, P.tx, P.ty)]
+                LF.log("BUILDING " .. squad.name .. ": " .. moved .. " spare man/men to the windows toward the "
+                    .. where .. (fell and " (a man at a window is down)" or " (enemy at the " .. where .. " wall)"))
+                LF.Tactics.shout(cid, fell and "Man down at the window - fill it!" or ("Enemy " .. where .. "! Spare men to the windows!"))
+                held = held + moved
+            end
+        end
+        P.held = held
+        P.faced = P.faced or c ~= nil
     elseif c then
         local P = sq.perim
         local bearing = math.atan2(c.y - P.y, c.x - P.x)
@@ -1296,23 +1382,27 @@ local function planClear(squad, team, t, L)
     local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
     local cell = getCell()
     local z = L.z
+    -- The nearest door (a clear doorstep preferred, but any door to the outside will do).
     local door, doorD = nil, math.huge
+    local doors = 0
     for _, o in ipairs(L.openings) do
         if o.kind == "door" then
+            doors = doors + 1
             local out = cell:getGridSquare(o.x + o.dx, o.y + o.dy, z)
-            if out and out:isFree(false) then
+            if out then
                 local d = LF.dist(cx, cy, o.x + o.dx + 0.5, o.y + o.dy + 0.5)
+                if not out:isFree(false) then d = d + 20 end
                 if d < doorD then door, doorD = o, d end
             end
         end
     end
-    if not door then return nil end
+    if not door then return nil, doors == 0 and "the building has no door to the outside" or "no door has a doorstep" end
     local file = {}
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
         if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then file[#file + 1] = rid end
     end
-    if #file < 2 then return nil end
+    if #file < 2 then return nil, "only " .. #file .. " fit man in the team" end
     local ox, oy = door.x + door.dx, door.y + door.dy
     -- Stack against the wall beside the door, on the side nearer the team.
     local lx, ly = -door.dy, door.dx
@@ -1463,21 +1553,30 @@ local function updateClear(team, t, squad)
     return true
 end
 
--- Order a team to clear building L. Returns true if it could plan it.
+-- Order a team to clear building L (Alpha 1, or the next team with enough fit men if it is
+-- shot up). Returns the team that goes, or nil.
 function LF.Tactics.orderClear(squad, team, L, why)
     initTeams(squad)
+    local C, reason = nil, "no team positions yet"
+    local order = { team.id }
+    for _, tid in ipairs(squad.teams) do if tid ~= team.id then order[#order + 1] = tid end end
+    for _, tid in ipairs(order) do
+        local tm, t = LF.Units.get(tid), teams[tid]
+        if tm and t and not t.clear then
+            C, reason = planClear(squad, tm, t, L)
+            if C then team = tm; break end
+        end
+    end
     local t = teams[team.id]
-    if not t then return false end
-    local C = planClear(squad, team, t, L)
     if not C then
-        LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": no usable door or too few men")
-        return false
+        LF.log("CLEAR " .. squad.name .. ": can't clear the building - " .. tostring(reason))
+        return nil
     end
     t.clear, t.order, t.moving, t.shifting = C, "CLEAR", nil, nil
     LF.log("CLEAR " .. team.name .. " of " .. squad.name .. " ordered to clear the building by the door at "
         .. C.door.x .. "," .. C.door.y .. " (" .. why .. ")")
     if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stack up on the door!") end
-    return true
+    return team
 end
 
 -- The sergeant: is the enemy holed up in a building, down to a few men he knows of? Send
@@ -1485,8 +1584,11 @@ end
 local function sergeantClear(squad, sq, cid)
     if LF.tick - (sq.lastClear or -100000) < CFG.clearCooldown then return end
     local team = LF.Units.get(squad.teams[1])
-    local t = team and teams[team.id]
-    if not t or t.clear or not (team.leader and LF.Bodies.get(team.leader)) then return end
+    if not team then return end
+    for _, tid in ipairs(squad.teams) do
+        local tt = teams[tid]
+        if tt and tt.clear then return end          -- one clearing at a time
+    end
     local counts, where, total = {}, {}, 0
     for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
         total = total + 1
@@ -1498,12 +1600,147 @@ local function sergeantClear(squad, sq, cid)
             local c = where[b]
             local L = LF.Building.at(c.x, c.y, c.z)
             sq.lastClear = LF.tick
-            if L and LF.Tactics.orderClear(squad, team, L, n .. " enemy known inside") then
-                LF.Tactics.shout(cid, team.name .. ", clear that building! Everyone else, cover them!")
+            local goes = L and LF.Tactics.orderClear(squad, team, L, n .. " enemy known inside")
+            if goes then
+                LF.Tactics.shout(cid, goes.name .. ", clear that building! Everyone else, cover them!")
             end
             return
         end
     end
+end
+
+-- ---- the sergeant chooses the stance --------------------------------------------------------
+--
+-- The enemy's strength is reckoned as the most his squad has known of at once in the last minute.
+-- Offensive -> defensive ("Dig in!"), when:
+--   outnumbered      - the enemy is 1.5x his fit men or more
+--   heavy losses     - a third of the unit is down and the enemy isn't giving (little of him
+--                      suppressed)
+--   a building       - he is in or next to a building and the enemy is coming toward him
+--   attack stalled   - two flanks and two repositions since, and still holding after a minute
+-- He digs in where he stands - in the building if there is one (its nearest door is opened).
+-- Defensive -> offensive ("Move up!"), when:
+--   in the open      - 1.5x the known enemy in fit men, or no enemy seen for ~45 s
+--   in a building    - only when no enemy has been seen for ~90 s: men at the windows don't leave
+--                      a fight that is still going
+-- A reason has to hold for ~3 s, he changes stance at most once a minute, and a stance set from
+-- the debug menu stands for a minute too. LF.Tactics.autoStance turns it off.
+
+LF.Tactics.autoStance = true
+local stanceMem = {}        -- squad id -> { since, want, wantSince, lastContact, engaged, prevD }
+
+function LF.Tactics.noteStanceSet(squad)
+    stanceMem[squad.id] = { since = LF.tick }
+end
+
+-- A building within CFG.buildingNear of (x, y): its id and the square, or nil.
+local function buildingNear(x, y, z)
+    local bx, by = math.floor(x), math.floor(y)
+    local id = LF.Building.idAt(bx, by, z)
+    if id then return id, bx, by end
+    for r = 1, CFG.buildingNear do
+        for dx = -r, r do
+            for dy = -r, r do
+                if math.max(math.abs(dx), math.abs(dy)) == r then
+                    id = LF.Building.idAt(bx + dx, by + dy, z)
+                    if id then return id, bx + dx, by + dy end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function considerStance(squad, sq, cid, cmd)
+    if not LF.Tactics.autoStance then return false end
+    local mem = stanceMem[squad.id]
+    if not mem then mem = { since = -100000 }; stanceMem[squad.id] = mem end
+    local st = LF.Stance.get(squad)
+    local contacts = LF.Squad.contactPoints(squad.id, CFG.contactMemory, 40)
+    -- How many enemy he reckons there are: the most his squad has known of at once over the last
+    -- minute (so a few men dropping out of sight don't make him think the enemy has gone).
+    local seen = #contacts
+    if seen > 0 then mem.lastContact, mem.engaged = LF.tick, true end
+    if seen >= (mem.peak or 0) or LF.tick - (mem.peakAt or 0) > 3600 then mem.peak, mem.peakAt = seen, LF.tick end
+    local enemies = mem.peak
+    local total, fitN = 0, 0
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local r = LF.Records.get(rid)
+        if r then
+            total = total + 1
+            if fit(r) then fitN = fitN + 1 end
+        end
+    end
+    if fitN == 0 then return false end
+    local x, y, z = cmd:getX(), cmd:getY(), math.floor(cmd:getZ())
+    local want, why = nil, nil
+    if st.name == "offensive" then
+        -- Nearest known enemy, and is he getting closer?
+        local d = nil
+        for _, c in ipairs(contacts) do
+            local dd = LF.dist(x, y, c.x, c.y)
+            if not d or dd < d then d = dd end
+        end
+        local coming = d and mem.prevD and d < mem.prevD - 1
+        mem.prevD = d
+        if enemies >= CFG.digInOdds * fitN then
+            want, why = "defensive", "outnumbered: " .. enemies .. " enemy known against " .. fitN .. " fit"
+        elseif seen > 0 and (total - fitN) / total >= CFG.lossShare and (sq.supShare or 0) < CFG.flankSuperiority then
+            want, why = "defensive", "heavy losses: " .. fitN .. "/" .. total .. " fit, and the enemy isn't giving"
+        elseif coming and buildingNear(x, y, z) then
+            want, why = "defensive", "a building to hold and the enemy coming on"
+        elseif seen > 0 and (sq.flankCount or 0) >= 2 and (sq.shiftsSinceFlank or 0) >= 2 and sq.intent == "HOLD"
+            and LF.tick - (sq.holdSince or LF.tick) >= 3600 then
+            want, why = "defensive", "the attack has stalled"
+        end
+    else
+        local quiet = mem.engaged and (LF.tick - (mem.lastContact or LF.tick)) or 0
+        if sq.perim and sq.perim.layout then
+            if quiet >= CFG.quietBuilding then
+                want, why = "offensive", "no enemy seen for " .. math.floor(quiet / 60) .. " s - the fight is over here"
+            end
+        elseif quiet >= CFG.quietOpen then
+            want, why = "offensive", "no enemy seen for " .. math.floor(quiet / 60) .. " s - move up and find them"
+        elseif enemies > 0 and fitN >= CFG.attackOdds * enemies then
+            want, why = "offensive", "we have the numbers: " .. fitN .. " fit against " .. enemies .. " known"
+        end
+    end
+    if want ~= mem.want then mem.want, mem.wantSince = want, LF.tick end
+    if not want or LF.tick - mem.wantSince < CFG.stanceConfirm or LF.tick - mem.since < CFG.stanceCooldown then
+        return false
+    end
+    -- Change stance. Digging in next to a building: into it, through its nearest door.
+    local hold = nil
+    if want == "defensive" then
+        local id, hx, hy = buildingNear(x, y, z)
+        if id then
+            hold = { x = hx, y = hy, z = z }
+            local L = LF.Building.at(hx, hy, z)
+            if L then
+                local best, bd = nil, math.huge
+                for _, o in ipairs(L.openings) do
+                    if o.kind == "door" then
+                        local dd = LF.dist(x, y, o.x + 0.5, o.y + 0.5)
+                        if dd < bd then best, bd = o, dd end
+                    end
+                end
+                if best then
+                    local cell = getCell()
+                    local a = cell:getGridSquare(best.x, best.y, z)
+                    local b = cell:getGridSquare(best.x + best.dx, best.y + best.dy, z)
+                    local door = a and b and a:getDoorTo(b)
+                    if door then LF.guard("open door", openDoor, door, cmd) end
+                end
+            end
+        end
+    end
+    LF.log("STANCE " .. squad.name .. ": the " .. (squad.leader and "sergeant" or "corporal") .. " goes " .. want
+        .. " (" .. why .. ")" .. (hold and " - into the building" or ""))
+    LF.Tactics.setStance(squad, want, hold)
+    stanceMem[squad.id] = { since = LF.tick }
+    LF.Tactics.shout(cid, want == "offensive" and "On your feet - move up!"
+        or (hold and "Into the building! Take the windows!" or "Dig in! All-round defence!"))
+    return true
 end
 
 local function updateSquad(squad)
@@ -1515,6 +1752,7 @@ local function updateSquad(squad)
         local t, team = teams[tid], LF.Units.get(tid)
         if t and t.clear and team then LF.guard("clear", updateClear, team, t, squad) end
     end
+    if cmd and not cmd:isDead() and considerStance(squad, sq, cid, cmd) then return end
     if not cmd or cmd:isDead() then
         -- No commander here: each corporal runs his own team (offensive stance only - a defence
         -- just holds where it is).
