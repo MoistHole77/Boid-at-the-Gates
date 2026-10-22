@@ -25,6 +25,10 @@
 --   less suppressed. An order from the sergeant overrides it. A stalemate flank waits until
 --   two repositions have been tried (or the fight has stalled twice as long).
 --   A team out of earshot keeps doing its last order.
+-- Objectives (LF_Objective): a unit told to DEFEND mans its posts and fights from them; a unit
+-- told to ATTACK marches on the objective (all teams bounding in) until it meets the enemy,
+-- then fights as above, and storms the position (alpha teams go in while bravo teams cover)
+-- once the defence is thin or suppressed.
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
 
@@ -37,6 +41,7 @@ require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
 require "LivingFront/LF_Sense"
+require "LivingFront/LF_Objective"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -77,6 +82,11 @@ local CFG = {
     shiftInterval = 1800,   -- one team per unit repositions at most once per ~30 s
     shiftsBeforeStalemate = 2, -- repositions tried before a stalemate flank (or 2x stalemateTicks)        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
+    -- Attacking an objective
+    assaultThin = 0.35,     -- storm it when defenders left near it <= this share of our fit men ...
+    assaultSuppressed = 0.5,-- ... or when at least this share of the enemy is suppressed
+    assaultCooldown = 1800, -- at most one assault order per ~30 s
+    assaultTimeout = 7200,  -- give up on an assault after ~2 min
 }
 LF.Tactics.CFG = CFG
 
@@ -161,6 +171,14 @@ end
 --   "command" (the sergeant: stay behind his teams and fight).
 -- Returns role, x, y, z, point (the enemy's last-known position), or nil when the unit has no
 -- intent (no contact): the brain then keeps the plain formation.
+-- Where a unit with no enemy in sight watches: a point ahead along its facing.
+local function watchPoint(squad, sq, x, y, z)
+    local fx, fy = facing(squad)
+    sq.watch = sq.watch or LF.Tactics.point(0, 0, 0)
+    sq.watch.x, sq.watch.y, sq.watch.z = x + fx * 15, y + fy * 15, z
+    return sq.watch
+end
+
 function LF.Tactics.place(rec)
     local sq = rec.squad and squads[rec.squad]
     if not (sq and sq.intent) then return nil end
@@ -168,6 +186,22 @@ function LF.Tactics.place(rec)
     if not squad then return nil end
     local fx, fy = facing(squad)
     local z = rec.z or 0
+
+    -- Defending an objective: every man to his post (the reserve to the centre).
+    if sq.intent == "DEFEND" then
+        local kind, obj = LF.Objective.taskOf(squad)
+        if kind ~= "defend" then return nil end
+        local x, y, pz = LF.Objective.postFor(rec, squad, obj)
+        if sq.contact then return "post", x, y, pz, sq.contact end
+        return "post", x, y, pz, watchPoint(squad, sq, obj.x, obj.y, obj.z), true
+    end
+    -- Marching on an objective with no enemy met yet: move by bounds, watch ahead, don't fire.
+    local watching = sq.flank and sq.flank.blind
+    local point = sq.contact
+    if watching then
+        local _, obj = LF.Objective.taskOf(squad)
+        point = obj and watchPoint(squad, sq, obj.x - fx * 15, obj.y - fy * 15, obj.z) or sq.contact
+    end
 
     if squad.leader == rec.id then
         -- The sergeant keeps a few tiles behind the middle of his teams.
@@ -182,19 +216,19 @@ function LF.Tactics.place(rec)
             end
         end
         if n == 0 then return nil end
-        return "command", sx / n - fx * 3, sy / n - fy * 3, z, sq.contact
+        return "command", sx / n - fx * 3, sy / n - fy * 3, z, point, watching
     end
 
     local t = rec.team and teams[rec.team]
     if not (t and t.pos and t.pos[rec.element]) then
         local x, y, sz = LF.Squad.slot(rec)
         if not x then return nil end
-        return "hold", x, y, sz, sq.contact
+        return "hold", x, y, sz, point, watching
     end
     local p = t.pos[rec.element]
     local lat = LF.Units.slotLat(rec)
     local x, y = p.x - fy * lat, p.y + fx * lat
-    return (t.moving == rec.element or t.shifting) and "move" or "hold", x, y, z, sq.contact
+    return (t.moving == rec.element or t.shifting) and "move" or "hold", x, y, z, point, watching
 end
 
 function LF.Tactics.intent(squadId)
@@ -207,6 +241,15 @@ end
 function LF.Tactics.bearings(squadId)
     local sq = squads[squadId]
     return sq ~= nil and sq.fightStart ~= nil and not sq.intent and LF.tick - sq.fightStart < CFG.bearingsTicks
+end
+
+-- A unit's task changed (e.g. attackers took their objective and now hold it): start afresh.
+function LF.Tactics.taskChanged(squad)
+    local sq = squads[squad.id]
+    if sq then
+        sq.intent, sq.flank, sq.fightStart, sq.contact = nil, nil, nil, nil
+    end
+    for _, tid in ipairs(squad.teams) do teams[tid] = nil end
 end
 
 -- ---- corporal: drills -----------------------------------------------------------------------
@@ -432,7 +475,7 @@ local function driveTeam(team, t, squad, sq)
             local seen = not cp
                 or LF.Cover.canSeeFrom(math.floor(t.pos.A.x), math.floor(t.pos.A.y), z, cp)
                 or LF.Cover.canSeeFrom(math.floor(t.pos.B.x), math.floor(t.pos.B.y), z, cp)
-            if not seen and (t.pushes or 0) < CFG.flankPushes then
+            if not seen and not (sq.flank and sq.flank.assault) and (t.pushes or 0) < CFG.flankPushes then
                 t.pushes = (t.pushes or 0) + 1
                 local lead = LF.dist(t.pos.A.x, t.pos.A.y, cp.x, cp.y) < LF.dist(t.pos.B.x, t.pos.B.y, cp.x, cp.y) and t.pos.A or t.pos.B
                 -- Work round him: half toward the enemy, half sideways toward his rear.
@@ -611,7 +654,7 @@ end
 
 -- What a team should do under the squad's intent.
 local function orderFor(team, sq)
-    if sq.intent == "FLANK" then
+    if sq.intent == "FLANK" or sq.intent == "ASSAULT" then
         if sq.flank and sq.flank.routes[team.id] then return "MANEUVER" end
         return "HOLD"
     end
@@ -620,7 +663,8 @@ end
 
 -- ---- commander: intent ----------------------------------------------------------------------
 
-local INTENT_WORDS = { ADVANCE = "Advance!", HOLD = "Hold! Open fire!", FALLBACK = "Fall back!" }
+local INTENT_WORDS = { ADVANCE = "Advance!", HOLD = "Hold! Open fire!", FALLBACK = "Fall back!",
+                       DEFEND = "Take your posts!", ASSAULT = "Move out!" }
 
 local function setIntent(squad, sq, cid, intent, why)
     if sq.intent == intent then return end
@@ -632,9 +676,117 @@ local function setIntent(squad, sq, cid, intent, why)
         local words = INTENT_WORDS[intent]
         if intent == "FLANK" and sq.flank then
             words = "Alpha teams, flank " .. (sq.flank.side < 0 and "left" or "right") .. "! Bravo teams, cover!"
+        elseif intent == "ASSAULT" and sq.flank and not sq.flank.blind then
+            words = "Alpha teams, take the position! Bravo teams, cover!"
         end
         LF.Tactics.shout(cid, words)
     end
+end
+
+-- Team positions start from where the men stand.
+local function initTeams(squad)
+    for _, tid in ipairs(squad.teams) do
+        local team = LF.Units.get(tid)
+        if team and not teams[tid] then
+            local ax, ay = elementCentre(team, "A")
+            local bx, by = elementCentre(team, "B")
+            if ax or bx then
+                ax, ay = ax or bx, ay or by
+                bx, by = bx or ax, by or ay
+                teams[tid] = { order = nil, pos = { A = { x = ax, y = ay }, B = { x = bx, y = by } } }
+            end
+        end
+    end
+end
+
+-- Corporals within earshot of the commander take up the intent, then run their drills.
+local function passOrders(squad, sq, cmd)
+    for _, tid in ipairs(squad.teams) do
+        local team = LF.Units.get(tid)
+        local t = teams[tid]
+        if team and t then
+            local cpl = team.leader and LF.Bodies.get(team.leader)
+            if cpl and not cpl:isDead() then
+                if LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
+                    t.heard = orderFor(team, sq)
+                end
+                driveTeam(team, t, squad, sq)
+            end
+        end
+    end
+end
+
+-- Plan an assault on an objective: teams bound onto it (each aiming a little to the side so
+-- they don't pile onto one square). blind = marching in with no enemy met (all teams go);
+-- otherwise the alpha teams storm it while the bravo teams cover.
+local function planAssault(squad, obj, blind)
+    local fx, fy = facing(squad)
+    local rx, ry = -fy, fx
+    local plan = { assault = true, blind = blind, started = LF.tick, routes = {}, teams = {}, side = 1 }
+    local k = 0
+    for _, tid in ipairs(squad.teams) do
+        local team, t = LF.Units.get(tid), teams[tid]
+        local cpl = team and team.leader and LF.Records.get(team.leader)
+        if team and t and cpl and fit(cpl) and (blind or team.element == "A") then
+            k = k + 1
+            local lat = (k % 2 == 1 and -1 or 1) * (1 + math.floor((k - 1) / 2)) * 2.5
+            plan.routes[tid] = { { x = obj.x + rx * lat, y = obj.y + ry * lat } }
+            plan.teams[#plan.teams + 1] = tid
+            t.maneuverDone, t.pushes = nil, 0
+            t.order = nil                         -- start the maneuver afresh
+        end
+    end
+    if k == 0 then return nil end
+    return plan
+end
+
+-- Are all of this plan's teams done (in position, or without a corporal)?
+local function planDone(sq)
+    for _, tid in ipairs(sq.flank and sq.flank.teams or {}) do
+        local t = teams[tid]
+        local team = LF.Units.get(tid)
+        local cpl = team and team.leader and LF.Bodies.get(team.leader)
+        if t and cpl and not cpl:isDead() and not t.maneuverDone then return false end
+    end
+    return true
+end
+
+-- Defenders: man the posts; fight from them. No advancing, repositioning or flanking.
+local function updateDefender(squad, sq, cid, cmd, obj)
+    local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
+    if c then
+        if not sq.contact then sq.contact = LF.Tactics.point(c.x, c.y, c.z)
+        else sq.contact.x, sq.contact.y, sq.contact.z = c.x, c.y, c.z end
+    else
+        sq.contact = nil
+    end
+    sq.fightStart = nil
+    setIntent(squad, sq, cid, "DEFEND", "holding " .. obj.name)
+end
+
+-- Attackers with no enemy met yet: march on the objective by bounds.
+local function marchOn(squad, sq, cid, cmd, obj)
+    initTeams(squad)
+    if sq.intent ~= "ASSAULT" or not (sq.flank and sq.flank.blind) then
+        local plan = planAssault(squad, obj, true)
+        if not plan then return end
+        sq.flank = plan
+        setIntent(squad, sq, cid, "ASSAULT", "marching on " .. obj.name)
+    elseif planDone(sq) then
+        return                                    -- arrived; ownership decides what comes next
+    end
+    passOrders(squad, sq, cmd)
+end
+
+-- Enemy soldiers still at the objective.
+local defCtx = {}
+local function countDefender(e, _dsq, ctx)
+    if not e.body:isDead() and LF.isHostile(ctx.faction, e.rec.faction) then ctx.n = ctx.n + 1 end
+end
+local function defendersAt(squad, obj)
+    defCtx.faction, defCtx.n = squad.faction, 0
+    LF.Sense.near(obj.x, obj.y, obj.radius + 4, countDefender, defCtx)
+    return defCtx.n
 end
 
 local function updateSquad(squad)
@@ -643,8 +795,19 @@ local function updateSquad(squad)
     if not cmd or cmd:isDead() then return end   -- no commander here: everyone keeps their last order
     local sq = squads[squad.id]
     if not sq then sq = {}; squads[squad.id] = sq end
+    local kind, obj = LF.Objective.taskOf(squad)
+    if kind == "defend" then return updateDefender(squad, sq, cid, cmd, obj) end
 
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
+    if not c and kind == "attack" then
+        sq.fightStart = nil
+        return marchOn(squad, sq, cid, cmd, obj)
+    end
+    if c and sq.flank and sq.flank.blind then
+        -- Ran into the enemy on the march: stop and get bearings before any new order.
+        setIntent(squad, sq, cid, nil, "contact on the march")
+        sq.flank = nil
+    end
     if not c then
         if sq.intent then
             setIntent(squad, sq, cid, nil, "no contact")
@@ -664,19 +827,7 @@ local function updateSquad(squad)
     if not sq.contact then sq.contact = LF.Tactics.point(c.x, c.y, c.z)
     else sq.contact.x, sq.contact.y, sq.contact.z = c.x, c.y, c.z end
 
-    -- Team positions start from where the men stand when the fight begins.
-    for _, tid in ipairs(squad.teams) do
-        local team = LF.Units.get(tid)
-        if team and not teams[tid] then
-            local ax, ay = elementCentre(team, "A")
-            local bx, by = elementCentre(team, "B")
-            if ax or bx then
-                ax, ay = ax or bx, ay or by
-                bx, by = bx or ax, by or ay
-                teams[tid] = { order = nil, pos = { A = { x = ax, y = ay }, B = { x = bx, y = by } } }
-            end
-        end
-    end
+    initTeams(squad)
 
     -- How the unit stands.
     local total, fitN, pinnedN = 0, 0, 0
@@ -713,10 +864,24 @@ local function updateSquad(squad)
         sq.broken = true
         if front < CFG.fallbackClear then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
         else intent, why = "HOLD", "fallen back out of range" end
-    elseif intent ~= "HOLD" and intent ~= "FLANK" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
+    elseif intent ~= "HOLD" and intent ~= "FLANK" and intent ~= "ASSAULT" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         -- Too many men pinned to keep advancing. (A squad already holding still goes on to the
         -- flank checks below, and a flank under way carries on.)
         intent, why = "HOLD", pinnedN .. "/" .. fitN .. " pinned"
+    elseif intent == "ASSAULT" then
+        -- Storming the objective: carry on until the assault teams are on it (or too long).
+        if planDone(sq) then intent, why = "HOLD", "assault teams on the objective"
+        elseif sq.flank and LF.tick - sq.flank.started > CFG.assaultTimeout then intent, why = "HOLD", "assault stalled" end
+    elseif kind == "attack" and intent == "HOLD" and LF.tick - (sq.lastAssault or -100000) >= CFG.assaultCooldown
+        and fitN > 0 and (defendersAt(squad, obj) <= math.max(1, math.floor(fitN * CFG.assaultThin))
+            or (enemies > 0 and sq.supShare >= CFG.assaultSuppressed)) then
+        local plan = planAssault(squad, obj, false)
+        sq.lastAssault = LF.tick
+        if plan then
+            sq.flank = plan
+            intent, why = "ASSAULT", defendersAt(squad, obj) .. " defenders left at " .. obj.name
+                .. string.format(", %.0f%% of the enemy suppressed", sq.supShare * 100)
+        end
     elseif intent == "FLANK" then
         -- Carry on until every flanking team is in position (or it takes too long).
         local done = true
@@ -765,20 +930,7 @@ local function updateSquad(squad)
     end
     setIntent(squad, sq, cid, intent, why or "")
 
-    -- Pass it on: corporals within earshot take up the intent, then run their drills.
-    for _, tid in ipairs(squad.teams) do
-        local team = LF.Units.get(tid)
-        local t = teams[tid]
-        if team and t then
-            local cpl = team.leader and LF.Bodies.get(team.leader)
-            if cpl and not cpl:isDead() then
-                if LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
-                    t.heard = orderFor(team, sq)
-                end
-                driveTeam(team, t, squad, sq)
-            end
-        end
-    end
+    passOrders(squad, sq, cmd)
     chooseShift(squad, sq)
 end
 

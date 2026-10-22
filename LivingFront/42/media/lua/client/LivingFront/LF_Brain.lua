@@ -56,6 +56,7 @@ local CFG = {
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
     holdLeash = 4,          -- ... and within this of their spot while their unit has orders
+    postLeash = 1.5,        -- defenders stay at their post (window, doorway) within this
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
     bearingsLeash = 5,      -- opening seconds of a fight: take the nearest cover within this many tiles
     stuckLeash = 7,         -- can't reach his spot: take the nearest cover within this many tiles
@@ -151,13 +152,16 @@ local function leavePosition(id, body, m)
     LF.Posture.set(body, false)
 end
 
+-- States between which a soldier keeps his position (losing or regaining sight, contact).
+local KEEP_POSITION = { engage = true, alert = true, guard = true }
+
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
     LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
     -- Losing and regaining sight (engage <-> alert) keeps the soldier's position and rhythm;
     -- any other change starts fresh.
-    if (m.state == "engage" or m.state == "alert") and (state == "engage" or state == "alert") then
+    if KEEP_POSITION[m.state] and KEEP_POSITION[state] then
         m.state = state
         return
     end
@@ -522,8 +526,8 @@ local function decide(id, body, rec, m)
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
-        local role, sx, sy, sz, point = LF.Tactics.place(rec)
-        local leash = CFG.holdLeash
+        local role, sx, sy, sz, point, watching = LF.Tactics.place(rec)
+        local leash = role == "post" and CFG.postLeash or CFG.holdLeash
         if role and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
@@ -543,7 +547,11 @@ local function decide(id, body, rec, m)
                 moveTo(m, body, sx, sy, sz)
                 return
             end
-            if pick and dist <= CFG.fireRange then
+            if watching and not (pick and dist <= CFG.fireRange) then
+                -- No enemy met yet (marching in, or manning a post): watch, don't fire.
+                setState(id, body, rec, m, "guard", "watching " .. math.floor(point.x) .. "," .. math.floor(point.y))
+                m.targetId, m.point = nil, nil
+            elseif pick and dist <= CFG.fireRange then
                 if m.state ~= "engage" then
                     setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                         .. math.floor(dist) .. " tiles")
@@ -663,6 +671,9 @@ local function act(id, body, rec, m)
         end
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
+        if m.fighter then topUp(body, m, false) end
+    elseif m.state == "guard" then
+        if (m.cover and isAt(body, m.cover)) or (not m.cover and not isMoving(body)) then hunkerDown(body) end
         if m.fighter then topUp(body, m, false) end
     elseif m.state == "idle" and m.fighter and LF.Combat.isArmed(body) then
         topUp(body, m, true)

@@ -15,6 +15,7 @@ require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Weapons"
+require "LivingFront/LF_Objective"
 
 LF.Debug = LF.Debug or {}
 
@@ -75,6 +76,7 @@ local function deleteAll()
     LF.Suppress.forgetAll()
     LF.Tactics.forgetAll()
     LF.Weapons.forgetAll()
+    LF.Objective.clear()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
 end
@@ -147,11 +149,31 @@ local function resetWorld(playerNum)
     for id, rec in pairs(LF.Records.all()) do
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
     end
+    -- Objectives nobody is fighting over any more go too.
+    for oid in pairs(LF.Objective.all()) do
+        local used = false
+        for _, u in pairs(LF.Units.all()) do
+            if u.task and u.task.obj == oid then used = true; break end
+        end
+        if not used then LF.Objective.all()[oid] = nil end
+    end
+    getGameTime():setTimeOfDay(8.0)
     LF.guard("heal player", healPlayer, p)
     LF.guard("clean player", cleanPlayer, p)
     LF.log("RESET WORLD removed " .. counts.corpses .. " corpses, " .. counts.items .. " items, "
-        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed")
+        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed; time set to 08:00")
     LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
+end
+
+-- Objective test: the clicked spot (a building works best) becomes the objective. A Soviet
+-- squad defends it, facing west; a German squad starts 26 tiles west and attacks.
+local function objectiveTest(x, y, z)
+    local obj = LF.Objective.create(x + 0.5, y + 0.5, z, "The objective", 10)
+    local def = LF.Units.createSquad("SOV", x + 0.5, y + 0.5, z, -1, 0)
+    LF.Objective.assign(def, "defend", obj)
+    local att = LF.Units.createSquad("GER", x - 25.5, y + 0.5, z, 1, 0)
+    LF.Objective.assign(att, "attack", obj)
+    LF.say("Objective test: Germans attack, Soviets defend")
 end
 
 -- Two units facing each other across the clicked square, Germans west and Soviets east,
@@ -181,6 +203,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     -- Current test.
     sub:addOption("Test: team vs team (4 vs 4)", nil, function() battle(x, y, z, true, 14) end)
     sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
+    sub:addOption("Test: objective here - Germans attack, Soviets defend", nil, function() objectiveTest(x, y, z) end)
     sub:addOption("Unit report (orders, suppression)", nil, function() LF.Units.report(); LF.Brain.report() end)
 
     -- Basics, per type.
@@ -200,7 +223,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         end
     end
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
-    sub:addOption("Reset world (clear bodies, blood, debris; heal me)", nil, function() resetWorld(playerNum) end)
+    sub:addOption("Reset world (clear bodies, blood, debris; heal me; 08:00)", nil, function() resetWorld(playerNum) end)
 end
 
 Events.OnFillWorldObjectContextMenu.Add(onMenu)
