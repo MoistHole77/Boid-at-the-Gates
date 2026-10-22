@@ -18,9 +18,12 @@
 --                (aimed fire at what it sees, area fire at the last-known position), then swap
 --     FALLBACK - the same, backwards
 --     MANEUVER - the same bounding, along a route (out to the side, then in toward the enemy)
---   On his own initiative, a corporal whose team is holding and finds half its fit men without
---   an open shot (no enemy in their sights for ~8 s) moves the whole team to a nearby spot with
---   a line of sight to the enemy (REPOSITION). An order from the sergeant overrides it.
+--   A corporal whose team is holding and finds half its fit men without an open shot (no enemy
+--   in their sights for ~8 s) moves the whole team to a nearby spot with a line of sight to the
+--   enemy (REPOSITION). Only one team per unit does this at a time, at most once every ~30 s;
+--   among the teams that want to, the one that goes is picked at random, weighted toward the
+--   less suppressed. An order from the sergeant overrides it. A stalemate flank waits until
+--   two repositions have been tried (or the fight has stalled twice as long).
 --   A team out of earshot keeps doing its last order.
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
@@ -70,8 +73,9 @@ local CFG = {
     stalemateTicks = 2700,  -- ~45 s of holding in range with no flank by either side
     stalemateRadius = 45,   -- enemy squads whose last contact is within this of our commander count
     -- Corporal's reposition (team without an open shot)
-    blindShare = 0.5,       -- this share of the team's fit men without a shot -> move the team
-    shiftCooldown = 900,    -- at most once per ~15 s per team        -- a flanking team that can't see the enemy at the end pushes on this many times
+    blindShare = 0.5,       -- this share of the team's fit men without a shot -> the team wants to move
+    shiftInterval = 1800,   -- one team per unit repositions at most once per ~30 s
+    shiftsBeforeStalemate = 2, -- repositions tried before a stalemate flank (or 2x stalemateTicks)        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
@@ -331,25 +335,60 @@ local function planShift(team, t, squad, sq)
     return false
 end
 
--- While holding, the corporal checks whether half his fit men have no open shot.
+-- While holding, a team that is repositioning finishes when its men are in place.
 local function corporalCheck(team, t, squad, sq)
-    if t.shifting then
-        if shiftDone(team, t, squad) then t.shifting = nil end
-        return
-    end
-    if LF.tick - (t.lastShift or -100000) < CFG.shiftCooldown then return end
-    if not (LF.Brain and LF.Brain.isBlind) then return end
-    local fitN, blind = 0, 0
+    if t.shifting and shiftDone(team, t, squad) then t.shifting = nil end
+end
+
+-- Does this team want to reposition (half its fit men without an open shot)? Returns wants,
+-- average suppression of its fit men.
+local function teamWantsShift(team)
+    local fitN, blind, supp = 0, 0, 0
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
-        if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then
+        local b = r and LF.Bodies.get(rid)
+        if b and r.team == team.id and fit(r) then
             fitN = fitN + 1
+            supp = supp + LF.Suppress.value(b)
             if LF.Brain.isBlind(rid) then blind = blind + 1 end
         end
     end
-    if fitN >= 2 and blind / fitN >= CFG.blindShare then
-        t.lastShift = LF.tick
-        planShift(team, t, squad, sq)
+    if fitN < 2 then return false, 0 end
+    return blind / fitN >= CFG.blindShare, supp / fitN
+end
+
+-- One reposition per unit at a time, at most every ~30 s: of the holding teams that want to
+-- move, pick one at random, weighted toward the less suppressed.
+local function chooseShift(squad, sq)
+    if sq.intent ~= "HOLD" or not (LF.Brain and LF.Brain.isBlind) then return end
+    if LF.tick - (sq.lastShift or -100000) < CFG.shiftInterval then return end
+    local cands, weights, total = {}, {}, 0
+    for _, tid in ipairs(squad.teams) do
+        local team, t = LF.Units.get(tid), teams[tid]
+        if team and t then
+            if t.shifting then return end                -- one at a time
+            if t.order == "HOLD" and team.leader and LF.Bodies.get(team.leader) then
+                local wants, supp = teamWantsShift(team)
+                if wants then
+                    local w = math.max(5, 105 - supp)    -- less suppressed -> more likely
+                    cands[#cands + 1], weights[#weights + 1] = team, w
+                    total = total + w
+                end
+            end
+        end
+    end
+    if #cands == 0 then return end
+    local roll = ZombRand(math.floor(total)) + 1
+    local pick = cands[#cands]
+    for i, w in ipairs(weights) do
+        roll = roll - w
+        if roll <= 0 then pick = cands[i]; break end
+    end
+    if planShift(pick, teams[pick.id], squad, sq) then
+        sq.lastShift = LF.tick
+        sq.shiftsSinceFlank = (sq.shiftsSinceFlank or 0) + 1
+    else
+        sq.lastShift = LF.tick - CFG.shiftInterval + 300   -- nowhere better from there; ask again in ~5 s
     end
 end
 
@@ -562,7 +601,12 @@ local function stalemate(squad, sq, x, y)
             if (s.supShare or 0) > enemyBest then enemyBest = s.supShare or 0 end
         end
     end
-    if LF.tick - quietSince < CFG.stalemateTicks then return false, enemyBest end
+    local quiet = LF.tick - quietSince
+    if quiet < CFG.stalemateTicks then return false, enemyBest end
+    -- Give the teams' own repositions a chance first (unless it has stalled twice as long).
+    if (sq.shiftsSinceFlank or 0) < CFG.shiftsBeforeStalemate and quiet < CFG.stalemateTicks * 2 then
+        return false, enemyBest
+    end
     return (sq.supShare or 0) >= enemyBest, enemyBest
 end
 
@@ -706,6 +750,7 @@ local function updateSquad(squad)
             if plan then
                 sq.flank = plan
                 sq.flankStartTick = LF.tick
+                sq.shiftsSinceFlank = 0
                 intent, why = "FLANK", reason
             else
                 sq.lastFlank = LF.tick
@@ -735,6 +780,7 @@ local function updateSquad(squad)
             end
         end
     end
+    chooseShift(squad, sq)
 end
 
 local function onTick()
