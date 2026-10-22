@@ -35,6 +35,7 @@ require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Aid"
 require "LivingFront/LF_Weapons"
 require "LivingFront/LF_Stance"
+require "LivingFront/LF_Building"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -71,6 +72,7 @@ local CFG = {
     lowCoverPenalty = 5,    -- target choice: tiles added for a target behind low cover
     highCoverPenalty = 12,  --                 ... behind high cover
     stickyBonus = 4,        -- target choice: tiles taken off for the current target
+    clearFireRange = 14,    -- clearing a building: stop and shoot at an enemy this close
     spotRange = 12,         -- enemy leaders closer than this are recognised faster
     spotChanceNear = 10,    -- percent per think to recognise a visible enemy leader (near)
     spotChanceFar = 4,      -- ... (far)
@@ -480,7 +482,7 @@ end
 -- window, covering a door from inside, or on the back line - and fight from there. The post is
 -- his cover; he doesn't go looking for anything better. At a window he stands to fire (ducking
 -- only under fire); elsewhere he stays down and doesn't fire blind through the walls.
-local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, pick, threatId, dist)
+local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, shoveWin, pick, threatId, dist)
     m.order, m.point = "post", point
     local where = stand and "at his window" or "at his post"
     if pick and dist <= CFG.fireRange then
@@ -511,6 +513,49 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, pi
     end
     m.cover.stand = stand
     m.cover.loose = not stand
+    -- Behind a window with furniture in it: once there (and not shooting), shove it aside.
+    if shoveWin and isAt(body, m.cover) and not body:isPerformingAnAction() and not (pick and dist <= CFG.fireRange) then
+        local k = shoveWin.x .. "," .. shoveWin.y
+        if m.shoved ~= k then
+            m.shoved = k
+            ISTimedActionQueue.add(LF_ShoveAction:new(body, rec, shoveWin, LF.Tactics.shoveWindow))
+        end
+    end
+end
+
+-- Clearing a building (LF_Tactics.clearPlace): walk (or run) to his place in the file - the
+-- stack by the door, then his spot in the room, rifle up - and face where he's told. An enemy
+-- in view close by: stop and shoot, then carry on.
+local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
+    m.order, m.point = "file", nil
+    if pick and dist <= CFG.clearFireRange then
+        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        if m.state ~= "engage" then
+            setState(id, body, rec, m, "engage", "clearing - target #" .. threatId .. " " .. title(pick.rec) .. " at "
+                .. math.floor(dist) .. " tiles")
+        end
+        m.targetId, m.targetDist = threatId, dist
+        return
+    end
+    setState(id, body, rec, m, "file", gait == "aim" and "going in" or "stacking up")
+    m.targetId = nil
+    m.fileFace, m.fileGait = face, gait
+    local tx, ty = math.floor(sx), math.floor(sy)
+    local there = math.floor(body:getX()) == tx and math.floor(body:getY()) == ty
+    m.fileThere = there
+    if there then return end
+    local key = tx .. "," .. ty .. "," .. gait
+    if m.fileDest ~= key then
+        m.fileDest = key
+        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        m.lastPath = -10000
+    end
+    if body:isPerformingAnAction() and not isMoving(body) then return end
+    if not isMoving(body) and LF.tick - m.lastPath > 60 then
+        if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
+        walkTo(body, tx, ty, math.floor(sz), gait)
+        m.lastPath = LF.tick
+    end
 end
 
 local function decide(id, body, rec, m)
@@ -622,8 +667,18 @@ local function decide(id, body, rec, m)
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
-        local role, sx, sy, sz, point, watching, coverPoint, stand = LF.Tactics.place(rec)
+        local role, sx, sy, sz, point, watching, coverPoint, stand, shoveWin = LF.Tactics.place(rec)
         local leash = CFG.holdLeash
+        if role == "file" then
+            -- (place returns the face point and gait in the point / watching slots)
+            holdFile(id, body, rec, m, sx, sy, sz, point, watching, pick, threatId, dist)
+            return
+        end
+        if role == "post" and stuckNear(m, sx, sy) and LF.Tactics.postUnreachable(rec) then
+            -- A window he can't get to: he'll fire out of it from further back (next think).
+            m.stuck = nil
+            return
+        end
         if role and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
@@ -631,7 +686,7 @@ local function decide(id, body, rec, m)
         end
         if role == "command" then leash = CFG.commandLeash end
         if role == "post" then
-            holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, pick, threatId, dist)
+            holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, shoveWin, pick, threatId, dist)
             return
         end
         if role == "sector" then
@@ -787,6 +842,13 @@ local function act(id, body, rec, m)
         local p = m.point
         if p and LF.tick % 40 == 0 and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
         if m.fighter then topUp(body, m, false) end
+    elseif m.state == "file" then
+        -- In the stack (kneeling, facing the door) or on his spot in the room (standing, facing on).
+        if m.fileThere and not body:isPerformingAnAction() then
+            if m.fileGait ~= "aim" then hunkerDown(body) end
+            local f = m.fileFace
+            if f and LF.tick % 20 == 0 then body:faceLocation(f.x, f.y) end
+        end
     elseif m.state == "down" then
         -- Wounded in a defence: stays down where he is, bandages himself, fires at what he sees.
         hunkerDown(body)
@@ -843,7 +905,7 @@ local function stepNpc(id, body, rec)
         LF.Brain.decide(id, body, rec, m)
         -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
         -- he is in position.
-        local moving = m.state == "bound" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))
+        local moving = m.state == "bound" or m.state == "file" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))
         LF.Suppress.setMoving(id, moving)
     end
     LF.Brain.act(id, body, rec, m)

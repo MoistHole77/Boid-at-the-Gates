@@ -72,7 +72,13 @@ local CFG = {
     flankWide = 20,         -- ... and this far off to the side of him
     counterFlankTicks = 1500, -- after one side starts a flank, the other must wait this long (~25 s)
     flankPushes = 3,
-    reformTicks = 2700,     -- a defence re-forms toward a new attack direction at most every ~45 s
+    reformTicks = 2700,
+    -- Clearing a building (offensive)
+    clearAt = 3,            -- send Alpha 1 in when the enemy known in a building is down to this many
+    clearCooldown = 3600,   -- at most one clearing order per ~60 s
+    clearStackTimeout = 1200, -- go in after ~20 s even if not everyone is stacked
+    clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
+    clearTimeout = 7200,    -- give up on a clearing after ~2 min     -- a defence re-forms toward a new attack direction at most every ~45 s
     -- Stalemate: if neither side reaches fire superiority for this long, the side with the better
     -- share of the enemy suppressed flanks anyway (battles should still last a while).
     stalemateTicks = 2700,  -- ~45 s of holding in range with no flank by either side
@@ -169,6 +175,11 @@ end
 function LF.Tactics.place(rec)
     local sq = rec.squad and squads[rec.squad]
     if not sq then return nil end
+    local tc = rec.team and teams[rec.team]
+    if tc and tc.clear then
+        local role, x, y, z, face, gait = LF.Tactics.clearPlace(tc.clear, rec)
+        if role then return role, x, y, z, face, gait end
+    end
     local alone = rec.team and teams[rec.team]
     alone = alone and alone.alone and alone.heard and alone or nil
     if not (sq.intent or alone) then return nil end
@@ -563,7 +574,7 @@ local function planFlank(squad, c, sq)
         if team and t then
             for _, el in ipairs({ "A", "B" }) do sx, sy, n = sx + t.pos[el].x, sy + t.pos[el].y, n + 1 end
             local cpl = team.leader and LF.Records.get(team.leader)
-            if team.element == "A" and cpl and fit(cpl) then alphas[#alphas + 1] = team end
+            if team.element == "A" and cpl and fit(cpl) and not t.clear then alphas[#alphas + 1] = team end
         end
     end
     if #alphas == 0 or n == 0 then return nil end
@@ -869,7 +880,17 @@ local function wallPosts(L, w)
     end
     for _, o in ipairs(L.openings) do
         if o.wall == w and o.kind == "window" then
-            list[#list + 1] = { x = o.x, y = o.y, wall = w, stand = true, kind = "window" }
+            if not o.blocked then
+                list[#list + 1] = { x = o.x, y = o.y, wall = w, stand = true, kind = "window", win = o, depth = 0 }
+            else
+                -- Furniture in the window: fire out of it from the square behind (a narrower view)
+                -- - and if the furniture can be shoved aside, shove it and take the window.
+                local bx, by = o.x - o.dx, o.y - o.dy
+                if LF.Building.isInside(L, bx, by) then
+                    list[#list + 1] = { x = bx, y = by, wall = w, stand = true, kind = "window", win = o, depth = 1,
+                                        shove = o.movable or nil }
+                end
+            end
         end
     end
     -- Back line: 2 tiles in from the wall, spread out from its middle.
@@ -972,8 +993,46 @@ local function dealBuilding(squad, sq, front)
         .. " wall; " .. moved .. " man/men to (new) posts")
 end
 
+-- A man can't get to his window post (a path blocked by furniture): he fires out of the window
+-- from a square further back instead (up to 2 tiles in). Returns true if he has a new post.
+function LF.Tactics.postUnreachable(rec)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local p = P and P.layout and sq.posts and sq.posts[rec.id]
+    if not (p and p.win) or (p.depth or 0) >= 2 then return false end
+    local o = p.win
+    local d = (p.depth or 0) + 1
+    local nx, ny = o.x - o.dx * d, o.y - o.dy * d
+    if not LF.Building.isInside(P.layout, nx, ny) then return false end
+    p.x, p.y, p.depth, p.shove = nx, ny, d, nil
+    LF.log("BUILDING #" .. rec.id .. " " .. LF.Units.title(rec) .. " can't get to his window; firing out of it from "
+        .. d .. " tile(s) back")
+    return true
+end
+
+-- A man posted behind a window with furniture in it shoves the furniture aside (to a free
+-- square that isn't anyone's post) and takes the window. Returns true if he did.
+function LF.Tactics.shoveWindow(rec)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local p = P and P.layout and sq.posts and sq.posts[rec.id]
+    if not (p and p.shove and p.win) then return false end
+    p.shove = nil
+    local avoid = {}
+    for _, q in pairs(sq.posts) do avoid[q.x .. "," .. q.y] = true end
+    local o = p.win
+    if LF.Building.shove(P.layout, o.x, o.y, o.dx, o.dy, avoid) then
+        p.x, p.y, p.depth = o.x, o.y, 0
+        LF.log("BUILDING #" .. rec.id .. " " .. LF.Units.title(rec) .. " shoves the furniture out of the window at "
+            .. o.x .. "," .. o.y .. " and takes it")
+        return true
+    end
+    LF.log("BUILDING #" .. rec.id .. " " .. LF.Units.title(rec) .. " can't shift the furniture in his window; firing from behind it")
+    return false
+end
+
 -- Where a soldier stands in the building's defence: "post", x, y, z, point, watching,
--- coverPoint, stand (at a window: stand to fire).
+-- coverPoint, stand (at a window: stand to fire), shoveWin (the window to clear first, or nil).
 function LF.Tactics.buildingPlace(squad, sq, rec)
     local P = sq.perim
     local L = P.layout
@@ -1009,14 +1068,15 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
         cp = reusePoint(sq.coverPts, rec.id)
         cp.x, cp.y, cp.z = sx + dx * 15, sy + dy * 15, P.z
     end
-    if best then return "post", sx, sy, P.z, best, false, cp, p.stand end
+    local shoveWin = p.shove and p.win or nil
+    if best then return "post", sx, sy, P.z, best, false, cp, p.stand, shoveWin end
     local wx, wy = dx, dy
     if e1 then wx, wy = wx + e1[1], wy + e1[2] end
     if e2 then wx, wy = wx + e2[1], wy + e2[2] end
     local wl = math.max(0.1, math.sqrt(wx * wx + wy * wy))
     local wp = reusePoint(sq.watchPts, rec.id)
     wp.x, wp.y, wp.z = sx + wx / wl * 15, sy + wy / wl * 15, P.z
-    return "post", sx, sy, P.z, wp, true, cp, p.stand
+    return "post", sx, sy, P.z, wp, true, cp, p.stand, shoveWin
 end
 
 local function updateDefensive(squad, sq, cid, cmd)
@@ -1181,7 +1241,9 @@ local function passOrders(squad, sq, cmd)
         local t = teams[tid]
         if team and t then
             local cpl = team.leader and LF.Bodies.get(team.leader)
-            if cpl and not cpl:isDead() then
+            if t.clear then
+                -- busy clearing a building (runs on its own)
+            elseif cpl and not cpl:isDead() then
                 if cmd and sq.intent and LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
                     if t.alone then LF.log("CORPORAL " .. team.name .. " of " .. squad.name .. " back under his commander") end
                     t.heard, t.alone = orderFor(team, sq), nil
@@ -1198,11 +1260,245 @@ local function passOrders(squad, sq, cmd)
     end
 end
 
+-- ---- clearing a building (offensive) -------------------------------------------------------
+--
+-- When the sergeant judges a building's defence is down to a few men (the enemy his squad knows
+-- about there, CFG.clearAt or fewer), he sends Alpha 1 to clear it while the rest cover. The
+-- team, slowly and in order:
+--   stack  - single file against the wall beside the nearest door (outside), point man nearest
+--            the door, kneeling, facing it
+--   breach - a moment's pause, then the door is opened (kicked in if it's locked)
+--   go     - one man at a time, the point man first: each walks in with his rifle up to his own
+--            spot in the room, spread out; the next man goes once the one ahead is through the
+--            doorway. Anyone who sees an enemy close by stops and shoots.
+--   in     - when all are on their spots: "Room clear!" - the team holds there.
+
+local function clearKey(x, y) return x .. "," .. y end
+
+-- Plan the clearing of building L by a team. Returns the plan or nil.
+local function planClear(squad, team, t, L)
+    local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
+    local cell = getCell()
+    local z = L.z
+    local door, doorD = nil, math.huge
+    for _, o in ipairs(L.openings) do
+        if o.kind == "door" then
+            local out = cell:getGridSquare(o.x + o.dx, o.y + o.dy, z)
+            if out and out:isFree(false) then
+                local d = LF.dist(cx, cy, o.x + o.dx + 0.5, o.y + o.dy + 0.5)
+                if d < doorD then door, doorD = o, d end
+            end
+        end
+    end
+    if not door then return nil end
+    local file = {}
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then file[#file + 1] = rid end
+    end
+    if #file < 2 then return nil end
+    local ox, oy = door.x + door.dx, door.y + door.dy
+    -- Stack against the wall beside the door, on the side nearer the team.
+    local lx, ly = -door.dy, door.dx
+    local near = ((cx - ox) * lx + (cy - oy) * ly) >= 0 and 1 or -1
+    local stack = nil
+    for _, side in ipairs({ near, -near }) do
+        local spots = {}
+        for k = 1, #file do
+            local x, y = ox + lx * side * k, oy + ly * side * k
+            local q = cell:getGridSquare(x, y, z)
+            if not (q and q:isFree(false)) or LF.Building.isInside(L, x, y) then break end
+            spots[k] = { x = x, y = y }
+        end
+        if #spots == #file then stack = spots; break end
+    end
+    if not stack then
+        -- No room along the wall: a file straight back from the door instead.
+        stack = {}
+        for k = 1, #file do stack[k] = { x = ox + door.dx * k, y = oy + door.dy * k } end
+    end
+    -- Each man's own spot inside: spread out in the room behind the door.
+    local doorSq = cell:getGridSquare(door.x, door.y, z)
+    local room = doorSq and doorSq:getRoom()
+    local targets, used = {}, {}
+    for i, rid in ipairs(file) do
+        local best, bestS = nil, -math.huge
+        for _, q in ipairs(L.inside) do
+            local dd = LF.dist(q.x, q.y, door.x, door.y)
+            local qs = L.insideSet[clearKey(q.x, q.y)]
+            if dd >= 2 and dd <= 7 and not used[clearKey(q.x, q.y)] then
+                local s = math.min(dd, 4)
+                for _, u in pairs(targets) do s = math.min(s, LF.dist(q.x, q.y, u.x, u.y)) end
+                if room and qs and qs:getRoom() ~= room then s = s - 5 end
+                if s > bestS then best, bestS = q, s end
+            end
+        end
+        best = best or { x = door.x, y = door.y }
+        targets[rid] = { x = best.x, y = best.y }
+        used[clearKey(best.x, best.y)] = true
+    end
+    return { L = L, door = door, stack = stack, file = file, targets = targets, phase = "stack",
+             started = LF.tick, phaseAt = LF.tick, next = 1, manAt = LF.tick, face = LF.Tactics.point(ox, oy, z),
+             faces = {} }
+end
+
+-- Where a man of a clearing team goes: "file", x, y, z, facePoint, gait - or nil if he isn't in
+-- the file (he then does what he would otherwise).
+function LF.Tactics.clearPlace(C, rec)
+    local idx = nil
+    for i, rid in ipairs(C.file) do if rid == rec.id then idx = i; break end end
+    if not idx then return nil end
+    local z = C.L.z
+    if (C.phase == "go" or C.phase == "in") and idx <= C.next then
+        local tg = C.targets[rec.id]
+        local f = C.faces[rec.id]
+        if not f then
+            -- Face on into the room, away from the door.
+            local dx, dy = tg.x - C.door.x, tg.y - C.door.y
+            local len = math.max(0.5, math.sqrt(dx * dx + dy * dy))
+            f = LF.Tactics.point(tg.x + 0.5 + dx / len * 5, tg.y + 0.5 + dy / len * 5, z)
+            C.faces[rec.id] = f
+        end
+        return "file", tg.x + 0.5, tg.y + 0.5, z, f, "aim"
+    end
+    local sp = C.stack[idx]
+    local body = LF.Bodies.get(rec.id)
+    local far = body and LF.dist(body:getX(), body:getY(), sp.x + 0.5, sp.y + 0.5) > 6
+    return "file", sp.x + 0.5, sp.y + 0.5, z, C.face, far and "run" or "walk"
+end
+
+local function openDoor(door, body)
+    if door.setLockedByKey then door:setLockedByKey(false) end
+    if door.setLocked then door:setLocked(false) end
+    if door.IsOpen and not door:IsOpen() then door:ToggleDoor(body) end
+end
+
+-- Run a clearing (each tactics update). Returns true while it is still going.
+local function updateClear(team, t, squad)
+    local C = t.clear
+    local live = {}
+    for _, rid in ipairs(C.file) do
+        local r = LF.Records.get(rid)
+        if r and fit(r) and LF.Bodies.get(rid) then live[#live + 1] = rid end
+    end
+    local function finish(words, why)
+        if team.leader and LF.Bodies.get(team.leader) and words then LF.Tactics.shout(team.leader, words) end
+        LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": " .. why)
+        -- The team holds where its men are now.
+        local sx, sy, n = 0, 0, 0
+        for _, rid in ipairs(live) do
+            local b = LF.Bodies.get(rid)
+            sx, sy, n = sx + b:getX(), sy + b:getY(), n + 1
+        end
+        if n > 0 then
+            t.pos.A.x, t.pos.A.y, t.pos.B.x, t.pos.B.y = sx / n, sy / n, sx / n, sy / n
+        end
+        t.clear, t.order, t.heard, t.moving, t.shifting = nil, "HOLD", "HOLD", nil, nil
+    end
+    if #live == 0 then finish(nil, "the whole file is down"); return false end
+    if LF.tick - C.started > CFG.clearTimeout then finish("Pull back to cover!", "took too long"); return false end
+    local function at(rid, x, y)
+        local b = LF.Bodies.get(rid)
+        return b and LF.dist(b:getX(), b:getY(), x + 0.5, y + 0.5) <= 1.3
+    end
+    if C.phase == "stack" then
+        local all = true
+        for i, rid in ipairs(C.file) do
+            if LF.Records.get(rid) and fit(LF.Records.get(rid)) and not at(rid, C.stack[i].x, C.stack[i].y) then all = false end
+        end
+        if all or LF.tick - C.phaseAt > CFG.clearStackTimeout then
+            C.phase, C.phaseAt = "breach", LF.tick
+            LF.log("CLEAR " .. team.name .. ": stacked on the door at " .. C.door.x .. "," .. C.door.y)
+            if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stacked! Ready...") end
+        end
+    elseif C.phase == "breach" then
+        if LF.tick - C.phaseAt >= 90 then
+            local cell = getCell()
+            local inSq = cell:getGridSquare(C.door.x, C.door.y, C.L.z)
+            local outSq = cell:getGridSquare(C.door.x + C.door.dx, C.door.y + C.door.dy, C.L.z)
+            local door = inSq and outSq and inSq:getDoorTo(outSq)
+            local point = LF.Bodies.get(live[1])
+            if door then
+                local locked = door.isLocked and door:isLocked()
+                LF.guard("open door", openDoor, door, point)
+                LF.log("CLEAR " .. team.name .. ": " .. (locked and "kicks the locked door in" or "opens the door"))
+            end
+            if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Go! Go!") end
+            C.phase, C.next, C.manAt = "go", 1, LF.tick
+        end
+    elseif C.phase == "go" then
+        local rid = C.file[C.next]
+        local r = rid and LF.Records.get(rid)
+        local b = rid and LF.Bodies.get(rid)
+        local through = b and LF.Building.isInside(C.L, b:getX(), b:getY())
+            and LF.dist(b:getX(), b:getY(), C.door.x + 0.5, C.door.y + 0.5) >= 1.5
+        if not (r and fit(r) and b) or through or LF.tick - C.manAt > CFG.clearManTimeout then
+            C.next, C.manAt = C.next + 1, LF.tick
+            if C.next > #C.file then C.phase, C.phaseAt = "in", LF.tick end
+        end
+    elseif C.phase == "in" then
+        local all = true
+        for _, rid2 in ipairs(live) do
+            local tg = C.targets[rid2]
+            if tg and not at(rid2, tg.x, tg.y) then all = false end
+        end
+        if all or LF.tick - C.phaseAt > 1800 then finish("Room clear!", "in and holding") ; return false end
+    end
+    return true
+end
+
+-- Order a team to clear building L. Returns true if it could plan it.
+function LF.Tactics.orderClear(squad, team, L, why)
+    initTeams(squad)
+    local t = teams[team.id]
+    if not t then return false end
+    local C = planClear(squad, team, t, L)
+    if not C then
+        LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": no usable door or too few men")
+        return false
+    end
+    t.clear, t.order, t.moving, t.shifting = C, "CLEAR", nil, nil
+    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. " ordered to clear the building by the door at "
+        .. C.door.x .. "," .. C.door.y .. " (" .. why .. ")")
+    if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stack up on the door!") end
+    return true
+end
+
+-- The sergeant: is the enemy holed up in a building, down to a few men he knows of? Send
+-- Alpha 1 in (the rest keep firing on it).
+local function sergeantClear(squad, sq, cid)
+    if LF.tick - (sq.lastClear or -100000) < CFG.clearCooldown then return end
+    local team = LF.Units.get(squad.teams[1])
+    local t = team and teams[team.id]
+    if not t or t.clear or not (team.leader and LF.Bodies.get(team.leader)) then return end
+    local counts, where, total = {}, {}, 0
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        total = total + 1
+        local b = LF.Building.idAt(c.x, c.y, c.z)
+        if b then counts[b] = (counts[b] or 0) + 1; where[b] = c end
+    end
+    for b, n in pairs(counts) do
+        if n == total and n <= CFG.clearAt then
+            local c = where[b]
+            local L = LF.Building.at(c.x, c.y, c.z)
+            sq.lastClear = LF.tick
+            if L and LF.Tactics.orderClear(squad, team, L, n .. " enemy known inside") then
+                LF.Tactics.shout(cid, team.name .. ", clear that building! Everyone else, cover them!")
+            end
+            return
+        end
+    end
+end
+
 local function updateSquad(squad)
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
     local sq = squads[squad.id]
     if not sq then sq = {}; squads[squad.id] = sq end
+    for _, tid in ipairs(squad.teams) do
+        local t, team = teams[tid], LF.Units.get(tid)
+        if t and t.clear and team then LF.guard("clear", updateClear, team, t, squad) end
+    end
     if not cmd or cmd:isDead() then
         -- No commander here: each corporal runs his own team (offensive stance only - a defence
         -- just holds where it is).
@@ -1218,7 +1514,9 @@ local function updateSquad(squad)
     if not c then
         if sq.intent then
             setIntent(squad, sq, cid, nil, "no contact")
-            for _, tid in ipairs(squad.teams) do teams[tid] = nil end
+            for _, tid in ipairs(squad.teams) do
+                if not (teams[tid] and teams[tid].clear) then teams[tid] = nil end
+            end
         end
         sq.fightStart = nil
         return
@@ -1323,6 +1621,8 @@ local function updateSquad(squad)
     end
     setIntent(squad, sq, cid, intent, why or "")
 
+    -- A building with only a few of the enemy left in it: send Alpha 1 in.
+    if intent == "HOLD" and fitN > 0 and pinnedN / fitN < CFG.pinnedHold then sergeantClear(squad, sq, cid) end
     -- Pass it on (corporals out of earshot act on their own), then the drills.
     passOrders(squad, sq, cmd)
     chooseShift(squad, sq)

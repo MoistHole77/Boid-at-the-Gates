@@ -26,7 +26,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Working |
 | Stances: offensive (everything above) and defensive - an all-round defence (alpha teams north and west, bravo teams south and east), men stay in cover, wounded go down in place, no maneuver orders, fight to the death | Working (0.16.0) |
 | Defence re-forms around a known threat (front, two flanks, rear security; cover faces the enemy); sergeant takes his own cover; corporals cut off from their sergeant run their own teams; repositions work outward and round instead of back and forth | Built, awaiting in-game test |
-| Defensive stance inside buildings: teams take walls (compass, then front/flanks/rear by threat), doors covered from inside, men stand in the windows to fire, back line, blank walls one man; posts dealt once | Built, awaiting in-game test |
+| Defensive stance inside buildings: teams take walls (compass, then front/flanks/rear by threat), doors covered from inside, men stand in the windows to fire, back line, blank walls one man; posts dealt once | Working (0.17) |
+| Furniture in windows: fire from a tile back, shove single-tile furniture aside; clearing a building (Alpha 1 stacks on the door, breaches, goes in one at a time with rifles up) | Built, awaiting in-game test |
 | Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |

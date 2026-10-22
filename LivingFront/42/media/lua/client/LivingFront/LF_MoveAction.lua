@@ -14,7 +14,7 @@
 --   * The engine's own rules still apply: a tired NPC (endurance moodle 3+) can't run
 --     (isRunning() returns false), and sprinting turns into running when injured.
 --
--- LF_MoveAction:new(character, square, gait)  gait = "walk" | "run" | "sprint"
+-- LF_MoveAction:new(character, square, gait)  gait = "walk" | "run" | "sprint" | "aim"
 
 require "TimedActions/ISBaseTimedAction"
 require "TimedActions/WalkToTimedAction"
@@ -23,8 +23,23 @@ require "LivingFront/LF_Core"
 LF_MoveAction = ISWalkToTimedAction:derive("LF_MoveAction")
 LF.Move = LF.Move or {}
 
+-- "aim": a slow walk with the rifle up (clearing a building). Like running, the aiming flag is
+-- set from the action's update so the animation pass sees it; whether NPCs honour it is logged
+-- once (LF.Move.aimWorks).
+local function setAim(character, on) character:setIsAiming(on) end
+
 local function applyGait(character, gait)
-    if gait == "sprint" then
+    if gait == "aim" then
+        character:setSprinting(false)
+        character:setRunning(false)
+        if LF.Move.aimWorks ~= false then
+            local ok = pcall(setAim, character, true)
+            if LF.Move.aimWorks == nil then
+                LF.Move.aimWorks = ok and character:isAiming() or false
+                LF.log("MOVE aim-walk " .. (LF.Move.aimWorks and "works (rifle up while walking)" or "not available for NPCs (plain walk)"))
+            end
+        end
+    elseif gait == "sprint" then
         character:setSprinting(true)
         character:setRunning(false)
     elseif gait == "run" then
@@ -36,6 +51,7 @@ end
 local function clearGait(character)
     character:setRunning(false)
     character:setSprinting(false)
+    if LF.Move.aimWorks then pcall(setAim, character, false) end
 end
 
 local function now()

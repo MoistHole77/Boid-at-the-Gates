@@ -15,6 +15,7 @@ require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Building"
+require "LivingFront/LF_Stance"
 require "LivingFront/LF_Weapons"
 
 LF.Debug = LF.Debug or {}
@@ -236,6 +237,30 @@ local function nearestUnit(x, y)
     return best
 end
 
+-- Order the nearest (offensive) unit's Alpha 1 to clear the clicked building.
+local function clearOrder(x, y, z)
+    local L = LF.Building.at(x, y, z)
+    if not L then LF.say("Click on a building for this order"); return end
+    local best, bestD = nil, math.huge
+    for id, body in pairs(LF.Bodies.all()) do
+        local rec = LF.Records.get(id)
+        if rec and rec.squad and not body:isDead() and not LF.Building.isInside(L, body:getX(), body:getY()) then
+            local u = LF.Units.get(rec.squad)
+            if u and LF.Stance.get(u).maneuvers then
+                local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
+                if d < bestD then best, bestD = u, d end
+            end
+        end
+    end
+    if not best then LF.say("No attacking unit nearby"); return end
+    local team = LF.Units.get(best.teams[1])
+    if team and LF.Tactics.orderClear(best, team, L, "debug order") then
+        LF.say(best.name .. ": " .. team.name .. " clears the building")
+    else
+        LF.say("Couldn't plan it (no usable door, or too few men)")
+    end
+end
+
 local function setStanceNearest(x, y, stance)
     local squad = nearestUnit(x, y)
     if not squad then LF.say("No unit nearby"); return end
@@ -263,6 +288,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
     sub:addOption("Test: team holds this building - Soviets attack", nil, function() buildingTest(x, y, z, true) end)
     sub:addOption("Test: squad perimeter (open ground) - Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
+    sub:addOption("Order nearest attacking unit's Alpha 1 to clear this building", nil, function() clearOrder(x, y, z) end)
     local so = sub:addOption("Set stance of nearest unit")
     local stanceMenu = ISContextMenu:getNew(sub)
     sub:addSubMenu(so, stanceMenu)
