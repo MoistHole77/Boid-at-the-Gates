@@ -5,6 +5,7 @@ require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Brain"
+require "LivingFront/LF_MoveAction"
 require "LivingFront/LF_Cover"
 
 LF.Debug = LF.Debug or {}
@@ -60,7 +61,8 @@ local function createGroup(_, x, y, z)
     end
 end
 
-local function walkNearestToMe(_, playerNum)
+-- Move the nearest NPC to the player at a given gait ("walk", "run", "sprint").
+local function moveNearestToMe(_, playerNum, gait)
     local p = getSpecificPlayer(playerNum)
     local best, bestD = nil, math.huge
     for _, body in pairs(LF.Bodies.all()) do
@@ -71,10 +73,13 @@ local function walkNearestToMe(_, playerNum)
         LF.say("Living Front: no NPC bodies nearby")
         return
     end
-    LF.try("walk", function()
-        ISTimedActionQueue.add(ISWalkToTimedAction:new(best, p:getSquare()))
+    LF.try("move", function()
+        ISTimedActionQueue.clear(best)
+        ISTimedActionQueue.add(LF_MoveAction:new(best, p:getSquare(), gait))
         return true
     end)
+    LF.log("DEBUG " .. gait .. " #" .. tostring(best:getModData().LF_id) .. " to the player, "
+        .. string.format("%.1f", bestD) .. " tiles")
 end
 
 local function armNearestCivilian(_, playerNum)
@@ -142,7 +147,9 @@ local function onMenu(playerNum, context, worldObjects, test)
     sub:addOption("Create German here", nil, function() create("GER", x, y, z) end)
     sub:addOption("Create Soviet here", nil, function() create("SOV", x, y, z) end)
     sub:addOption("Create 5 civilians around here", nil, createGroup, x, y, z)
-    sub:addOption("Walk nearest NPC to me", nil, walkNearestToMe, playerNum)
+    sub:addOption("Walk nearest NPC to me", nil, moveNearestToMe, playerNum, "walk")
+    sub:addOption("Run nearest NPC to me", nil, moveNearestToMe, playerNum, "run")
+    sub:addOption("Sprint nearest NPC to me", nil, moveNearestToMe, playerNum, "sprint")
     sub:addOption("Report all NPCs", nil, LF.Debug.reportAll)
 
     local combatOption = sub:addOption("Combat / brains")
@@ -153,6 +160,11 @@ local function onMenu(playerNum, context, worldObjects, test)
     combat:addOption("Give nearest civilian a rifle (resistance)", nil, armNearestCivilian, playerNum)
     combat:addOption("Check cover on this square (vs nearest soldier)", nil, function() checkCover(x, y, z) end)
     combat:addOption((LF.Brain.enabled and "Turn NPC brains OFF" or "Turn NPC brains ON"), nil, LF.Brain.toggle)
+    combat:addOption((LF.Brain.running and "NPC running OFF (walk only)" or "NPC running ON"), nil, function()
+        LF.Brain.running = not LF.Brain.running
+        LF.log("BRAIN running=" .. tostring(LF.Brain.running))
+        LF.say("NPC running " .. (LF.Brain.running and "ON" or "OFF"))
+    end)
     combat:addOption("Brain report", nil, LF.Brain.report)
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
 end

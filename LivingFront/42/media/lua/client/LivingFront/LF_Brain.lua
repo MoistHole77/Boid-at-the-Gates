@@ -18,6 +18,7 @@ require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
+require "LivingFront/LF_MoveAction"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -36,6 +37,7 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
+    runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
 }
 LF.Brain.CFG = CFG
 
@@ -105,15 +107,22 @@ local function nearestThreat(id, body, rec)
     return nil
 end
 
--- Walk to a free square near (x, y). Tries a few spots. Returns true if a walk was queued.
-function LF.Brain.walkNear(body, x, y, z, spread)
+-- Gaits: "walk", "run" or "sprint" (LF_MoveAction). Running is off unless LF.Brain.running.
+LF.Brain.running = true
+local function moveAction(body, sq, gait)
+    if not LF.Brain.running then gait = "walk" end
+    return LF_MoveAction:new(body, sq, gait)
+end
+
+-- Walk (or run) to a free square near (x, y). Tries a few spots. Returns true if a move was queued.
+function LF.Brain.walkNear(body, x, y, z, spread, gait)
     local cell = getCell()
     for _ = 1, 6 do
         local sq = cell:getGridSquare(math.floor(x + ZombRand(-spread, spread + 1)),
                                       math.floor(y + ZombRand(-spread, spread + 1)), math.floor(z))
         if sq and sq:isFree(false) then
             ISTimedActionQueue.clear(body)
-            ISTimedActionQueue.add(ISWalkToTimedAction:new(body, sq))
+            ISTimedActionQueue.add(moveAction(body, sq, gait))
             return true
         end
     end
@@ -121,12 +130,12 @@ function LF.Brain.walkNear(body, x, y, z, spread)
 end
 local walkNear = LF.Brain.walkNear
 
--- Walk to an exact square.
-function LF.Brain.walkTo(body, x, y, z)
+-- Walk (or run) to an exact square.
+function LF.Brain.walkTo(body, x, y, z, gait)
     local sq = getCell():getGridSquare(x, y, z)
     if not sq then return false end
     ISTimedActionQueue.clear(body)
-    ISTimedActionQueue.add(ISWalkToTimedAction:new(body, sq))
+    ISTimedActionQueue.add(moveAction(body, sq, gait))
     return true
 end
 local walkTo = LF.Brain.walkTo
@@ -152,23 +161,23 @@ local function setState(id, body, rec, m, state, detail)
     m.lastPath = -10000
 end
 
--- Claim a spot and walk to it (or settle if already there).
-local function takeSpot(id, body, m, field, x, y, z, label)
-    m[field] = { x = x, y = y, z = z, since = LF.tick }
+-- Claim a spot and run to it (or settle if already there).
+local function takeSpot(id, body, m, field, x, y, z, label, gait)
+    m[field] = { x = x, y = y, z = z, since = LF.tick, gait = gait or "run" }
     LF.Cover.reserve(x, y, z, id)
     if isAt(body, m[field]) then
         LF.log("BRAIN #" .. id .. " " .. label .. " here (" .. x .. "," .. y .. ")")
     else
-        walkTo(body, x, y, z)
+        walkTo(body, x, y, z, m[field].gait)
         m.lastPath = LF.tick
-        LF.log("BRAIN #" .. id .. " moving to " .. label .. " at " .. x .. "," .. y)
+        LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y)
     end
 end
 
 -- If the walk to a claimed spot was interrupted (a flinch clears the action queue), resume it.
 local function resumeWalk(body, m, spot)
     if not isAt(body, spot) and not body:isPerformingAnAction() and LF.tick - m.lastPath > 60 then
-        walkTo(body, spot.x, spot.y, spot.z)
+        walkTo(body, spot.x, spot.y, spot.z, spot.gait)
         m.lastPath = LF.tick
     end
 end
@@ -217,24 +226,26 @@ local function planHide(id, body, m, threat)
     return false
 end
 
--- Walk directly away from a point (re-pathing at most every reissueTicks).
-local function fleeFrom(m, body, fromX, fromY)
+-- Get directly away from a point (re-pathing at most every reissueTicks).
+local function fleeFrom(m, body, fromX, fromY, gait)
     if LF.tick - m.lastPath <= CFG.reissueTicks then return end
     local dx, dy = body:getX() - fromX, body:getY() - fromY
     local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
     if walkNear(body, body:getX() + dx / len * CFG.fleeDistance, body:getY() + dy / len * CFG.fleeDistance,
-                body:getZ(), 2) then
+                body:getZ(), 2, gait) then
         m.lastPath = LF.tick
     end
 end
 
 -- Close in on a target, stopping inside firing range rather than walking onto it.
-local function approach(m, body, target)
+-- Far away: run; nearly in range: walk, rifle ready.
+local function approach(m, body, target, dist)
     if LF.tick - m.lastPath <= CFG.reissueTicks then return end
     local dx, dy = body:getX() - target:getX(), body:getY() - target:getY()
     local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
     local stop = CFG.fireRange - 5
-    if walkNear(body, target:getX() + dx / len * stop, target:getY() + dy / len * stop, target:getZ(), 2) then
+    local gait = dist > CFG.fireRange + CFG.runApproachExtra and "run" or "walk"
+    if walkNear(body, target:getX() + dx / len * stop, target:getY() + dy / len * stop, target:getZ(), 2, gait) then
         m.lastPath = LF.tick
     end
 end
@@ -250,7 +261,9 @@ local function decide(id, body, rec, m)
         setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
         if not (fighter and planHide(id, body, m, threat)) then
-            fleeFrom(m, body, threat:getX(), threat:getY())
+            -- Civilians sprint for it; a wounded soldier runs (the engine turns an injured
+            -- sprint into a run anyway).
+            fleeFrom(m, body, threat:getX(), threat:getY(), fighter and "run" or "sprint")
         end
         return
     end
@@ -260,7 +273,7 @@ local function decide(id, body, rec, m)
         if sx then
             setState(id, body, rec, m, "flee", "gunfire " .. math.floor(sd) .. " tiles away")
             m.targetId = nil
-            fleeFrom(m, body, sx, sy)
+            fleeFrom(m, body, sx, sy, "run")
             return
         end
     end
@@ -272,13 +285,13 @@ local function decide(id, body, rec, m)
         m.targetId = threatId
         m.targetDist = dist
         planCover(id, body, m, threat)
-        if not m.cover and dist > CFG.fireRange then approach(m, body, threat) end
+        if not m.cover and dist > CFG.fireRange then approach(m, body, threat, dist) end
         return
     end
     setState(id, body, rec, m, "idle")
     m.targetId = nil
     if not body:isPerformingAnAction() and ZombRand(100) < CFG.wanderChance then
-        walkNear(body, rec.homeX, rec.homeY, rec.homeZ, CFG.wanderRadius)
+        walkNear(body, rec.homeX, rec.homeY, rec.homeZ, CFG.wanderRadius, "walk")
     end
 end
 
@@ -305,7 +318,7 @@ local function act(id, body, rec, m)
     end
 end
 
--- Extension point: later features (cover, running) hook in here without touching the loop.
+-- Extension points: later features hook in here without touching the loop.
 LF.Brain.decide = decide
 LF.Brain.act = act
 
@@ -351,6 +364,8 @@ function LF.Brain.report()
                 .. (m and m.state or "none") .. " target=" .. tostring(m and m.targetId)
                 .. " position=" .. (spot and (spot.x .. "," .. spot.y .. (isAt(body, spot) and " (there)" or " (en route)")) or "none")
                 .. " crouched=" .. tostring(body:isSneaking())
+                .. " running=" .. tostring(body:isRunning()) .. " sprinting=" .. tostring(body:isSprinting())
+                .. " anim=" .. tostring(body:getCurrentActionContextStateName())
                 .. " health=" .. math.floor(LF.Combat.health(body)) .. " dead=" .. tostring(body:isDead()))
         end
     end

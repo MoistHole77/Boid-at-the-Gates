@@ -1,0 +1,86 @@
+-- Living Front: walking, running and sprinting NPCs.
+--
+-- Why this works (see README "Engine findings"):
+--   * An NPC's running flag is overwritten twice every frame inside IsoPlayer.updateInternal2:
+--     first cleared, then copied from the hidden AI component (AIComponent.postUpdatePlayer),
+--     which Lua can't reach. Setting it from OnTick or OnPlayerUpdate is therefore wiped
+--     before anything reads it.
+--   * But the character's timed action is updated later in the same frame
+--     (IsoGameCharacter.update, after updateInternal2), and the animation state machine and
+--     animator run after that (postUpdate). A flag set from the action's update() survives into
+--     the animation pass, so the body really enters the game's run / sprint states.
+--   * Movement speed comes from the animation itself (pathfinding moves the body by the
+--     animation's deferred movement), so a running animation is a real run: no speed hacks.
+--   * The engine's own rules still apply: a tired NPC (endurance moodle 3+) can't run
+--     (isRunning() returns false), and sprinting turns into running when injured.
+--
+-- LF_MoveAction:new(character, square, gait)  gait = "walk" | "run" | "sprint"
+
+require "TimedActions/ISBaseTimedAction"
+require "TimedActions/WalkToTimedAction"
+
+LF_MoveAction = ISWalkToTimedAction:derive("LF_MoveAction")
+
+local function applyGait(character, gait)
+    if gait == "sprint" then
+        character:setSprinting(true)
+        character:setRunning(false)
+    elseif gait == "run" then
+        character:setSprinting(false)
+        character:setRunning(true)
+    end
+end
+
+local function clearGait(character)
+    character:setRunning(false)
+    character:setSprinting(false)
+end
+
+local function now()
+    return getTimestampMs and getTimestampMs() or 0
+end
+
+function LF_MoveAction:start()
+    ISWalkToTimedAction.start(self)
+    applyGait(self.character, self.gait)
+    self.startX, self.startY, self.startMs = self.character:getX(), self.character:getY(), now()
+end
+
+function LF_MoveAction:update()
+    -- Before the path step, so this frame's movement and animation both see the gait.
+    applyGait(self.character, self.gait)
+    if LF.Config.logGait and LF.tick % 60 == 0 then
+        LF.log("GAIT #" .. tostring(self.character:getModData().LF_id) .. " want=" .. self.gait
+            .. " running=" .. tostring(self.character:isRunning())
+            .. " sprinting=" .. tostring(self.character:isSprinting())
+            .. " state=" .. tostring(self.character:getCurrentActionContextStateName()))
+    end
+    ISWalkToTimedAction.update(self)
+end
+
+local function logSpeed(self, how)
+    if not (LF.Config.logGait and self.startMs and self.startMs > 0) then return end
+    local secs = (now() - self.startMs) / 1000
+    if secs <= 0.5 then return end
+    local d = LF.dist(self.startX, self.startY, self.character:getX(), self.character:getY())
+    LF.log("GAIT #" .. tostring(self.character:getModData().LF_id) .. " " .. self.gait .. " " .. how
+        .. ": " .. string.format("%.1f tiles in %.1f s = %.2f tiles/s", d, secs, d / secs))
+end
+
+function LF_MoveAction:stop()
+    logSpeed(self, "stopped")
+    clearGait(self.character)
+    ISWalkToTimedAction.stop(self)
+end
+
+function LF_MoveAction:perform()
+    logSpeed(self, "arrived")
+    clearGait(self.character)
+    ISWalkToTimedAction.perform(self)
+end
+
+function LF_MoveAction:new(character, location, gait)
+    local o = ISWalkToTimedAction.new(self, character, location)
+    o.gait = gait or "walk"
+    return o
+end

@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.4.0"
+LF.VERSION = "0.5.0"
 
 LF.Config = {
     spawnRadius = 30,        -- a record gets a body when the player is within this many tiles
@@ -11,6 +11,7 @@ LF.Config = {
     -- Off-screen need rates per 10 in-game minutes, measured from a spawned body in testing.
     rates = { hunger = 0.0037, thirst = 0.0031, fatigue = 0.0042 },
     logShots = true,         -- one log line per shot (debugging); turn off for long sessions
+    logGait = true,          -- running/sprinting checks and measured speed (debugging)
 }
 
 -- femaleChance: share of new NPCs who are women. Soldiers are all men; civilians lean female

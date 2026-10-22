@@ -17,7 +17,9 @@ Pure Lua. No Java, no ZombieBuddy.
 | Rifle combat: aim, track a moving target, fire, flinch, wounds, death, corpses | Working |
 | Brain v1: soldiers find and engage visible enemies, retreat when badly hurt | Working |
 | Civilians flee gunfire; armed civilians fight Germans | Working |
-| Tactical depth (running, cover, squads, ammo, period weapons) | Next |
+| Cover: soldiers crouch behind low cover, wounded hide behind walls; cover reduces hit chance | Built, awaiting in-game test |
+| Running and sprinting (real run animations, endurance limits) | Built, awaiting in-game test |
+| Squads, ammo, period weapons | Next |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
 The player is currently neutral: NPCs ignore you.
@@ -44,6 +46,8 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Sim.lua` | Off-screen simulation (needs tick while an NPC has no body) |
 | `LF_Combat.lua` | Gunfire: turning, aiming stance, hit resolution, damage, gunfire memory |
 | `LF_ShootAction.lua` | Timed actions: aim + fire (with target tracking), flinch |
+| `LF_MoveAction.lua` | Walk / run / sprint to a square (the timed action that makes running work) |
+| `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |
 | `LF_Brain.lua` | Perceive / decide / act loop per NPC |
 | `LF_Debug.lua` | Right-click debug menu |
 
@@ -83,4 +87,14 @@ Hard-won facts from reading the game's code and testing. Each one shapes the des
     directly (`setForwardDirection` + `setTargetAndCurrentDirection`) does rotate the drawn
     body, so the aim sweeps to follow a moving target.
 11. **Line of sight** uses `LosUtil.lineClear`; `Blocked` and closed doors stop sight.
-12. **Not reachable from Lua:** the NPC's running flag (also driven by the hidden AI component).
+12. **Running:** an NPC's running flag is cleared and then overwritten from the hidden AI
+    component every frame (`IsoPlayer.updateInternal2` → `AIComponent.postUpdatePlayer`), so
+    setting it from `OnTick` or `OnPlayerUpdate` never sticks. The character's timed action is
+    updated later in the same frame, and the animation state machine after that, so
+    `setRunning(true)` from a timed action's `update()` reaches the animation. Movement speed
+    comes from the animation's own root motion, so this is a real run, not a speed change.
+    The engine still refuses to run when the endurance moodle is 3 or higher.
+13. **Crouching:** `setSneaking` is only changed by the crouch key handler, so it sticks on
+    NPCs. There is no crouched rifle-aim clip; crouched NPCs stand to fire and drop back down.
+14. **Cover** is read from square edges toward the threat (`isWallTo`, `isWindowTo`,
+    `isHoppableTo`, `isSolidTrans`, vehicles, trees).
