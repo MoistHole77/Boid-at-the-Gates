@@ -18,6 +18,8 @@ require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_ShootAction"
+require "LivingFront/LF_Suppress"
+require "LivingFront/LF_Sense"
 
 LF.Combat = LF.Combat or {}
 
@@ -26,6 +28,11 @@ local FIRE_TICKS = 150          -- minimum ticks between one shooter's shots (ab
 local TURN_TIMEOUT = 180        -- fire anyway if the turn has not finished after this many ticks
 local AIM_YAW_OFFSET = 45       -- +45 is to the right on the map grid (y points south)
 local SHOT_MEMORY = 600         -- how long gunfire is remembered (ticks, about 10 s)
+local AREA_FIRE_SLOWER = 1.5    -- area fire (at a last-known position) is paced slower than aimed fire
+-- Suppression added per shot (see LF_Suppress).
+local SUPPRESS_HIT, SUPPRESS_MISS, SUPPRESS_SPLASH = 45, 30, 15
+local SPLASH_RADIUS = 2         -- tiles around the target that a shot also suppresses
+local AREA_RADIUS, SUPPRESS_AREA = 3, 25
 
 -- Where a hit lands (weighted by repetition) and the immediate health it takes, on top of
 -- the bleeding wound the engine applies.
@@ -130,6 +137,7 @@ local function hitChance(shooter, target, dist)
     if chance < 20 then chance = 20 elseif chance > 75 then chance = 75 end
     local hp = LF.Combat.health(shooter)
     if hp < 50 then chance = chance * (0.5 + hp / 100) end
+    chance = chance * LF.Suppress.accuracy(shooter)
     if LF.Combat.targetModifier then
         chance = chance * (LF.guard("cover modifier", LF.Combat.targetModifier, shooter, target) or 1)
     end
@@ -151,7 +159,24 @@ local function shotEffects(shooter, gun)
     shooter:addWorldSoundUnlessInvisible(40, 100, false)
 end
 
+-- Suppress everyone hostile to the shooter within radius of (x, y), except `skip`.
+local splashCtx = {}
+local function splashOne(e, _dsq, ctx)
+    if e.body ~= ctx.skip and LF.isHostile(ctx.faction, e.rec.faction) then
+        LF.Suppress.add(e.body, ctx.amount)
+        ctx.n = ctx.n + 1
+    end
+end
+local function splash(shooter, x, y, radius, amount, skip)
+    local rec = LF.Records.get(shooter:getModData().LF_id)
+    if not rec then return 0 end
+    splashCtx.faction, splashCtx.amount, splashCtx.skip, splashCtx.n = rec.faction, amount, skip, 0
+    LF.Sense.near(x, y, radius, splashOne, splashCtx)
+    return splashCtx.n
+end
+
 -- Resolve one shot: sound, noise, hit roll, and on a hit a wound, impact damage and a flinch.
+-- The target and anyone hostile right next to it are suppressed either way.
 function LF.Combat.resolveShot(shooter, target, gun)
     LF.guard("shot effects", shotEffects, shooter, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
@@ -166,6 +191,8 @@ function LF.Combat.resolveShot(shooter, target, gun)
         LF.guard("flinch", flinch, target)
         result = "HIT " .. partName
     end
+    LF.Suppress.add(target, result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT)
+    splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH, target)
     if LF.Config.logShots then
         LF.log("SHOT #" .. tostring(shooter:getModData().LF_id) .. " -> #" .. tostring(target:getModData().LF_id)
             .. " dist=" .. fmt(dist) .. " chance=" .. fmt(chance) .. " " .. result
@@ -192,12 +219,43 @@ function LF.Combat.engage(shooter, target, state, opts)
     end
 
     state.turnStart = nil
-    state.nextFire = LF.tick + FIRE_TICKS + ZombRand(60)
+    state.nextFire = LF.tick + (FIRE_TICKS + ZombRand(60)) * LF.Suppress.cadence(shooter)
     local gun = LF.Combat.arm(shooter)
     if not gun then return end
     ISTimedActionQueue.add(LF_ShootAction:new(shooter, target, gun, function(s, t)
         LF.Combat.resolveShot(s, t, gun)
     end, opts and opts.aimAnim, opts and opts.fireAnim))
+end
+
+-- Area fire: one shot at a point (anything with getX/getY/getZ/isDead, e.g. where the enemy was
+-- last seen). No hit roll; it suppresses everyone hostile near the point.
+function LF.Combat.resolveAreaShot(shooter, point, gun)
+    LF.guard("shot effects", shotEffects, shooter, gun)
+    recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
+    local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA, nil)
+    if LF.Config.logShots then
+        LF.log("AREA #" .. tostring(shooter:getModData().LF_id) .. " -> " .. math.floor(point:getX()) .. ","
+            .. math.floor(point:getY()) .. " suppressing " .. n)
+    end
+end
+
+-- One area-fire step (same rhythm as engage, paced slower).
+function LF.Combat.engageArea(shooter, point, state)
+    if shooter:isPerformingAnAction() then return end
+    if state.nextFire and LF.tick < state.nextFire then
+        LF.Combat.readyToFire(shooter, point)
+        return
+    end
+    state.turnStart = state.turnStart or LF.tick
+    local ready = LF.Combat.readyToFire(shooter, point)
+    if not ready and LF.tick - state.turnStart < TURN_TIMEOUT then return end
+    state.turnStart = nil
+    state.nextFire = LF.tick + (FIRE_TICKS + ZombRand(60)) * AREA_FIRE_SLOWER * LF.Suppress.cadence(shooter)
+    local gun = LF.Combat.arm(shooter)
+    if not gun then return end
+    ISTimedActionQueue.add(LF_ShootAction:new(shooter, point, gun, function(s, p)
+        LF.Combat.resolveAreaShot(s, p, gun)
+    end))
 end
 
 function LF.Combat.armAllSoldiers()

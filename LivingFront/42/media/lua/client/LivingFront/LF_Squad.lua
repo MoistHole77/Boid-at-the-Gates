@@ -71,15 +71,29 @@ end
 
 -- ---- formation ------------------------------------------------------------------------------
 
--- Where the squad is: its leader's body if he has one, else his record. x, y, z or nil.
+-- Where the squad is: its leader's position (body if he has one, else his record). For a lone
+-- fire team, the point its corporal's slot is measured from. x, y, z or nil.
 function LF.Squad.anchor(squadId)
     local squad = LF.Units.get(squadId)
-    if not (squad and squad.leader) then return nil end
-    local body = LF.Bodies.get(squad.leader)
-    if body and not body:isDead() then return body:getX(), body:getY(), body:getZ() end
-    local rec = LF.Records.get(squad.leader)
-    if rec and rec.alive then return rec.x, rec.y, rec.z end
-    return nil
+    if not squad then return nil end
+    local cid = LF.Units.commander(squad)
+    if not cid then return nil end
+    local x, y, z
+    local body = LF.Bodies.get(cid)
+    if body and not body:isDead() then
+        x, y, z = body:getX(), body:getY(), body:getZ()
+    else
+        local rec = LF.Records.get(cid)
+        if not (rec and rec.alive) then return nil end
+        x, y, z = rec.x, rec.y, rec.z
+    end
+    if not squad.leader then
+        -- Lone team: step back from the corporal by his own slot offset.
+        local fwd, lat = LF.Units.slotOffset(LF.Records.get(cid))
+        local fx, fy = squad.facingX or 1, squad.facingY or 0
+        x, y = x - fx * fwd + fy * lat, y - fy * fwd - fx * lat
+    end
+    return x, y, z
 end
 
 -- A soldier's formation slot in world coordinates: x, y, z (nil if his squad has no leader).

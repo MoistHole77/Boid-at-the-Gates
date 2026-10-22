@@ -107,28 +107,45 @@ local function placeSoldier(faction, x, y, z, fields)
     return rec
 end
 
+-- Who commands this unit: the squad leader, or for a lone fire team, its corporal.
+function LF.Units.commander(squad)
+    if squad.leader then return squad.leader end
+    if squad.teamOnly then
+        local team = LF.Units.get(squad.teams[1])
+        return team and team.leader
+    end
+    return nil
+end
+
 -- Create a full squad (17 soldiers) centred on (x, y), facing the direction (fx, fy).
--- Returns the squad unit.
-function LF.Units.createSquad(faction, x, y, z, fx, fy)
+-- With teamOnly, a lone fire team (4 soldiers, led by its corporal) instead.
+-- Returns the squad unit (a lone team is stored as a squad with one team and no sergeant).
+function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
     local len = math.sqrt(fx * fx + fy * fy)
     if len < 0.01 then fx, fy, len = 1, 0, 1 end
     fx, fy = fx / len, fy / len
     local rx, ry = -fy, fx          -- right of forward on the map grid (y points south)
     local function at(fwd, lat) return x + fx * fwd + rx * lat, y + fy * fwd + ry * lat end
 
-    local squad = newUnit({ kind = "squad", faction = faction, teams = {},
-        name = faction .. " squad " .. nextSquadNumber(faction), facingX = fx, facingY = fy })
+    local squad = newUnit({ kind = "squad", faction = faction, teams = {}, teamOnly = teamOnly or nil,
+        name = faction .. (teamOnly and " team " or " squad ") .. nextSquadNumber(faction), facingX = fx, facingY = fy })
 
-    local sx, sy = at(0, 0)
-    local sgt = placeSoldier(faction, sx, sy, z, { squad = squad.id, rank = "SGT", element = "L", slot = 0 })
-    squad.leader = sgt.id
+    local sgt = nil
+    if not teamOnly then
+        local sx, sy = at(0, 0)
+        sgt = placeSoldier(faction, sx, sy, z, { squad = squad.id, rank = "SGT", element = "L", slot = 0 })
+        squad.leader = sgt.id
+    end
 
     for ti, ts in ipairs(TEAM_SLOTS) do
+        if teamOnly and ti > 1 then break end
+        local tf, tl = ts.fwd, ts.lat
+        if teamOnly then tf, tl = 0, 0 end      -- a lone team is centred on the spot
         local team = newUnit({ kind = "team", faction = faction, squad = squad.id, name = ts.name,
             element = ts.element, slot = ti, members = {} })
         squad.teams[ti] = team.id
         for mi, ms in ipairs(MAN_SLOTS) do
-            local mx, my = at(ts.fwd + ms.fwd, ts.lat + ms.lat)
+            local mx, my = at(tf + ms.fwd, tl + ms.lat)
             local rec = placeSoldier(faction, mx, my, z, { squad = squad.id, team = team.id,
                 rank = ms.leader and "CPL" or "PVT", element = ms.element, slot = mi })
             team.members[mi] = rec.id
@@ -136,7 +153,8 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy)
         end
     end
     LF.log("UNITS created " .. squad.name .. " (#" .. squad.id .. ") at " .. math.floor(x) .. "," .. math.floor(y)
-        .. " facing " .. string.format("%.1f,%.1f", fx, fy) .. ", led by " .. LF.Units.title(sgt))
+        .. " facing " .. string.format("%.1f,%.1f", fx, fy) .. ", led by "
+        .. LF.Units.title(LF.Records.get(LF.Units.commander(squad))))
     return squad
 end
 
@@ -147,7 +165,7 @@ function LF.Units.report()
         if squad.kind == "squad" then
             squads = squads + 1
             local lead = LF.Records.get(squad.leader)
-            local alive, total = 0, 1
+            local alive, total = 0, squad.leader and 1 or 0
             if lead and lead.alive then alive = 1 end
             local lines = {}
             for _, teamId in ipairs(squad.teams) do
@@ -206,6 +224,12 @@ function LF.Units.slotOffset(rec)
     local ms = MAN_SLOTS[rec.slot]
     if not (ts and ms) then return 0, 0 end
     return ts.fwd + ms.fwd, ts.lat + ms.lat
+end
+
+-- A soldier's sideways place within his pair (tiles; negative = left).
+function LF.Units.slotLat(rec)
+    local ms = MAN_SLOTS[rec.slot]
+    return ms and ms.lat or 0
 end
 
 -- ---- succession -----------------------------------------------------------------------------

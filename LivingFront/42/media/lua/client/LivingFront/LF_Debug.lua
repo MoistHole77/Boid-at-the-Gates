@@ -1,4 +1,8 @@
--- Living Front: debug tools (right-click menu) for testing records and bodies.
+-- Living Front: debug menu (right-click in the world).
+--
+-- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
+-- commands for the test at hand. Current test: fire-team and squad tactics (bounding,
+-- suppression, orders).
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -6,161 +10,60 @@ require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Brain"
 require "LivingFront/LF_MoveAction"
-require "LivingFront/LF_Cover"
 require "LivingFront/LF_Units"
 require "LivingFront/LF_Squad"
-require "LivingFront/LF_Perf"
+require "LivingFront/LF_Suppress"
+require "LivingFront/LF_Tactics"
 
 LF.Debug = LF.Debug or {}
 
-local function fmt(v)
-    return string.format("%.3f", v or 0)
-end
-
-function LF.Debug.reportAll()
-    local player = getPlayer()
-    local px, py = player:getX(), player:getY()
-    local total, withBody = 0, 0
-    for id, rec in pairs(LF.Records.all()) do
-        total = total + 1
-        local body = LF.Bodies.get(id)
-        if body then
-            withBody = withBody + 1
-            LF.Bodies.sync(rec, body)
-        end
-        LF.log("REC #" .. id .. " " .. LF.Records.fullName(rec) .. " [" .. rec.faction .. "]"
-            .. " " .. (rec.female and "F" or "M")
-            .. " alive=" .. tostring(rec.alive) .. " body=" .. tostring(body ~= nil)
-            .. " pos=" .. math.floor(rec.x) .. "," .. math.floor(rec.y)
-            .. " dist=" .. math.floor(LF.dist(rec.x, rec.y, px, py))
-            .. " hunger=" .. fmt(rec.hunger) .. " thirst=" .. fmt(rec.thirst) .. " fatigue=" .. fmt(rec.fatigue)
-            .. " worn=" .. (rec.worn and #rec.worn or 0)
-            .. " skin=" .. tostring(rec.look and rec.look.skin) .. " hair=" .. tostring(rec.look and rec.look.hair)
-            .. " beard=" .. tostring(rec.look and rec.look.beard) .. " outfit=" .. tostring(rec.outfit))
-    end
-    LF.log("REPORT records=" .. total .. " bodies=" .. withBody .. " savesSynced=" .. tostring(LF.syncedOnSave or 0))
-    LF.say("Living Front: " .. total .. " NPCs, " .. withBody .. " with bodies")
-end
+local TYPES = {
+    { key = "CIV", label = "civilian" },
+    { key = "GER", label = "German soldier" },
+    { key = "SOV", label = "Soviet soldier" },
+}
 
 local function create(faction, x, y, z)
     local rec = LF.Records.create({ faction = faction, x = x + 0.5, y = y + 0.5, z = z })
-    LF.log("created #" .. rec.id .. " " .. LF.Records.fullName(rec) .. " [" .. faction .. "] "
-        .. (rec.female and "F" or "M") .. " skin=" .. tostring(rec.look.skin) .. " hair=" .. tostring(rec.look.hair)
-        .. " beard=" .. tostring(rec.look.beard) .. " outfit=" .. rec.outfit)
+    LF.log("created #" .. rec.id .. " " .. LF.Records.fullName(rec) .. " [" .. faction .. "]")
     LF.say("Created " .. LF.Records.fullName(rec) .. " (" .. LF.Factions[faction].name .. ")")
 end
 
--- Two squads 16 tiles apart, either side of the clicked square.
-local function createSkirmish(x, y, z)
-    for i = 0, 2 do
-        create("GER", x - 8 + ZombRand(-1, 2), y - 2 + i * 2, z)
-        create("SOV", x + 8 + ZombRand(-1, 2), y - 2 + i * 2, z)
-    end
-end
-
-local function createGroup(_, x, y, z)
-    for _ = 1, 5 do
-        create("CIV", x + ZombRand(-4, 5), y + ZombRand(-4, 5), z)
-    end
-end
-
--- Move the nearest NPC to the player at a given gait ("walk", "run", "sprint").
-local function moveNearestToMe(_, playerNum, gait)
-    local p = getSpecificPlayer(playerNum)
-    local best, bestD = nil, math.huge
-    for _, body in pairs(LF.Bodies.all()) do
-        local d = LF.dist(body:getX(), body:getY(), p:getX(), p:getY())
-        if d < bestD then best, bestD = body, d end
-    end
-    if not best then
-        LF.say("Living Front: no NPC bodies nearby")
-        return
-    end
-    LF.try("move", function()
-        ISTimedActionQueue.clear(best)
-        ISTimedActionQueue.add(LF_MoveAction:new(best, p:getSquare(), gait))
-        return true
-    end)
-    LF.log("DEBUG " .. gait .. " #" .. tostring(best:getModData().LF_id) .. " to the player, "
-        .. string.format("%.1f", bestD) .. " tiles")
-end
-
-local function armNearestCivilian(_, playerNum)
-    local p = getSpecificPlayer(playerNum)
+-- The living body of this faction nearest (x, y).
+local function nearestOf(faction, x, y)
     local best, bestD = nil, math.huge
     for id, body in pairs(LF.Bodies.all()) do
         local rec = LF.Records.get(id)
-        if rec and rec.faction == "CIV" and not body:isDead() and not LF.Combat.isArmed(body) then
-            local d = LF.dist(body:getX(), body:getY(), p:getX(), p:getY())
+        if rec and rec.faction == faction and not body:isDead() then
+            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
             if d < bestD then best, bestD = body, d end
         end
     end
-    if not best then
-        LF.say("No unarmed civilian nearby")
-        return
-    end
-    LF.Combat.arm(best)
-    LF.log("armed civilian #" .. tostring(best:getModData().LF_id))
-    LF.say("Gave a civilian a rifle")
+    return best
 end
 
--- What cover does the clicked square offer against the nearest soldier?
-local function checkCover(x, y, z)
-    local best, bestD, bestRec = nil, math.huge, nil
-    for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        if rec and rec.faction ~= "CIV" and not body:isDead() then
-            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
-            if d < bestD then best, bestD, bestRec = body, d, rec end
-        end
-    end
-    if not best then
-        LF.say("No soldier nearby to check cover against")
-        return
-    end
-    local q = LF.Cover.quality(x, y, z, best:getX(), best:getY())
-    local sight = LF.Cover.canSeeFrom(x, y, z, best)
-    local msg = "Cover here vs " .. LF.Records.fullName(bestRec) .. ": " .. LF.Cover.name(q)
-        .. ", line of sight " .. (sight and "clear" or "blocked")
-    LF.log("COVER CHECK " .. x .. "," .. y .. " " .. msg)
-    LF.say(msg)
+local function moveNearest(faction, x, y, z)
+    local body = nearestOf(faction, x, y)
+    local sq = getCell():getGridSquare(x, y, z)
+    if not (body and sq) then LF.say("No " .. faction .. " NPC nearby"); return end
+    ISTimedActionQueue.clear(body)
+    ISTimedActionQueue.add(LF_MoveAction:new(body, sq, "walk"))
 end
 
--- One full squad here, facing east (+x) or west (-x).
-local function spawnSquad(faction, x, y, z, fx)
-    local squad = LF.Units.createSquad(faction, x + 0.5, y + 0.5, z, fx, 0)
-    LF.say("Spawned " .. squad.name .. " (17 soldiers)")
+local function killNearest(faction, x, y)
+    local body = nearestOf(faction, x, y)
+    if not body then LF.say("No " .. faction .. " NPC nearby"); return end
+    LF.log("DEBUG killing #" .. tostring(body:getModData().LF_id))
+    body:getBodyDamage():ReduceGeneralHealth(500)
 end
 
--- Squad vs squad: Germans 14 tiles west facing east, Soviets 14 tiles east facing west.
--- Their front teams start about 20 tiles apart, inside sight range.
-local function squadBattle(x, y, z)
-    LF.Units.createSquad("GER", x - 13.5, y + 0.5, z, 1, 0)
-    LF.Units.createSquad("SOV", x + 14.5, y + 0.5, z, -1, 0)
-    LF.log("DEBUG squad battle around " .. x .. "," .. y)
-    LF.say("Squad battle: 17 vs 17")
-end
-
--- Test succession: kill the living squad leader nearest the player.
-local function killNearestSergeant(_, playerNum)
-    local p = getSpecificPlayer(playerNum)
-    local best, bestD = nil, math.huge
-    for _, squad in pairs(LF.Units.all()) do
-        if squad.kind == "squad" and squad.leader then
-            local body = LF.Bodies.get(squad.leader)
-            if body and not body:isDead() then
-                local d = LF.distSq(body:getX(), body:getY(), p:getX(), p:getY())
-                if d < bestD then best, bestD = body, d end
-            end
-        end
-    end
-    if not best then
-        LF.say("No squad leader nearby")
-        return
-    end
-    local rec = LF.Records.get(best:getModData().LF_id)
-    LF.log("DEBUG killing " .. (rec and LF.Units.title(rec) or "?") .. " to test succession")
-    best:getBodyDamage():ReduceGeneralHealth(500)
+local function deleteNearest(faction, x, y)
+    local body = nearestOf(faction, x, y)
+    if not body then LF.say("No " .. faction .. " NPC nearby"); return end
+    local id = body:getModData().LF_id
+    LF.Bodies.despawn(id)
+    LF.Records.remove(id)
+    LF.log("DEBUG deleted #" .. tostring(id))
 end
 
 local function deleteAll()
@@ -168,8 +71,20 @@ local function deleteAll()
     for id in pairs(LF.Records.all()) do LF.Records.remove(id) end
     LF.Units.clear()
     LF.Squad.forgetAll()
+    LF.Suppress.forgetAll()
+    LF.Tactics.forgetAll()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
+end
+
+-- Two units facing each other across the clicked square, Germans west and Soviets east,
+-- far enough apart that they must advance to get in rifle range.
+local function battle(x, y, z, teamOnly, gap)
+    LF.Units.createSquad("GER", x - gap + 0.5, y + 0.5, z, 1, 0, teamOnly)
+    LF.Units.createSquad("SOV", x + gap + 0.5, y + 0.5, z, -1, 0, teamOnly)
+    local what = teamOnly and "Team vs team (4 vs 4)" or "Squad vs squad (17 vs 17)"
+    LF.log("DEBUG " .. what .. " around " .. x .. "," .. y)
+    LF.say(what)
 end
 
 local function onMenu(playerNum, context, worldObjects, test)
@@ -185,42 +100,33 @@ local function onMenu(playerNum, context, worldObjects, test)
     local option = context:addOption("Living Front (debug)")
     local sub = ISContextMenu:getNew(context)
     context:addSubMenu(option, sub)
-    sub:addOption("Create civilian here", nil, function() create("CIV", x, y, z) end)
-    sub:addOption("Create German here", nil, function() create("GER", x, y, z) end)
-    sub:addOption("Create Soviet here", nil, function() create("SOV", x, y, z) end)
-    sub:addOption("Create 5 civilians around here", nil, createGroup, x, y, z)
-    sub:addOption("Walk nearest NPC to me", nil, moveNearestToMe, playerNum, "walk")
-    sub:addOption("Run nearest NPC to me", nil, moveNearestToMe, playerNum, "run")
-    sub:addOption("Sprint nearest NPC to me", nil, moveNearestToMe, playerNum, "sprint")
-    sub:addOption("Report all NPCs", nil, LF.Debug.reportAll)
 
-    local combatOption = sub:addOption("Combat / brains")
-    local combat = ISContextMenu:getNew(sub)
-    sub:addSubMenu(combatOption, combat)
-    combat:addOption("Skirmish: 3 Germans (west) vs 3 Soviets (east)", nil, function() createSkirmish(x, y, z) end)
-    combat:addOption("Arm all soldiers with rifles", nil, LF.Combat.armAllSoldiers)
-    combat:addOption("Give nearest civilian a rifle (resistance)", nil, armNearestCivilian, playerNum)
-    combat:addOption("Check cover on this square (vs nearest soldier)", nil, function() checkCover(x, y, z) end)
-    combat:addOption((LF.Brain.enabled and "Turn NPC brains OFF" or "Turn NPC brains ON"), nil, LF.Brain.toggle)
-    combat:addOption((LF.Brain.running and "NPC running OFF (walk only)" or "NPC running ON"), nil, function()
-        LF.Brain.running = not LF.Brain.running
-        LF.log("BRAIN running=" .. tostring(LF.Brain.running))
-        LF.say("NPC running " .. (LF.Brain.running and "ON" or "OFF"))
-    end)
-    combat:addOption("Brain report", nil, LF.Brain.report)
-    local squadOption = sub:addOption("Squads / stress test")
-    local squads = ISContextMenu:getNew(sub)
-    sub:addSubMenu(squadOption, squads)
-    squads:addOption("Squad battle: German squad (west) vs Soviet squad (east)", nil, function() squadBattle(x, y, z) end)
-    squads:addOption("Spawn German squad here (facing east)", nil, function() spawnSquad("GER", x, y, z, 1) end)
-    squads:addOption("Spawn Soviet squad here (facing west)", nil, function() spawnSquad("SOV", x, y, z, -1) end)
-    squads:addOption("Unit report", nil, LF.Units.report)
-    squads:addOption("Kill nearest squad leader (test succession)", nil, killNearestSergeant, playerNum)
-    squads:addOption((LF.Config.logPerf and "Performance log OFF" or "Performance log ON"), nil, LF.Perf.toggle)
+    -- Current test.
+    sub:addOption("Test: team vs team (4 vs 4)", nil, function() battle(x, y, z, true, 14) end)
+    sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
+    sub:addOption("Unit report (orders, suppression)", nil, function() LF.Units.report(); LF.Brain.report() end)
+
+    -- Basics, per type.
+    local menus = {
+        { "Spawn here", function(k) create(k, x, y, z) end },
+        { "Move nearest here", function(k) moveNearest(k, x, y, z) end },
+        { "Kill nearest", function(k) killNearest(k, x, y) end },
+        { "Delete nearest", function(k) deleteNearest(k, x, y) end },
+    }
+    for _, m in ipairs(menus) do
+        local o = sub:addOption(m[1])
+        local typeMenu = ISContextMenu:getNew(sub)
+        sub:addSubMenu(o, typeMenu)
+        for _, t in ipairs(TYPES) do
+            local fn, key = m[2], t.key
+            typeMenu:addOption(t.label, nil, function() fn(key) end)
+        end
+    end
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
 end
 
 Events.OnFillWorldObjectContextMenu.Add(onMenu)
+
 Events.OnGameStart.Add(function()
     local dropped = LF.Records.dropOutdated()
     if dropped > 0 then LF.log("removed " .. dropped .. " NPC records from an older mod version") end
