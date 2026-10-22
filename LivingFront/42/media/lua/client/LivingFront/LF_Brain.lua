@@ -32,6 +32,7 @@ require "LivingFront/LF_Units"
 require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
+require "LivingFront/LF_Aid"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -159,6 +160,7 @@ local function setState(id, body, rec, m, state, detail)
     m.state = state
     m.combat = {}
     m.lastPath = -10000
+    m.atRear = nil
 end
 
 -- Claim a spot and run to it (or settle if already there).
@@ -279,8 +281,8 @@ end
 
 -- Wounded squad soldiers with nowhere to hide: run back to the squad's rear.
 local function fallBack(m, body, rx, ry, rz)
+    if LF.dist(body:getX(), body:getY(), rx, ry) < 3 then m.atRear = true; return end
     if LF.tick - m.lastPath <= CFG.reissueTicks then return end
-    if LF.dist(body:getX(), body:getY(), rx, ry) < 3 then return end
     if walkNear(body, rx, ry, rz, 2, "run") then m.lastPath = LF.tick end
 end
 
@@ -533,8 +535,15 @@ local function act(id, body, rec, m)
         end
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
-    elseif m.state == "flee" and m.hide and isAt(body, m.hide) then
-        hunkerDown(body)
+    elseif m.state == "flee" then
+        local safe = (m.hide and isAt(body, m.hide)) or m.atRear
+        if m.hide and isAt(body, m.hide) then hunkerDown(body) end
+        -- Out of the fight: bandage bleeding wounds, one at a time.
+        if safe and m.fighter and not body:isPerformingAnAction() and LF.tick - (m.lastAid or -10000) > 90 then
+            m.lastAid = LF.tick
+            local part = LF.Aid.bleedingPart(body)
+            if part then ISTimedActionQueue.add(LF_AidAction:new(body, part)) end
+        end
     end
 end
 
@@ -542,8 +551,26 @@ end
 LF.Brain.decide = decide
 LF.Brain.act = act
 
+-- A body whose health has sat at zero for two seconds without the engine finishing it off.
+local function finishOff(body)
+    body:setHealth(0)
+    body:Kill(nil)
+end
+
 local function stepNpc(id, body, rec)
     local m = mindOf(id)
+    if (LF.tick + id) % CFG.thinkTicks == 0 then
+        if LF.Combat.health(body) <= 0 then
+            m.zeroSince = m.zeroSince or LF.tick
+            if LF.tick - m.zeroSince > 120 then
+                LF.log("BRAIN #" .. id .. " health 0 but still standing; finishing off")
+                LF.guard("finish off", finishOff, body)
+                return
+            end
+        else
+            m.zeroSince = nil
+        end
+    end
     if (LF.tick + id) % CFG.thinkTicks == 0 then
         LF.Brain.decide(id, body, rec, m)
     end

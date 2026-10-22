@@ -21,8 +21,9 @@ Pure Lua. No Java, no ZombieBuddy.
 | Running and sprinting (real run animations, endurance limits) | Built, awaiting in-game test |
 | Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Working (stress-tested: ~60-80 bodies is the practical budget) |
 | Squad-aware soldiers: formation slots and leash, shared contacts, spread fire, enemy-leader spotting, succession (incl. badly wounded leaders) | Working |
-| Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Built, awaiting in-game test |
-| Squad-level maneuver: sergeant directing teams, flanking | Next (see design doc) |
+| Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
+| Squad maneuver: flanking (alpha teams go round, bravo teams pin); self-aid for the wounded | Built, awaiting in-game test |
+| Casualty care by others, ammo, MG teams, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
@@ -57,6 +58,7 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Names.lua` | German and Russian names |
 | `LF_Suppress.lua` | Suppression: near misses pin soldiers, slowing and spoiling their fire |
 | `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders |
+| `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
 | `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
 | `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |

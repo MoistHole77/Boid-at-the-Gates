@@ -4,11 +4,15 @@
 --   Commander (sergeant, or the corporal of a lone team) picks the unit's intent from what the
 --   unit knows: ADVANCE while the enemy is out of range, HOLD once in range or when most fit men
 --   are pinned, FALL BACK after heavy losses. He shouts it; corporals within earshot take it up.
---   Corporal turns the intent into a drill for his team's two elements (pairs):
+--   If a fight in range stalls (HOLD for a while, the unit healthy and not pinned), a sergeant
+--   orders a FLANK: his alpha teams maneuver around one side (the side with more cover) while
+--   his bravo teams hold and pin the enemy down; when the alphas are in position, all hold.
+--   Corporal turns the order into a drill for his team's two elements (pairs):
 --     HOLD     - both pairs take cover around their positions and fire
 --     ADVANCE  - bounding: one pair runs a bound forward past the other while the other covers
 --                (aimed fire at what it sees, area fire at the last-known position), then swap
 --     FALLBACK - the same, backwards
+--     MANEUVER - the same bounding, along a route (out to the side, then in toward the enemy)
 --   A team out of earshot keeps doing its last order.
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
@@ -20,6 +24,7 @@ require "LivingFront/LF_Squad"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Combat"
+require "LivingFront/LF_Cover"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -38,6 +43,15 @@ local CFG = {
     pinnedHold = 0.5,       -- hold when this share of the fit men is pinned
     fitHealth = 35,
     shoutTicks = 150,       -- how long shouted words stay over a head
+    -- Flanking (squads only)
+    stalemateTicks = 600,   -- HOLD this long with the enemy in range -> consider a flank (~10 s)
+    flankCooldown = 1800,   -- ... at most once per 30 s
+    flankFit = 0.6,         -- ... only while at least this share of the squad is fit
+    flankPinned = 0.34,     -- ... and less than this share of the fit men is pinned
+    flankOut = 10,          -- first waypoint: this far out to the side
+    flankStandoff = 14,     -- final waypoint: this far short of the enemy (along the squad's facing) ...
+    flankWide = 12,         -- ... and this far off to the side of him
+    flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
 
@@ -181,33 +195,147 @@ local function boundDone(team, t, squad)
     return true
 end
 
-local function startBound(team, t, squad, el, dir)
-    local fx, fy = facing(squad)
+-- Start a bound: element `el` moves (dx, dy) * bound past the covering pair, or onto
+-- (tx, ty) if that is nearer.
+local function startBound(team, t, el, dx, dy, tx, ty)
     local other = t.pos[OTHER[el]]
     local mine = t.pos[el]
     if not (other and mine) then return end
     t.moving = el
     t.phaseStart = LF.tick
-    -- Leapfrog: the moving pair ends up a bound beyond (or behind) the covering pair.
-    mine.x, mine.y = other.x + fx * CFG.bound * dir, other.y + fy * CFG.bound * dir
+    local nx, ny = other.x + dx * CFG.bound, other.y + dy * CFG.bound
+    if tx and LF.dist(other.x, other.y, tx, ty) <= CFG.bound then nx, ny = tx, ty end
+    mine.x, mine.y = nx, ny
     if team.leader then
         LF.Tactics.shout(team.leader, ELEMENT_NAME[el] .. ", move! " .. ELEMENT_NAME[OTHER[el]] .. ", cover!")
     end
 end
 
-local function driveTeam(team, t, squad)
+-- Direction from the team's leading pair toward its current route waypoint: dx, dy, tx, ty.
+local function routeHeading(t)
+    local wp = t.route and t.route[t.routeIdx]
+    if not wp then return nil end
+    local lead = t.pos[t.moving and OTHER[t.moving] or "A"]
+    -- The pair nearer the waypoint leads.
+    for _, el in ipairs({ "A", "B" }) do
+        local p = t.pos[el]
+        if p and LF.dist(p.x, p.y, wp.x, wp.y) < LF.dist(lead.x, lead.y, wp.x, wp.y) then lead = p end
+    end
+    local dx, dy = wp.x - lead.x, wp.y - lead.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 0.5 then return 0, 0, wp.x, wp.y end
+    return dx / len, dy / len, wp.x, wp.y
+end
+
+local function driveTeam(team, t, squad, sq)
     local order = t.heard
+    local fx, fy = facing(squad)
     if order == "ADVANCE" or order == "FALLBACK" then
         local dir = order == "ADVANCE" and 1 or -1
         if t.order ~= order then
             t.order = order
-            startBound(team, t, squad, "A", dir)
+            startBound(team, t, "A", fx * dir, fy * dir)
         elseif t.moving and boundDone(team, t, squad) then
-            startBound(team, t, squad, OTHER[t.moving], dir)
+            startBound(team, t, OTHER[t.moving], fx * dir, fy * dir)
         end
+    elseif order == "MANEUVER" then
+        if t.maneuverDone then
+            t.order, t.moving = "HOLD", nil      -- already in position; wait for new orders
+            return
+        end
+        if t.order ~= order then
+            t.order = order
+            t.route = sq.flank and sq.flank.routes[team.id]
+            t.routeIdx = 1
+            t.moving = nil
+        end
+        if not t.route then t.order, t.moving = "HOLD", nil; return end
+        if t.moving and not boundDone(team, t, squad) then return end
+        -- Waypoint reached once the leading pair is on it.
+        local wp = t.route[t.routeIdx]
+        while wp and math.min(LF.dist(t.pos.A.x, t.pos.A.y, wp.x, wp.y), LF.dist(t.pos.B.x, t.pos.B.y, wp.x, wp.y)) < 2.5 do
+            t.routeIdx = t.routeIdx + 1
+            wp = t.route[t.routeIdx]
+        end
+        if not wp then
+            t.order, t.moving, t.maneuverDone = "HOLD", nil, true
+            if team.leader then LF.Tactics.shout(team.leader, "In position!") end
+            return
+        end
+        local dx, dy, tx, ty = routeHeading(t)
+        -- Leapfrog: the pair further from the waypoint moves past the nearer one.
+        local el = t.moving and OTHER[t.moving]
+        if not el then
+            el = LF.dist(t.pos.A.x, t.pos.A.y, wp.x, wp.y) > LF.dist(t.pos.B.x, t.pos.B.y, wp.x, wp.y) and "A" or "B"
+        end
+        startBound(team, t, el, dx, dy, tx, ty)
     elseif order == "HOLD" and t.order ~= "HOLD" then
         t.order, t.moving = "HOLD", nil
     end
+end
+
+-- How much cover there is around (x, y) against a threat at (cx, cy): squares with any cover
+-- within 4 tiles.
+local function coverAround(x, y, z, cx, cy)
+    local n = 0
+    for ix = math.floor(x) - 4, math.floor(x) + 4 do
+        for iy = math.floor(y) - 4, math.floor(y) + 4 do
+            if LF.Cover.quality(ix, iy, z, cx, cy) ~= LF.Cover.NONE then n = n + 1 end
+        end
+    end
+    return n
+end
+
+-- Plan a flank: pick the side with more cover near the final position, and a route for each
+-- alpha team (out to the side, then in). Returns the flank plan or nil.
+local function planFlank(squad, c)
+    local fx, fy = facing(squad)
+    local rx, ry = -fy, fx
+    local alphas = {}
+    local sx, sy, n = 0, 0, 0
+    for _, tid in ipairs(squad.teams) do
+        local team, t = LF.Units.get(tid), teams[tid]
+        if team and t then
+            for _, el in ipairs({ "A", "B" }) do sx, sy, n = sx + t.pos[el].x, sy + t.pos[el].y, n + 1 end
+            local cpl = team.leader and LF.Records.get(team.leader)
+            if team.element == "A" and cpl and fit(cpl) then alphas[#alphas + 1] = team end
+        end
+    end
+    if #alphas == 0 or n == 0 then return nil end
+    local z = c.z or 0
+    local best, bestCover = nil, -1
+    for _, side in ipairs({ -1, 1 }) do
+        local wx = c.x - fx * CFG.flankStandoff + rx * side * CFG.flankWide
+        local wy = c.y - fy * CFG.flankStandoff + ry * side * CFG.flankWide
+        local cov = coverAround(wx, wy, z, c.x, c.y)
+        if cov > bestCover then best, bestCover = side, cov end
+    end
+    local side = best
+    local plan = { side = side, started = LF.tick, routes = {}, teams = {} }
+    for k, team in ipairs(alphas) do
+        local t = teams[team.id]
+        local cx = (t.pos.A.x + t.pos.B.x) / 2
+        local cy = (t.pos.A.y + t.pos.B.y) / 2
+        local wide = CFG.flankWide + (k - 1) * 4
+        plan.routes[team.id] = {
+            { x = cx + rx * side * CFG.flankOut, y = cy + ry * side * CFG.flankOut },
+            { x = c.x - fx * CFG.flankStandoff + rx * side * wide, y = c.y - fy * CFG.flankStandoff + ry * side * wide },
+        }
+        plan.teams[#plan.teams + 1] = team.id
+        t.maneuverDone = nil
+    end
+    LF.log("FLANK " .. squad.name .. " going " .. (side < 0 and "left" or "right") .. " with " .. #alphas
+        .. " alpha team(s); cover score " .. bestCover)
+    return plan
+end
+
+-- What a team should do under the squad's intent.
+local function orderFor(team, sq)
+    if sq.intent == "FLANK" then
+        if sq.flank and sq.flank.routes[team.id] then return "MANEUVER" end
+        return "HOLD"
+    end
+    return sq.intent
 end
 
 -- ---- commander: intent ----------------------------------------------------------------------
@@ -217,8 +345,16 @@ local INTENT_WORDS = { ADVANCE = "Advance!", HOLD = "Hold! Open fire!", FALLBACK
 local function setIntent(squad, sq, cid, intent, why)
     if sq.intent == intent then return end
     LF.log("INTENT " .. squad.name .. " " .. tostring(sq.intent) .. " -> " .. tostring(intent) .. " (" .. why .. ")")
+    if sq.intent == "FLANK" then sq.lastFlank, sq.flank = LF.tick, nil end
     sq.intent = intent
-    if intent and cid then LF.Tactics.shout(cid, INTENT_WORDS[intent]) end
+    if intent == "HOLD" then sq.holdSince = LF.tick end
+    if intent and cid then
+        local words = INTENT_WORDS[intent]
+        if intent == "FLANK" and sq.flank then
+            words = "Alpha teams, flank " .. (sq.flank.side < 0 and "left" or "right") .. "! Bravo teams, cover!"
+        end
+        LF.Tactics.shout(cid, words)
+    end
 end
 
 local function updateSquad(squad)
@@ -284,6 +420,28 @@ local function updateSquad(squad)
         else intent, why = "HOLD", "fallen back out of range" end
     elseif fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         intent, why = "HOLD", pinnedN .. "/" .. fitN .. " pinned"
+    elseif intent == "FLANK" then
+        -- Carry on until every flanking team is in position (or it takes too long).
+        local done = true
+        for _, tid in ipairs(sq.flank and sq.flank.teams or {}) do
+            local t = teams[tid]
+            local team = LF.Units.get(tid)
+            local cpl = team and team.leader and LF.Bodies.get(team.leader)
+            if t and cpl and not cpl:isDead() and not t.maneuverDone then done = false end
+        end
+        if done then intent, why = "HOLD", "flankers in position"
+        elseif sq.flank and LF.tick - sq.flank.started > CFG.flankTimeout then intent, why = "HOLD", "flank took too long" end
+    elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume
+        and LF.tick - (sq.holdSince or LF.tick) >= CFG.stalemateTicks
+        and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
+        and total > 0 and fitN / total >= CFG.flankFit and (fitN == 0 or pinnedN / fitN < CFG.flankPinned) then
+        local plan = planFlank(squad, c)
+        if plan then
+            sq.flank = plan
+            intent, why = "FLANK", "stalemate"
+        else
+            sq.lastFlank = LF.tick
+        end
     elseif intent == "ADVANCE" and front <= CFG.advanceStop then
         intent, why = "HOLD", "in range (" .. math.floor(front) .. " tiles)"
     elseif intent ~= "ADVANCE" and front > CFG.advanceResume and not sq.broken then
@@ -301,9 +459,9 @@ local function updateSquad(squad)
             local cpl = team.leader and LF.Bodies.get(team.leader)
             if cpl and not cpl:isDead() then
                 if LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
-                    t.heard = sq.intent
+                    t.heard = orderFor(team, sq)
                 end
-                driveTeam(team, t, squad)
+                driveTeam(team, t, squad, sq)
             end
         end
     end

@@ -154,7 +154,9 @@ local function flinch(target)
     ISTimedActionQueue.add(LF_FlinchAction:new(target))
 end
 
+LF.Combat.shotCount = 0
 local function shotEffects(shooter, gun)
+    LF.Combat.shotCount = LF.Combat.shotCount + 1
     shooter:playSound(gun:getSwingSound())
     shooter:addWorldSoundUnlessInvisible(40, 100, false)
 end
@@ -180,6 +182,7 @@ end
 function LF.Combat.resolveShot(shooter, target, gun)
     LF.guard("shot effects", shotEffects, shooter, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
+    if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
 
     local dist = LF.dist(shooter:getX(), shooter:getY(), target:getX(), target:getY())
     local chance = hitChance(shooter, target, dist)
@@ -232,6 +235,7 @@ end
 function LF.Combat.resolveAreaShot(shooter, point, gun)
     LF.guard("shot effects", shotEffects, shooter, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
+    if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
     local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA, nil)
     if LF.Config.logShots then
         LF.log("AREA #" .. tostring(shooter:getModData().LF_id) .. " -> " .. math.floor(point:getX()) .. ","
