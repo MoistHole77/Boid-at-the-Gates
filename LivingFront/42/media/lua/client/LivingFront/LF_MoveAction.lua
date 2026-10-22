@@ -46,6 +46,17 @@ function LF_MoveAction:start()
     ISWalkToTimedAction.start(self)
     applyGait(self.character, self.gait)
     self.startX, self.startY, self.startMs = self.character:getX(), self.character:getY(), now()
+    if self.awayX then
+        self.awayStart = LF.dist(self.startX, self.startY, self.awayX, self.awayY)
+    end
+end
+
+-- A retreat whose route leads back toward the enemy (the path goes round an obstacle the wrong
+-- way) is abandoned: better to stay put than to run through the enemy line.
+local function headingIntoEnemy(self)
+    if not (self.awayStart and LF.tick % 10 == 0) then return false end
+    local c = self.character
+    return LF.dist(c:getX(), c:getY(), self.awayX, self.awayY) < self.awayStart - 2.5
 end
 
 function LF_MoveAction:update()
@@ -56,6 +67,14 @@ function LF_MoveAction:update()
             .. " running=" .. tostring(self.character:isRunning())
             .. " sprinting=" .. tostring(self.character:isSprinting())
             .. " state=" .. tostring(self.character:getCurrentActionContextStateName()))
+    end
+    if headingIntoEnemy(self) then
+        LF.log("MOVE #" .. tostring(self.character:getModData().LF_id) .. " retreat route leads toward the enemy; stopping")
+        if LF.Move and LF.Move.onFailed then
+            LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
+        end
+        self:forceStop()
+        return
     end
     ISWalkToTimedAction.update(self)
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
@@ -86,8 +105,10 @@ function LF_MoveAction:perform()
     ISWalkToTimedAction.perform(self)
 end
 
-function LF_MoveAction:new(character, location, gait)
+-- awayX, awayY (optional): a retreat - abandon it if the route closes on that point.
+function LF_MoveAction:new(character, location, gait, awayX, awayY)
     local o = ISWalkToTimedAction.new(self, character, location)
     o.gait = gait or "walk"
+    o.awayX, o.awayY = awayX, awayY
     return o
 end

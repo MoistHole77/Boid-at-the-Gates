@@ -106,20 +106,21 @@ local function title(rec) return LF.Units.title(rec) end
 
 -- Gaits: "walk", "run" or "sprint" (LF_MoveAction). Running is off unless LF.Brain.running.
 LF.Brain.running = true
-local function moveAction(body, sq, gait)
+local function moveAction(body, sq, gait, awayX, awayY)
     if not LF.Brain.running then gait = "walk" end
-    return LF_MoveAction:new(body, sq, gait)
+    return LF_MoveAction:new(body, sq, gait, awayX, awayY)
 end
 
 -- Walk (or run) to a free square near (x, y). Tries a few spots. Returns true if a move was queued.
-function LF.Brain.walkNear(body, x, y, z, spread, gait)
+-- awayX, awayY: this is a retreat from that point (abandoned if the route heads toward it).
+function LF.Brain.walkNear(body, x, y, z, spread, gait, awayX, awayY)
     local cell = getCell()
     for _ = 1, 6 do
         local sq = cell:getGridSquare(math.floor(x + ZombRand(-spread, spread + 1)),
                                       math.floor(y + ZombRand(-spread, spread + 1)), math.floor(z))
         if sq and sq:isFree(false) then
             ISTimedActionQueue.clear(body)
-            ISTimedActionQueue.add(moveAction(body, sq, gait))
+            ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
             return true
         end
     end
@@ -128,11 +129,11 @@ end
 local walkNear = LF.Brain.walkNear
 
 -- Walk (or run) to an exact square.
-function LF.Brain.walkTo(body, x, y, z, gait)
+function LF.Brain.walkTo(body, x, y, z, gait, awayX, awayY)
     local sq = getCell():getGridSquare(x, y, z)
     if not sq then return false end
     ISTimedActionQueue.clear(body)
-    ISTimedActionQueue.add(moveAction(body, sq, gait))
+    ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
     return true
 end
 local walkTo = LF.Brain.walkTo
@@ -166,13 +167,13 @@ local function setState(id, body, rec, m, state, detail)
 end
 
 -- Claim a spot and run to it (or settle if already there).
-local function takeSpot(id, body, m, field, x, y, z, label, gait)
-    m[field] = { x = x, y = y, z = z, since = LF.tick, gait = gait or "run" }
+local function takeSpot(id, body, m, field, x, y, z, label, gait, awayX, awayY)
+    m[field] = { x = x, y = y, z = z, since = LF.tick, gait = gait or "run", awayX = awayX, awayY = awayY }
     LF.Cover.reserve(x, y, z, id)
     if isAt(body, m[field]) then
         LF.log("BRAIN #" .. id .. " " .. label .. " here (" .. x .. "," .. y .. ")")
     else
-        walkTo(body, x, y, z, m[field].gait)
+        walkTo(body, x, y, z, m[field].gait, awayX, awayY)
         m.lastPath = LF.tick
         LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y)
     end
@@ -181,7 +182,7 @@ end
 -- If the walk to a claimed spot was interrupted (a flinch clears the action queue), resume it.
 local function resumeWalk(body, m, spot)
     if not isAt(body, spot) and not body:isPerformingAnAction() and LF.tick - m.lastPath > 60 then
-        walkTo(body, spot.x, spot.y, spot.z, spot.gait)
+        walkTo(body, spot.x, spot.y, spot.z, spot.gait, spot.awayX, spot.awayY)
         m.lastPath = LF.tick
     end
 end
@@ -227,7 +228,18 @@ local function planCover(id, body, m, threat, ax, ay, leash)
     if m.cover then
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
-        if q ~= LF.Cover.LOW or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
+        local usable = q == LF.Cover.LOW or (m.cover.loose and q ~= LF.Cover.NONE)
+        if m.cover.loose and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.coverSearchTicks then
+            -- Sheltering without a shot: keep looking for a real firing position.
+            m.lastCoverSearch = LF.tick
+            local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
+            if x then
+                leavePosition(id, body, m)
+                takeSpot(id, body, m, "cover", x, y, z, "firing position")
+                return
+            end
+        end
+        if not usable or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
             or (not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5))
             or not withinLeash(m.cover.x, m.cover.y, ax, ay, 3, leash) then
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
@@ -246,7 +258,14 @@ local function planCover(id, body, m, threat, ax, ay, leash)
     if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
     m.lastCoverSearch = LF.tick
     local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
-    if x then takeSpot(id, body, m, "cover", x, y, z, "cover") end
+    if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
+    -- No firing position: at least get out of the open (any cover, a little further out).
+    x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.sightRange + 10, ax, ay,
+        ax and ((leash or CFG.leash) + 3), true)
+    if x then
+        takeSpot(id, body, m, "cover", x, y, z, "shelter")
+        m.cover.loose = true
+    end
 end
 
 -- Wounded fighters: find somewhere out of the threat's sight before simply running.
@@ -254,7 +273,7 @@ end
 local function planHide(id, body, m, threat, rx, ry, others)
     if m.hide then
         if isAt(body, m.hide) then return true end
-        if LF.tick - m.hide.since <= CFG.coverGiveUpTicks then
+        if LF.tick - m.hide.since <= CFG.coverGiveUpTicks and not stuckNear(m, m.hide.x + 0.5, m.hide.y + 0.5) then
             resumeWalk(body, m, m.hide)
             return true
         end
@@ -264,7 +283,7 @@ local function planHide(id, body, m, threat, rx, ry, others)
     m.lastCoverSearch = LF.tick
     local x, y, z = LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
     if x then
-        takeSpot(id, body, m, "hide", x, y, z, "hiding spot")
+        takeSpot(id, body, m, "hide", x, y, z, "hiding spot", "run", threat:getX(), threat:getY())
         return true
     end
     return false
@@ -276,7 +295,7 @@ local function fleeFrom(m, body, fromX, fromY, gait)
     local dx, dy = body:getX() - fromX, body:getY() - fromY
     local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
     if walkNear(body, body:getX() + dx / len * CFG.fleeDistance, body:getY() + dy / len * CFG.fleeDistance,
-                body:getZ(), 2, gait) then
+                body:getZ(), 2, gait, fromX, fromY) then
         m.lastPath = LF.tick
     end
 end
@@ -312,11 +331,14 @@ local function followSlot(m, body, rec, sx, sy, sz)
     return false
 end
 
--- Wounded squad soldiers with nowhere to hide: run back to the squad's rear.
-local function fallBack(m, body, rx, ry, rz)
-    if LF.dist(body:getX(), body:getY(), rx, ry) < 3 then m.atRear = true; return end
+-- Wounded squad soldiers with nowhere to hide: run back to the squad's rear. If the way back is
+-- blocked (or only leads past the enemy), stay down where he is instead.
+local function fallBack(m, body, rx, ry, rz, threat)
+    if LF.dist(body:getX(), body:getY(), rx, ry) < 3 or stuckNear(m, rx, ry) then m.atRear = true; return end
     if LF.tick - m.lastPath <= CFG.reissueTicks then return end
-    if walkNear(body, rx, ry, rz, 2, "run") then m.lastPath = LF.tick end
+    local tx, ty = nil, nil
+    if threat then tx, ty = threat:getX(), threat:getY() end
+    if walkNear(body, rx, ry, rz, 2, "run", tx, ty) then m.lastPath = LF.tick end
 end
 
 -- How many of this soldier's squad mates are engaging that enemy.
@@ -424,7 +446,7 @@ local function decide(id, body, rec, m)
         local others = inSquad and LF.Squad.contactPoints(rec.squad, CFG.contactMemory, 6) or nil
         if not (fighter and planHide(id, body, m, threat, rx, ry, others)) then
             if rx then
-                fallBack(m, body, rx, ry, rz)
+                fallBack(m, body, rx, ry, rz, threat)
             else
                 -- Civilians sprint for it; a wounded soldier runs (the engine turns an injured
                 -- sprint into a run anyway).
@@ -448,7 +470,10 @@ local function decide(id, body, rec, m)
         -- the moment the enemy drops out of view.
         if not (m.hide and isAt(body, m.hide)) and inSquad then
             local rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance)
-            if rx and not m.hide then fallBack(m, body, rx, ry, rz) end
+            if rx and not m.hide then
+                local c = LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
+                fallBack(m, body, rx, ry, rz, c)
+            end
         end
         return
     end
@@ -581,11 +606,14 @@ local function act(id, body, rec, m)
     local st = m.state
     -- Under fire, soldiers keep their heads down between shots (and pinned men stay down).
     if (st == "engage" or st == "alert") and LF.Suppress.isSuppressed(body) then hunkerDown(body) end
+    -- Holding with no cover at all: crouch rather than stand in the open.
+    if (st == "engage" or st == "alert") and not m.cover and m.order and not isMoving(body) then hunkerDown(body) end
     if st == "alert" and m.point then
-        -- Covering: area fire on where the enemy was last seen.
+        -- Covering: area fire on where the enemy was last seen (not from a blind shelter).
         if m.cover then
             if not isAt(body, m.cover) then return end
             hunkerDown(body)
+            if m.cover.loose then return end
         end
         local p = m.point
         if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= CFG.sightRange * CFG.sightRange then

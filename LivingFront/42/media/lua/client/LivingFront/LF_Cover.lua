@@ -131,8 +131,10 @@ local FIRE_CHECKS = 120     -- at most this many candidate squares get the (cost
 -- `threat` may be a body or anything with getX/getY/getZ (a last-known position).
 -- Squares are ranked by distance alone first (cheap), and the cover and sight-line checks run
 -- from the best down until one passes, so most squares never cost an engine call.
+-- With `loose`, any cover (LOW or HIGH) will do and no line of sight is needed: somewhere to get
+-- out of the open when no firing position exists.
 -- Returns x, y, z, quality or nil.
-function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
+function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, loose)
     local cell = getCell()
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     local tx, ty = threat:getX(), threat:getY()
@@ -165,10 +167,11 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
     table.sort(fireCands, byFireScore)
     for i = 1, math.min(n, FIRE_CHECKS) do
         local c = fireCands[i]
-        if LF.Cover.quality(c.x, c.y, bz, tx, ty) == LOW and not isTaken(c.x, c.y, bz, id) then
+        local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
+        if (q == LOW or (loose and q == HIGH)) and not isTaken(c.x, c.y, bz, id) then
             local sq = cell:getGridSquare(c.x, c.y, bz)
-            if sq and standable(sq, body) and LF.Cover.canSeeFrom(c.x, c.y, bz, threat) then
-                return c.x, c.y, bz, LOW
+            if sq and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
+                return c.x, c.y, bz, q
             end
         end
     end

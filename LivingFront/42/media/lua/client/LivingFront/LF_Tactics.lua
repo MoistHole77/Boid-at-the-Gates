@@ -61,6 +61,7 @@ local CFG = {
     flankStandoff = 10,     -- final waypoint: this far short of the enemy (along the squad's facing) ...
     flankWide = 16,         -- ... and this far off to the side of him
     counterFlankTicks = 1500, -- after one side starts a flank, the other must wait this long (~25 s)
+    flankPushes = 2,        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
@@ -297,6 +298,36 @@ local function driveTeam(team, t, squad, sq)
             wp = t.route[t.routeIdx]
         end
         if not wp then
+            -- At the end of the route: if neither pair can see where the enemy is, the spot is no
+            -- good - keep working round his side (up to twice).
+            local cp = sq.contact
+            local z = cp and cp.z or 0
+            local seen = not cp
+                or LF.Cover.canSeeFrom(math.floor(t.pos.A.x), math.floor(t.pos.A.y), z, cp)
+                or LF.Cover.canSeeFrom(math.floor(t.pos.B.x), math.floor(t.pos.B.y), z, cp)
+            if not seen and (t.pushes or 0) < CFG.flankPushes then
+                t.pushes = (t.pushes or 0) + 1
+                local lead = LF.dist(t.pos.A.x, t.pos.A.y, cp.x, cp.y) < LF.dist(t.pos.B.x, t.pos.B.y, cp.x, cp.y) and t.pos.A or t.pos.B
+                -- Work round him: half toward the enemy, half sideways toward his rear.
+                local fx, fy = facing(squad)
+                local dx, dy = cp.x - lead.x, cp.y - lead.y
+                local len = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+                dx, dy = dx / len, dy / len
+                local tx, ty = -dy, dx
+                if tx * fx + ty * fy < 0 then tx, ty = -tx, -ty end
+                local mx, my = dx * 0.5 + tx, dy * 0.5 + ty
+                local ml = math.sqrt(mx * mx + my * my)
+                local step = CFG.bound
+                if len - step * 0.5 < 8 then mx, my, ml = tx, ty, 1 end    -- close already: only sideways
+                if step >= 2 then
+                    t.route[#t.route + 1] = { x = lead.x + mx / ml * step, y = lead.y + my / ml * step }
+                    wp = t.route[t.routeIdx]
+                    LF.log("FLANK " .. team.name .. " can't see the enemy from its position; pushing on (" .. t.pushes .. ")")
+                    if team.leader then LF.Tactics.shout(team.leader, "No good here - keep moving!") end
+                end
+            end
+        end
+        if not wp then
             t.order, t.moving, t.maneuverDone = "HOLD", nil, true
             if team.leader then LF.Tactics.shout(team.leader, "In position!") end
             return
@@ -331,9 +362,26 @@ local function coverAround(x, y, z, cx, cy)
     return n
 end
 
+-- Where the enemy's line ends on one side, in the squad's frame (forward along its facing,
+-- lateral to the right): the known enemy furthest out to that side. Returns forward, lateral
+-- (lateral is signed by side, so bigger = further out) for that soldier, or the contact's.
+local function enemyEdge(squad, sx, sy, side, c)
+    local fx, fy = facing(squad)
+    local rx, ry = -fy, fx
+    local bestF = (c.x - sx) * fx + (c.y - sy) * fy
+    local bestL = ((c.x - sx) * rx + (c.y - sy) * ry) * side
+    for _, e in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        local L = ((e.x - sx) * rx + (e.y - sy) * ry) * side
+        if L > bestL then bestL, bestF = L, (e.x - sx) * fx + (e.y - sy) * fy end
+    end
+    return bestF, bestL
+end
+
 -- Plan a flank: pick the side with more cover near the final position, and a route for each
--- alpha team (out to the side, then in). Returns the flank plan or nil.
-local function planFlank(squad, c)
+-- alpha team: out to the side, then to a spot beside and short of the end of the enemy's line,
+-- then wrapping in toward his side. Each further flank in the same fight pushes deeper.
+-- Returns the flank plan or nil.
+local function planFlank(squad, c, sq)
     local fx, fy = facing(squad)
     local rx, ry = -fy, fx
     local alphas = {}
@@ -347,30 +395,40 @@ local function planFlank(squad, c)
         end
     end
     if #alphas == 0 or n == 0 then return nil end
+    sx, sy = sx / n, sy / n
     local z = c.z or 0
+    local depth = (sq.flankCount or 0) * 3          -- later flanks go further forward
+    local function at(F, L, side) return sx + fx * F + rx * side * L, sy + fy * F + ry * side * L end
+
     local best, bestCover = nil, -1
     for _, side in ipairs({ -1, 1 }) do
-        local wx = c.x - fx * CFG.flankStandoff + rx * side * CFG.flankWide
-        local wy = c.y - fy * CFG.flankStandoff + ry * side * CFG.flankWide
+        local eF, eL = enemyEdge(squad, sx, sy, side, c)
+        local wx, wy = at(eF - CFG.flankStandoff + depth, eL + CFG.flankWide / 2, side)
         local cov = coverAround(wx, wy, z, c.x, c.y)
         if cov > bestCover then best, bestCover = side, cov end
     end
     local side = best
+    local eF, eL = enemyEdge(squad, sx, sy, side, c)
     local plan = { side = side, started = LF.tick, routes = {}, teams = {} }
     for k, team in ipairs(alphas) do
         local t = teams[team.id]
         local cx = (t.pos.A.x + t.pos.B.x) / 2
         local cy = (t.pos.A.y + t.pos.B.y) / 2
-        local wide = CFG.flankWide + (k - 1) * 4
+        local spread = (k - 1) * 4                  -- the second team swings wider
+        local w2x, w2y = at(eF - CFG.flankStandoff + depth, eL + CFG.flankWide / 2 + spread, side)
+        local w3x, w3y = at(eF - CFG.flankStandoff / 2 + depth, eL + 4 + spread, side)
         plan.routes[team.id] = {
             { x = cx + rx * side * CFG.flankOut, y = cy + ry * side * CFG.flankOut },
-            { x = c.x - fx * CFG.flankStandoff + rx * side * wide, y = c.y - fy * CFG.flankStandoff + ry * side * wide },
+            { x = w2x, y = w2y },
+            { x = w3x, y = w3y },
         }
         plan.teams[#plan.teams + 1] = team.id
-        t.maneuverDone = nil
+        t.maneuverDone, t.pushes, t.side = nil, 0, side
     end
+    sq.flankCount = (sq.flankCount or 0) + 1
     LF.log("FLANK " .. squad.name .. " going " .. (side < 0 and "left" or "right") .. " with " .. #alphas
-        .. " alpha team(s); cover score " .. bestCover)
+        .. " alpha team(s); cover score " .. bestCover .. ", enemy line ends " .. math.floor(eL)
+        .. " tiles out, flank #" .. sq.flankCount)
     return plan
 end
 
@@ -518,7 +576,7 @@ local function updateSquad(squad)
         and not otherSideFlanking(squad.faction) then
         local supp, enemies = enemySuppression(squad, c)
         if enemies > 0 and supp / enemies >= CFG.flankSuperiority then
-            local plan = planFlank(squad, c)
+            local plan = planFlank(squad, c, sq)
             if plan then
                 sq.flank = plan
                 sq.flankStartTick = LF.tick
