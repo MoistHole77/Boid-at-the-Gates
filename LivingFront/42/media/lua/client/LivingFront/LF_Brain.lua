@@ -72,7 +72,8 @@ local CFG = {
     lowCoverPenalty = 5,    -- target choice: tiles added for a target behind low cover
     highCoverPenalty = 12,  --                 ... behind high cover
     stickyBonus = 4,        -- target choice: tiles taken off for the current target
-    clearFireRange = 14,    -- clearing a building: stop and shoot at an enemy this close
+    clearFireRange = 10,    -- clearing a building, going in: stop and shoot at an enemy this close
+    stackFireRange = 5,     -- ... on the way to the stack: only this close (the other teams cover)
     spotRange = 12,         -- enemy leaders closer than this are recognised faster
     spotChanceNear = 10,    -- percent per think to recognise a visible enemy leader (near)
     spotChanceFar = 4,      -- ... (far)
@@ -536,7 +537,8 @@ end
 -- in view close by: stop and shoot, then carry on.
 local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
     m.order, m.point = "file", nil
-    if pick and dist <= CFG.clearFireRange then
+    local range = gait == "aim" and CFG.clearFireRange or CFG.stackFireRange
+    if pick and dist <= range then
         if isMoving(body) then ISTimedActionQueue.clear(body) end
         if m.state ~= "engage" then
             setState(id, body, rec, m, "engage", "clearing - target #" .. threatId .. " " .. title(pick.rec) .. " at "
@@ -545,7 +547,7 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         m.targetId, m.targetDist = threatId, dist
         return
     end
-    setState(id, body, rec, m, "file", gait == "aim" and "going in" or "stacking up")
+    setState(id, body, rec, m, "file", gait == "aim" and "going in" or (gait == "march" and "on the march" or "stacking up"))
     m.targetId = nil
     m.fileFace, m.fileGait = face, gait
     local tx, ty = math.floor(sx), math.floor(sy)
@@ -553,7 +555,18 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     m.fileThere = there
     if there then return end
     local key = tx .. "," .. ty .. "," .. gait
-    if m.fileDest ~= key then
+    local walkGait = gait == "march" and "walk" or gait
+    if gait == "march" then
+        -- On the march his place moves up the road: re-path only when it has moved well on
+        -- (or he has stopped), not every step.
+        local d = m.marchDest and LF.dist(m.marchDest.x, m.marchDest.y, tx, ty) or math.huge
+        if d >= 3 or not isMoving(body) then
+            if d >= 3 and isMoving(body) then ISTimedActionQueue.clear(body) end
+            if d >= 3 then m.lastPath = -10000 end
+            m.marchDest = m.marchDest or {}
+            m.marchDest.x, m.marchDest.y = tx, ty
+        end
+    elseif m.fileDest ~= key then
         m.fileDest = key
         if isMoving(body) then ISTimedActionQueue.clear(body) end
         m.lastPath = -10000
@@ -561,7 +574,7 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     if body:isPerformingAnAction() and not isMoving(body) then return end
     if not isMoving(body) and LF.tick - m.lastPath > 60 then
         if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
-        walkTo(body, tx, ty, math.floor(sz), gait)
+        walkTo(body, tx, ty, math.floor(sz), walkGait)
         m.lastPath = LF.tick
     end
 end
@@ -853,7 +866,7 @@ local function act(id, body, rec, m)
     elseif m.state == "file" then
         -- In the stack (kneeling, facing the door) or on his spot in the room (standing, facing on).
         if m.fileThere and not body:isPerformingAnAction() then
-            if m.fileGait ~= "aim" then hunkerDown(body) end
+            if m.fileGait ~= "aim" and m.fileGait ~= "march" then hunkerDown(body) end
             local f = m.fileFace
             if f and LF.tick % 20 == 0 then body:faceLocation(f.x, f.y) end
         end

@@ -30,7 +30,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Furniture in windows (fire from a tile back, shove it aside); windows smashed out with the rifle butt | Working (0.18) |
 | Clearing a building (a team stacks on the door, breaches, goes in one at a time) | Built, awaiting in-game test (fixed in 0.19) |
 | Building defence: men at windows never leave them; spares fill windows toward the enemy | Built, awaiting in-game test |
-| Sergeants choose their stance (dig in when outnumbered / shot up / by a building with the enemy coming / stalled; move up with the numbers or when it's gone quiet) | Built, awaiting in-game test |
+| Sergeants choose their stance (dig in when outnumbered / shot up / by a building with the enemy coming / stalled; move up with the numbers or when it's gone quiet) | Working (0.19) |
+| Troop movements: a squad marches by road in a tactical column (staggered files, sergeant in the centre), halts on contact, forms up again after | Built, awaiting in-game test |
 | Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
@@ -68,6 +69,8 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders, the defensive perimeter |
 | `LF_Stance.lua` | Unit stances (offensive / defensive) and their settings |
 | `LF_Building.lua` | Building layouts: inside squares, windows and doors by wall |
+| `LF_March.lua` | Troop movements: road routes and the marching column |
+| `LF_Watch.lua` | Keeps the real player visible (and logs his render state) |
 | `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
 | `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |

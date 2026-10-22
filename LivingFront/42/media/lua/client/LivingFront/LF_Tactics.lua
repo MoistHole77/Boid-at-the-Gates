@@ -40,6 +40,7 @@ require "LivingFront/LF_Cover"
 require "LivingFront/LF_Sense"
 require "LivingFront/LF_Stance"
 require "LivingFront/LF_Building"
+require "LivingFront/LF_March"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -76,7 +77,7 @@ local CFG = {
     -- Clearing a building (offensive)
     clearAt = 3,            -- send Alpha 1 in when the enemy known in a building is down to this many
     clearCooldown = 3600,   -- at most one clearing order per ~60 s
-    clearStackTimeout = 1200, -- go in after ~20 s even if not everyone is stacked
+    clearStackTimeout = 2400, -- after ~40 s, go in with whoever is stacked (2+ men) or call it off
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
     clearTimeout = 7200,    -- give up on a clearing after ~2 min
     -- The sergeant choosing his stance
@@ -187,6 +188,11 @@ function LF.Tactics.place(rec)
     local tc = rec.team and teams[rec.team]
     if tc and tc.clear then
         local role, x, y, z, face, gait = LF.Tactics.clearPlace(tc.clear, rec)
+        if role then return role, x, y, z, face, gait end
+    end
+    -- On the march: his place in the column.
+    do
+        local role, x, y, z, face, gait = LF.March.place(rec)
         if role then return role, x, y, z, face, gait end
     end
     local alone = rec.team and teams[rec.team]
@@ -1259,6 +1265,7 @@ end
 -- Change a unit's stance (offensive / defensive). The unit starts afresh: a defensive unit forms
 -- its perimeter where its commander stands.
 function LF.Tactics.setStance(squad, stance, holdAt)
+    if stance == "defensive" then LF.March.cancel(squad.id) end
     squad.stance = stance
     squad.holdAt = holdAt
     squads[squad.id] = nil
@@ -1469,7 +1476,7 @@ function LF.Tactics.clearPlace(C, rec)
     end
     local sp = C.stack[idx]
     local body = LF.Bodies.get(rec.id)
-    local far = body and LF.dist(body:getX(), body:getY(), sp.x + 0.5, sp.y + 0.5) > 6
+    local far = body and LF.dist(body:getX(), body:getY(), sp.x + 0.5, sp.y + 0.5) > 3
     return "file", sp.x + 0.5, sp.y + 0.5, z, C.face, far and "run" or "walk"
 end
 
@@ -1512,7 +1519,25 @@ local function updateClear(team, t, squad)
         for i, rid in ipairs(C.file) do
             if LF.Records.get(rid) and fit(LF.Records.get(rid)) and not at(rid, C.stack[i].x, C.stack[i].y) then all = false end
         end
-        if all or LF.tick - C.phaseAt > CFG.clearStackTimeout then
+        if not all and LF.tick - C.phaseAt > CFG.clearStackTimeout then
+            -- Taking too long: go with the men who are on the stack; the rest stay out and cover.
+            local file, stack = {}, {}
+            for i, rid in ipairs(C.file) do
+                local b = LF.Bodies.get(rid)
+                local r = LF.Records.get(rid)
+                if r and fit(r) and b and LF.dist(b:getX(), b:getY(), C.stack[i].x + 0.5, C.stack[i].y + 0.5) <= 3 then
+                    file[#file + 1] = rid
+                    stack[#stack + 1] = C.stack[i]
+                end
+            end
+            if #file < 2 then
+                finish("Can't get to the door - back to cover!", "couldn't stack up on the door")
+                return false
+            end
+            LF.log("CLEAR " .. team.name .. ": going in with the " .. #file .. " men on the stack")
+            C.file, C.stack, all = file, stack, true
+        end
+        if all then
             C.phase, C.phaseAt = "breach", LF.tick
             LF.log("CLEAR " .. team.name .. ": stacked on the door at " .. C.door.x .. "," .. C.door.y)
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stacked! Ready...") end
@@ -1763,6 +1788,12 @@ local function updateSquad(squad)
         return
     end
     if not LF.Stance.get(squad).maneuvers then return updateDefensive(squad, sq, cid, cmd) end
+    -- On the march: the column moves on until it meets the enemy (or arrives).
+    if LF.March.get(squad.id) then
+        local c0 = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
+        if c0 or sq.intent then sq.quietSince = LF.tick end
+        if LF.March.update(squad, cid, cmd, c0, LF.tick - (sq.quietSince or 0)) then return end
+    end
 
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     if not c then

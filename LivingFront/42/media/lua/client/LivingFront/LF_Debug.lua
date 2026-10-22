@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: sergeants choosing their stance; the building
--- defence; clearing a building.
+-- commands for the test at hand. Current test: troop movements (a squad marching by road in a
+-- tactical column); also the building tests and clearing.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -16,6 +16,7 @@ require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Building"
 require "LivingFront/LF_Stance"
+require "LivingFront/LF_March"
 require "LivingFront/LF_Weapons"
 
 LF.Debug = LF.Debug or {}
@@ -76,6 +77,7 @@ local function deleteAll()
     LF.Squad.forgetAll()
     LF.Suppress.forgetAll()
     LF.Tactics.forgetAll()
+    LF.March.forgetAll()
     LF.Weapons.forgetAll()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
@@ -282,6 +284,24 @@ local function clearOrder(x, y, z)
     end
 end
 
+-- March the nearest (offensive) unit to the clicked spot in a tactical column, by road.
+local function marchNearest(x, y, z)
+    local best, bestD = nil, math.huge
+    for id, body in pairs(LF.Bodies.all()) do
+        local rec = LF.Records.get(id)
+        if rec and rec.squad and not body:isDead() then
+            local u = LF.Units.get(rec.squad)
+            if u and LF.Stance.get(u).maneuvers then
+                local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
+                if d < bestD then best, bestD = u, d end
+            end
+        end
+    end
+    if not best then LF.say("No unit nearby (a defending unit won't march: set it offensive first)"); return end
+    local ok, why = LF.March.order(best, x, y, z)
+    LF.say(ok and (best.name .. " marches here") or ("Can't march: " .. tostring(why)))
+end
+
 local function setStanceNearest(x, y, z, stance)
     local squad = nearestUnit(x, y)
     if not squad then LF.say("No unit nearby"); return end
@@ -307,12 +327,13 @@ local function onMenu(playerNum, context, worldObjects, test)
     context:addSubMenu(option, sub)
 
     -- Current test.
-    sub:addOption("Test: team vs team (4 vs 4)", nil, function() battle(x, y, z, true, 14) end)
+    sub:addOption("Test: spawn a German squad here (to march)", nil, function()
+        LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, false)
+        LF.say("German squad spawned - right-click somewhere and choose March nearest unit here")
+    end)
+    sub:addOption("March nearest unit here (tactical column, by road)", nil, function() marchNearest(x, y, z) end)
     sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
     sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
-    sub:addOption("Test: team holds this building - Soviets attack", nil, function() buildingTest(x, y, z, true) end)
-    sub:addOption("Test: squad perimeter (open ground) - Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
-    sub:addOption("Test: stance switching - German team here (by a house) vs Soviet squad", nil, function() stanceTest(x, y, z) end)
     sub:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
         LF.Tactics.autoStance = not LF.Tactics.autoStance
         LF.log("DEBUG automatic stance " .. (LF.Tactics.autoStance and "on" or "off"))
