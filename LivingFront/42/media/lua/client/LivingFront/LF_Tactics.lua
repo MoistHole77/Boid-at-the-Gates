@@ -18,6 +18,9 @@
 --                (aimed fire at what it sees, area fire at the last-known position), then swap
 --     FALLBACK - the same, backwards
 --     MANEUVER - the same bounding, along a route (out to the side, then in toward the enemy)
+--   On his own initiative, a corporal whose team is holding and finds half its fit men without
+--   an open shot (no enemy in their sights for ~8 s) moves the whole team to a nearby spot with
+--   a line of sight to the enemy (REPOSITION). An order from the sergeant overrides it.
 --   A team out of earshot keeps doing its last order.
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
@@ -65,7 +68,10 @@ local CFG = {
     -- Stalemate: if neither side reaches fire superiority for this long, the side with the better
     -- share of the enemy suppressed flanks anyway (battles should still last a while).
     stalemateTicks = 2700,  -- ~45 s of holding in range with no flank by either side
-    stalemateRadius = 45,   -- enemy squads whose last contact is within this of our commander count        -- a flanking team that can't see the enemy at the end pushes on this many times
+    stalemateRadius = 45,   -- enemy squads whose last contact is within this of our commander count
+    -- Corporal's reposition (team without an open shot)
+    blindShare = 0.5,       -- this share of the team's fit men without a shot -> move the team
+    shiftCooldown = 900,    -- at most once per ~15 s per team        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
@@ -184,7 +190,7 @@ function LF.Tactics.place(rec)
     local p = t.pos[rec.element]
     local lat = LF.Units.slotLat(rec)
     local x, y = p.x - fy * lat, p.y + fx * lat
-    return (t.moving == rec.element) and "move" or "hold", x, y, z, sq.contact
+    return (t.moving == rec.element or t.shifting) and "move" or "hold", x, y, z, sq.contact
 end
 
 function LF.Tactics.intent(squadId)
@@ -270,9 +276,88 @@ local function routeHeading(t)
     return dx / len, dy / len, wp.x, wp.y
 end
 
+-- ---- corporal: reposition when the team has no shot -----------------------------------------
+
+-- Has every fit, unpinned man of the team reached his new spot (or found he can't)?
+local function shiftDone(team, t, squad)
+    if LF.tick - t.phaseStart > CFG.phaseTimeout then return true end
+    local fx, fy = facing(squad)
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        local p = r and t.pos[r.element]
+        if p and r.team == team.id and fit(r) then
+            local b = LF.Bodies.get(rid)
+            if b and not LF.Suppress.isPinned(b) then
+                local lat = LF.Units.slotLat(r)
+                local x, y = p.x - fy * lat, p.y + fx * lat
+                if LF.dist(b:getX(), b:getY(), x, y) > CFG.arriveDistance
+                    and not (LF.Brain and LF.Brain.isStuck and LF.Brain.isStuck(rid, x, y)) then
+                    return false
+                end
+            end
+        end
+    end
+    return true
+end
+
+-- Offsets tried for a new team position, in the squad's frame (forward, right): sideways
+-- first, then sideways and a little forward, then further out, then a step back.
+local SHIFT_TRIES = { { 0, 7 }, { 0, -7 }, { 3, 6 }, { 3, -6 }, { 0, 11 }, { 0, -11 }, { -3, 4 }, { -3, -4 } }
+
+-- Find a spot near the team with a line of sight to the enemy and move the whole team there.
+local function planShift(team, t, squad, sq)
+    local cp = sq.contact
+    if not cp then return false end
+    local fx, fy = facing(squad)
+    local rx, ry = -fy, fx
+    local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
+    local z = cp.z or 0
+    local cell = getCell()
+    for _, o in ipairs(SHIFT_TRIES) do
+        local nx, ny = cx + fx * o[1] + rx * o[2], cy + fy * o[1] + ry * o[2]
+        local sqr = cell:getGridSquare(math.floor(nx), math.floor(ny), z)
+        if sqr and sqr:isFree(false) and LF.dist(nx, ny, cp.x, cp.y) >= CFG.advanceStop - 2
+            and LF.Cover.canSeeFrom(math.floor(nx), math.floor(ny), z, cp) then
+            local dx, dy = nx - cx, ny - cy
+            t.pos.A.x, t.pos.A.y = t.pos.A.x + dx, t.pos.A.y + dy
+            t.pos.B.x, t.pos.B.y = t.pos.B.x + dx, t.pos.B.y + dy
+            t.shifting, t.moving, t.phaseStart = true, nil, LF.tick
+            LF.log("REPOSITION " .. team.name .. " of " .. squad.name .. ": no open shot, moving "
+                .. math.floor(LF.dist(0, 0, dx, dy)) .. " tiles to " .. math.floor(nx) .. "," .. math.floor(ny))
+            if team.leader then LF.Tactics.shout(team.leader, "Can't see them - move! Find a shot!") end
+            return true
+        end
+    end
+    return false
+end
+
+-- While holding, the corporal checks whether half his fit men have no open shot.
+local function corporalCheck(team, t, squad, sq)
+    if t.shifting then
+        if shiftDone(team, t, squad) then t.shifting = nil end
+        return
+    end
+    if LF.tick - (t.lastShift or -100000) < CFG.shiftCooldown then return end
+    if not (LF.Brain and LF.Brain.isBlind) then return end
+    local fitN, blind = 0, 0
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then
+            fitN = fitN + 1
+            if LF.Brain.isBlind(rid) then blind = blind + 1 end
+        end
+    end
+    if fitN >= 2 and blind / fitN >= CFG.blindShare then
+        t.lastShift = LF.tick
+        planShift(team, t, squad, sq)
+    end
+end
+
 local function driveTeam(team, t, squad, sq)
     local order = t.heard
     local fx, fy = facing(squad)
+    -- An order from the sergeant (anything but HOLD) overrides the corporal's own reposition.
+    if order ~= "HOLD" then t.shifting = nil end
     if order == "ADVANCE" or order == "FALLBACK" then
         local dir = order == "ADVANCE" and 1 or -1
         local contact = (dir > 0) and sq.contact or nil
@@ -343,14 +428,17 @@ local function driveTeam(team, t, squad, sq)
             el = LF.dist(t.pos.A.x, t.pos.A.y, wp.x, wp.y) > LF.dist(t.pos.B.x, t.pos.B.y, wp.x, wp.y) and "A" or "B"
         end
         startBound(team, t, el, dx, dy, tx, ty)
-    elseif order == "HOLD" and t.order ~= "HOLD" then
-        -- Hold where the men are: a pair caught mid-bound stops where it is rather than
-        -- finishing the run alone.
-        if t.moving then
-            local x, y = elementCentre(team, t.moving)
-            if x then t.pos[t.moving].x, t.pos[t.moving].y = x, y end
+    elseif order == "HOLD" then
+        if t.order ~= "HOLD" then
+            -- Hold where the men are: a pair caught mid-bound stops where it is rather than
+            -- finishing the run alone.
+            if t.moving then
+                local x, y = elementCentre(team, t.moving)
+                if x then t.pos[t.moving].x, t.pos[t.moving].y = x, y end
+            end
+            t.order, t.moving = "HOLD", nil
         end
-        t.order, t.moving = "HOLD", nil
+        corporalCheck(team, t, squad, sq)
     end
 end
 
@@ -582,7 +670,9 @@ local function updateSquad(squad)
         sq.broken = true
         if front < CFG.fallbackClear then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
         else intent, why = "HOLD", "fallen back out of range" end
-    elseif fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
+    elseif intent ~= "HOLD" and intent ~= "FLANK" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
+        -- Too many men pinned to keep advancing. (A squad already holding still goes on to the
+        -- flank checks below, and a flank under way carries on.)
         intent, why = "HOLD", pinnedN .. "/" .. fitN .. " pinned"
     elseif intent == "FLANK" then
         -- Carry on until every flanking team is in position (or it takes too long).
@@ -623,7 +713,8 @@ local function updateSquad(squad)
         end
     elseif intent == "ADVANCE" and front <= CFG.advanceStop then
         intent, why = "HOLD", "in range (" .. math.floor(front) .. " tiles)"
-    elseif intent ~= "ADVANCE" and front > CFG.advanceResume and not sq.broken then
+    elseif intent ~= "ADVANCE" and front > CFG.advanceResume and not sq.broken
+        and not (fitN > 0 and pinnedN / fitN >= CFG.pinnedHold) then
         intent, why = "ADVANCE", "enemy at " .. math.floor(front) .. " tiles"
     elseif not intent then
         intent, why = "HOLD", "contact at " .. math.floor(front) .. " tiles"

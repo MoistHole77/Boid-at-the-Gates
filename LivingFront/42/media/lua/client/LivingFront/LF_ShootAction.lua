@@ -56,6 +56,12 @@ function LF_ShootAction:start()
     self:setActionAnim(self.aimAnim)
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
     self.nextRound = LF.tick + self.profile.aimTicks
+    -- Submachine-gun bursts vary: about half the time a round or two longer or shorter.
+    self.burst = self.profile.burst
+    if self.profile.kind == "smg" and ZombRand(100) < 50 then
+        local delta = ZombRand(1, 3) * (ZombRand(2) == 0 and -1 or 1)
+        self.burst = math.max(2, self.burst + delta)
+    end
 end
 
 function LF_ShootAction:update()
@@ -79,7 +85,7 @@ function LF_ShootAction:update()
     local ok = true
     if self.onFire then ok = self.onFire(self.character, self.target) ~= false end
     if ok then self.fired = self.fired + 1 end
-    if not ok or self.fired >= self.profile.burst then
+    if not ok or self.fired >= (self.burst or self.profile.burst) then
         self.doneAt = now + self.profile.recover
         if self.profile.kind == "bolt" and ok then
             self.rackAt = now + RACK_DELAY

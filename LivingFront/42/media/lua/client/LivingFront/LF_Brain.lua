@@ -59,6 +59,7 @@ local CFG = {
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
     bearingsLeash = 5,      -- opening seconds of a fight: take the nearest cover within this many tiles
     stuckLeash = 7,         -- can't reach his spot: take the nearest cover within this many tiles
+    blindTicks = 480,       -- holding this long (~8 s) without an enemy in his sights = no open shot
     followDistance = 2.5,   -- idle squad soldiers walk back to their slot beyond this distance
     followReissueTicks = 90,
     rearDistance = 8,       -- the squad's rear is this far behind its leader
@@ -212,6 +213,15 @@ local function stuckNear(m, x, y)
     local st = m.stuck
     return st ~= nil and LF.tick - st.tick < STUCK_TICKS and LF.dist(st.x, st.y, x, y) < 3
 end
+-- Is this soldier holding a position without an open shot (no enemy in his own sights within
+-- rifle range for a while)? Used by corporals to decide to move the team.
+function LF.Brain.isBlind(id)
+    local m = minds[id]
+    if not (m and m.order == "hold" and (m.state == "alert" or m.state == "engage")) then return false end
+    if not m.holdingSince then return false end
+    return LF.tick - math.max(m.lastSight or -100000, m.holdingSince) > CFG.blindTicks
+end
+
 function LF.Brain.isStuck(id, x, y)
     local m = minds[id]
     return m ~= nil and stuckNear(m, x, y)
@@ -415,6 +425,7 @@ local function moveTo(m, body, x, y, z)
 end
 
 local function decide(id, body, rec, m)
+    m.prevOrder = m.order
     m.order, m.point = nil, nil
     -- Fighters: soldiers, and civilians who are holding a gun (resistance).
     local fighter = rec.faction ~= "CIV" or LF.Combat.isArmed(body)
@@ -428,6 +439,7 @@ local function decide(id, body, rec, m)
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
     local threat, threatId, dist = nil, nil, nil
     if pick then threat, threatId, dist = pick.body, pick.id, pick.dist end
+    if pick and fighter and dist <= CFG.fireRange then m.lastSight = LF.tick end
     local hp = LF.Combat.health(body)
 
     -- The slot this soldier is leashed to (none for the squad leader, who sets the pace).
@@ -518,6 +530,11 @@ local function decide(id, body, rec, m)
             if role == "move" then role = "hold" end
         end
         if role then
+            if role ~= "hold" then
+                m.holdingSince = nil
+            elseif m.prevOrder ~= "hold" or not m.holdingSince then
+                m.holdingSince = LF.tick
+            end
             m.order, m.point = role, point
             local pinned = LF.Suppress.isPinned(body)
             if role == "move" and not pinned then
