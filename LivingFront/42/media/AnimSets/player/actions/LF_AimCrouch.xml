@@ -9,6 +9,12 @@
 	<m_SubStateBoneWeights>
 		<boneName>Bip01_Spine1</boneName>
 	</m_SubStateBoneWeights>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Prop1</boneName>
+	</m_SubStateBoneWeights>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Prop2</boneName>
+	</m_SubStateBoneWeights>
 	<m_Conditions x_name="lf-lf-aimcrouch-0001">
 		<m_Name>PerformingAction</m_Name>
 		<m_Type>STRING</m_Type>

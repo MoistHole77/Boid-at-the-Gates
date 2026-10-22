@@ -535,13 +535,14 @@ end
 -- Clearing a building (LF_Tactics.clearPlace): walk (or run) to his place in the file - the
 -- stack by the door, then his spot in the room, rifle up - and face where he's told. An enemy
 -- in view close by: stop and shoot, then carry on.
-local function holdingAim(body)
+-- Is he holding an aim (a halt), or with holdOnly false also a quick scan?
+local function holdingAim(body, holdOnly)
     local q = ISTimedActionQueue.getTimedActionQueue(body)
     local a = q and q.queue and q.queue[1]
-    return a ~= nil and a.Type == "LF_HoldAimAction"
+    return a ~= nil and a.Type == "LF_HoldAimAction" and not (holdOnly and a.untilTick)
 end
 
-local FILE_WORDS = { aim = "going in", march = "on the march", wait = "waiting to fall in",
+local FILE_WORDS = { aim = "going in", march = "on patrol", point = "on point", wait = "waiting to fall in",
                      halt = "halted - down, aiming outboard" }
 
 local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
@@ -572,10 +573,31 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         end
         return
     end
-    if holdingAim(body) then ISTimedActionQueue.clear(body) end      -- his place has moved: get up
+    if holdingAim(body, true) then ISTimedActionQueue.clear(body) end -- his place has moved: get up
     local key = tx .. "," .. ty .. "," .. gait
-    local walkGait = (gait == "march" or gait == "halt") and "walk" or gait
-    if gait == "march" then
+    local walkGait = (gait == "march" or gait == "point") and "patrol" or (gait == "halt" and "walk" or gait)
+    local moving = gait == "march" or gait == "point"
+    if moving and gait == "march" and LF.Move.speedWorks and isMoving(body) and LF.tick >= (m.nextScan or 0) then
+        -- Now and then: stop a moment and scan his side of the route with the rifle up.
+        local first = m.nextScan == nil
+        m.nextScan = LF.tick + 900 + ZombRand(1200)          -- every ~15-35 s
+        if not first then
+            local fx, fy = face.x - body:getX(), face.y - body:getY()
+            local fl = math.max(0.1, math.sqrt(fx * fx + fy * fy))
+            fx, fy = fx / fl, fy / fl
+            local side = ZombRand(2) == 0 and -1 or 1
+            local a = math.rad(60 + ZombRand(60)) * side       -- 60-120 degrees off the line of march
+            local sx2 = fx * math.cos(a) - fy * math.sin(a)
+            local sy2 = fx * math.sin(a) + fy * math.cos(a)
+            m.scanPt = m.scanPt or LF.Tactics.point(0, 0, 0)
+            m.scanPt.x, m.scanPt.y, m.scanPt.z = body:getX() + sx2 * 10, body:getY() + sy2 * 10, body:getZ()
+            ISTimedActionQueue.clear(body)
+            ISTimedActionQueue.add(LF_HoldAimAction:new(body, m.scanPt, LF.Combat.arm(body), "LF_AimRifle", 60 + ZombRand(40)))
+            m.lastPath = LF.tick
+            return
+        end
+    end
+    if moving then
         -- On the march his place moves up the road: re-path only when it has moved well on
         -- (or he has stopped), not every step.
         local d = m.marchDest and LF.dist(m.marchDest.x, m.marchDest.y, tx, ty) or math.huge

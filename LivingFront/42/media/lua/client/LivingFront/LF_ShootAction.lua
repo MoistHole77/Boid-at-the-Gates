@@ -158,18 +158,22 @@ LF_HoldAimAction = ISBaseTimedAction:derive("LF_HoldAimAction")
 function LF_HoldAimAction:isValid() return not self.character:isDead() end
 function LF_HoldAimAction:waitToStart() return false end
 function LF_HoldAimAction:start()
-    self:setActionAnim("LF_AimCrouch")
+    self:setActionAnim(self.anim)
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
     self.character:faceLocation(self.point.x, self.point.y)
 end
 function LF_HoldAimAction:update()
     if LF.tick % 30 == 0 then self.character:faceLocation(self.point.x, self.point.y) end
+    if self.untilTick and LF.tick >= self.untilTick then self:forceComplete() end
 end
 function LF_HoldAimAction:stop() ISBaseTimedAction.stop(self) end
 function LF_HoldAimAction:perform() ISBaseTimedAction.perform(self) end
-function LF_HoldAimAction:new(character, point, gun)
+-- anim: "LF_AimCrouch" (default) or "LF_AimRifle" (standing); ticks: end after this long
+-- (a quick scan), or hold until cleared.
+function LF_HoldAimAction:new(character, point, gun, anim, ticks)
     local o = ISBaseTimedAction.new(self, character)
-    o.point, o.gun = point, gun
+    o.point, o.gun, o.anim = point, gun, anim or "LF_AimCrouch"
+    o.untilTick = ticks and (LF.tick + ticks) or nil
     o.maxTime = -1
     o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
     o.ignoreHandsWounds = true

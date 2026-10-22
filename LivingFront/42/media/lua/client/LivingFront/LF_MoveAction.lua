@@ -14,7 +14,7 @@
 --   * The engine's own rules still apply: a tired NPC (endurance moodle 3+) can't run
 --     (isRunning() returns false), and sprinting turns into running when injured.
 --
--- LF_MoveAction:new(character, square, gait)  gait = "walk" | "run" | "sprint" | "aim"
+-- LF_MoveAction:new(character, square, gait)  gait = "walk" | "run" | "sprint" | "aim" | "patrol"
 
 require "TimedActions/ISBaseTimedAction"
 require "TimedActions/WalkToTimedAction"
@@ -28,8 +28,27 @@ LF.Move = LF.Move or {}
 -- once (LF.Move.aimWorks).
 local function setAim(character, on) character:setIsAiming(on) end
 
+-- "patrol": a slow, careful walk (about the pace of walking with the rifle up). The walk
+-- animation blends between the normal and the slow walk on the "WalkSpeed" variable, which the
+-- engine writes in updateInternal2 - so, like running, it is set from the action's update.
+-- Whether it took is logged once (LF.Move.speedWorks).
+LF.Move.PATROL_WALK = 0.15
+local function setWalkSpeed(character, v) character:setVariable("WalkSpeed", v) end
+local function readWalkSpeed(character) return character:getVariableFloat("WalkSpeed", -1) end
+
 local function applyGait(character, gait)
-    if gait == "aim" then
+    if gait == "patrol" then
+        character:setSprinting(false)
+        character:setRunning(false)
+        if LF.Move.speedWorks ~= false then
+            local ok = pcall(setWalkSpeed, character, LF.Move.PATROL_WALK)
+            if LF.Move.speedWorks == nil then
+                local ok2, v = pcall(readWalkSpeed, character)
+                LF.Move.speedWorks = ok and ok2 and math.abs(v - LF.Move.PATROL_WALK) < 0.01 or false
+                LF.log("MOVE patrol pace " .. (LF.Move.speedWorks and "works (slow walk)" or ("not available (WalkSpeed reads " .. tostring(v) .. ")")))
+            end
+        end
+    elseif gait == "aim" then
         character:setSprinting(false)
         character:setRunning(false)
         if LF.Move.aimWorks ~= false then
@@ -52,6 +71,7 @@ local function clearGait(character)
     character:setRunning(false)
     character:setSprinting(false)
     if LF.Move.aimWorks then pcall(setAim, character, false) end
+    if LF.Move.speedWorks then pcall(setWalkSpeed, character, 1) end
 end
 
 local function now()
