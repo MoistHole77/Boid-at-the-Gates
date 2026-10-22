@@ -5,10 +5,10 @@
 -- street tiles and the map's "Nav" road zones, then on to the spot) or wedge (straight across
 -- country). The point man sets off; every other man waits where he is and falls into his place
 -- as it comes up to him. The point man is the base: the formation moves at his pace and doesn't
--- wait for stragglers - unless one is well behind for ~20 s, when the patrol halts (down, eyes
--- out) until he catches up. A tactical column walks one file along each edge of the road.
--- Patrol pace is a slow walk (about the pace of walking with the rifle up), and men off the point
--- now and then stop for a moment to scan their side with the rifle up.
+-- wait for anyone; a man who has dropped behind walks at the normal pace until he is back in his
+-- place. A tactical column walks one file along each edge of the road (each man 0-0.5 tiles in).
+-- Patrol pace is the pace of walking with the rifle up (measured from the player, LF_MoveAction),
+-- and now and then a man brings his rifle up and scans his outboard side without stopping.
 -- Contact: the patrol halts and the unit fights as usual (LF_Tactics, offensive rules). Once it
 -- has been quiet for ~10 s it sets off again on the point man.
 -- At the destination it halts: every man crouches and aims outboard (see the formations below).
@@ -26,7 +26,7 @@ LF.March = LF.March or {}
 local CFG = {
     spacing = 2.5,          -- tiles between men along the column
     lateral = 1.5,          -- each man this far left or right of the road's line, alternately
-    step = 0.6,             -- the head moves this far per tactics update (~1.2 tiles/s)
+    step = 0.45,            -- the head moves this far per tactics update - set from the aiming pace
     waitBehind = 5,         -- the head waits while anyone is further than this from his place
     roadSearch = 20,        -- look this far for the nearest road square
     searchMargin = 40,      -- route search box: start/goal bounding box plus this
@@ -36,10 +36,9 @@ local CFG = {
     resumeQuiet = 600,      -- form up again after ~10 s with no contact and no orders
     lead = 3,               -- a marching man walks toward a point this far ahead of his place
     baseSlack = 3,          -- the head moves on only while the point man is this close to his place
-    stragglerTicks = 1200,  -- a man this long (~20 s) more than waitBehind from his place halts the patrol
-    caughtUp = 2.5,         -- ... until he is this close
+    caughtUp = 2.0,         -- a man who fell behind walks at the normal pace until this close again
     edgeScan = 8,           -- look this far either side for the edges of the road
-    edgeMargin = 0.7,       -- tactical column: each file this far in from its edge of the road
+    edgeMargin = 0.5,       -- tactical column: each man up to this far in from his edge of the road
 }
 LF.March.CFG = CFG
 
@@ -151,14 +150,18 @@ local function pointAt(M, s)
         local dx, dy = segDir(pts, 2)
         return pts[1].x + dx * s, pts[1].y + dy * s, dx, dy, 2, 0
     end
-    for i = 2, #pts do
-        if s <= len[i] or i == #pts then
-            local seg = math.max(0.01, len[i] - len[i - 1])
-            local t = math.min(1, (s - len[i - 1]) / seg)
-            local dx, dy = segDir(pts, i)
-            return pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t, dx, dy, i, t
-        end
+    -- Binary search for the segment (routes can be long; this runs for every man every think).
+    local lo, hi = 2, #pts
+    if s >= len[hi] then lo = hi end
+    while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if len[mid] < s then lo = mid + 1 else hi = mid end
     end
+    local i = lo
+    local seg = math.max(0.01, len[i] - len[i - 1])
+    local t = math.min(1, (s - len[i - 1]) / seg)
+    local dx, dy = segDir(pts, i)
+    return pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t, dx, dy, i, t
 end
 
 -- The road's edges either side of each route point: how far the road goes to the left and to
@@ -184,7 +187,7 @@ end
 
 -- Where the two files of a tactical column walk at a point: lateral offsets of the left and
 -- right file (one along each edge of the road), or nil off the road.
-local function filesAt(M, i, t)
+local function filesAt(M, i, t, margin)
     local a, b = M.edges[i - 1], M.edges[i]
     if not (a and b) then a = a or b; b = a end
     if not a then return nil end
@@ -192,7 +195,7 @@ local function filesAt(M, i, t)
     local r = a.r + (b.r - a.r) * t
     local width = l + r
     if width < 2 then return nil end
-    return -l + CFG.edgeMargin, r - CFG.edgeMargin
+    return -l + margin, r - margin
 end
 
 -- How far along the route the point nearest (x, y) is (negative: behind the start).
@@ -261,6 +264,13 @@ end
 local function layOut(squad, M)
     local n = #M.order
     M.off = {}
+    local function finish(o)
+        -- His own distance in from the road's edge (column), and the side he scans (his halt
+        -- facing snapped to front / left / right / back).
+        o.margin = ZombRand(0, 51) / 100 * CFG.edgeMargin / 0.5
+        if math.abs(o.hf) >= math.abs(o.hl) then o.scan = o.hf > 0 and "fwd" or "back"
+        else o.scan = o.hl < 0 and "left" or "right" end
+    end
     if M.form == "wedge" then
         local k = {}
         local cf, cl = 0, 0
@@ -286,6 +296,7 @@ local function layOut(squad, M)
             if i == 1 then ff, ll = 1, 0 end
             local len = math.max(0.01, math.sqrt(ff * ff + ll * ll))
             o.hf, o.hl = ff / len, ll / len
+            finish(o)
         end
     else
         for i, rid in ipairs(M.order) do
@@ -295,6 +306,7 @@ local function layOut(squad, M)
             if i == 1 then o.hf, o.hl = 1, 0
             elseif i == n then o.hf, o.hl = -1, 0
             else o.hf, o.hl = 0, side end
+            finish(o)
             M.off[rid] = o
         end
     end
@@ -309,7 +321,7 @@ local function placeOf(M, rid, lead)
     local rx, ry = -dy, dx
     local lat = o.l
     if M.form == "column" and M.edges then
-        local left, right = filesAt(M, si, st)
+        local left, right = filesAt(M, si, st, o.margin or 0.25)
         if left then lat = o.l < 0 and left or right end
     end
     local px, py = x + rx * lat, y + ry * lat
@@ -402,7 +414,7 @@ function LF.March.place(rec)
         f.x, f.y = x, y                              -- watching his place come up the route
         return "file", w.x, w.y, M.z, f, "wait"
     end
-    local stopped = M.arrived or (M.paused and not M.paused[rec.id])
+    local stopped = M.arrived
     local x, y, hx, hy = placeOf(M, rec.id, not stopped and CFG.lead or nil)
     if stopped then
         f.x, f.y = hx, hy
@@ -410,7 +422,9 @@ function LF.March.place(rec)
     end
     local _, _, dx, dy = pointAt(M, math.min(M.head, M.total) + M.off[rec.id].f)
     f.x, f.y = x + dx * 6, y + dy * 6
-    return "file", x, y, M.z, f, rec.id == M.order[1] and "point" or "march"
+    local gait = rec.id == M.order[1] and "point" or "march"
+    if M.lag and M.lag[rec.id] then gait = "catchup" end
+    return "file", x, y, M.z, f, gait, M.off[rec.id].scan
 end
 
 -- Each tactics update. Returns true while the patrol is under way (the squad's other orders wait).
@@ -441,10 +455,10 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
     end
     if M.arrived then return true end
     -- Men fall in as their places reach them. The point man is the base: the head moves on while
-    -- he keeps up with it, whoever else is behind. Someone left well behind for ~20 s halts the
-    -- patrol (everyone down, eyes out) until he has caught up.
+    -- he keeps up with it. Anyone who has dropped well behind his place walks at the normal pace
+    -- (not the patrol pace) until he is back in it; nobody waits for him.
     local done = true
-    local lagging = nil
+    M.lag = M.lag or {}
     for _, rid in ipairs(M.order) do
         local r = LF.Records.get(rid)
         local b = LF.Bodies.get(rid)
@@ -455,10 +469,8 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
             if M.joined[rid] then
                 local x, y = placeOf(M, rid)
                 local d = LF.dist(b:getX(), b:getY(), x, y)
-                M.lag = M.lag or {}
                 if d > CFG.waitBehind then
-                    M.lag[rid] = M.lag[rid] or LF.tick
-                    if LF.tick - M.lag[rid] >= CFG.stragglerTicks then lagging = lagging or {}; lagging[rid] = d end
+                    if not M.lag[rid] then M.lag[rid] = true end
                 elseif d <= CFG.caughtUp then
                     M.lag[rid] = nil
                 end
@@ -468,31 +480,6 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
             end
         end
     end
-    if M.paused then
-        local still = false
-        for rid in pairs(M.paused) do
-            local b = LF.Bodies.get(rid)
-            local r = LF.Records.get(rid)
-            if b and r and r.alive then
-                local x, y = placeOf(M, rid)
-                if LF.dist(b:getX(), b:getY(), x, y) > CFG.caughtUp then still = true end
-            end
-        end
-        if still then return true end
-        M.paused = nil
-        if M.lag then for k in pairs(M.lag) do M.lag[k] = nil end end
-        LF.log("PATROL " .. squad.name .. ": caught up - moving on")
-        LF.Tactics.shout(cid, "Right - move out!")
-        return true
-    end
-    if lagging and not M.arrived then
-        M.paused = lagging
-        local n = 0
-        for _ in pairs(lagging) do n = n + 1 end
-        LF.log("PATROL " .. squad.name .. ": " .. n .. " man/men fallen well behind - halt and wait")
-        LF.Tactics.shout(cid, "Hold up! Down, eyes out - let him catch up!")
-        return true
-    end
     if M.head < M.total then
         local base = M.order[1]
         local pb = LF.Bodies.get(base)
@@ -501,7 +488,9 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
             local x, y = placeOf(M, base)
             keeping = LF.dist(pb:getX(), pb:getY(), x, y) <= CFG.baseSlack
         end
-        if keeping then M.head = math.min(M.total, M.head + CFG.step) end
+        -- The head walks at the aiming pace (tactics updates are every 30 ticks = 0.5 s).
+        local step = (LF.Move and (LF.Move.adsPace or LF.Move.DEFAULT_ADS) or 0.9) * 0.5
+        if keeping then M.head = math.min(M.total, M.head + step) end
         return true
     end
     if done or LF.tick - (M.endAt or LF.tick) > 1800 then

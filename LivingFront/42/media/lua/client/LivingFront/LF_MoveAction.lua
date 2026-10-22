@@ -28,26 +28,29 @@ LF.Move = LF.Move or {}
 -- once (LF.Move.aimWorks).
 local function setAim(character, on) character:setIsAiming(on) end
 
--- "patrol": a slow, careful walk (about the pace of walking with the rifle up). The walk
--- animation blends between the normal and the slow walk on the "WalkSpeed" variable, which the
--- engine writes in updateInternal2 - so, like running, it is set from the action's update.
--- Whether it took is logged once (LF.Move.speedWorks).
-LF.Move.PATROL_WALK = 0.15
-local function setWalkSpeed(character, v) character:setVariable("WalkSpeed", v) end
-local function readWalkSpeed(character) return character:getVariableFloat("WalkSpeed", -1) end
+-- "patrol": the patrol walk, at the pace of walking with the rifle up (ADS). The mod's own walk
+-- nodes (AnimSets/player/movement/LF_Patrol*.xml) take over while the variable LFPatrol is true;
+-- their speed comes from LFPatrolSpeed (rifle down) and LFScanSpeed (scanning). A scan
+-- (action.scan = "fwd" | "left" | "right" | "back") keeps him walking with the rifle up, turned
+-- out to that side: an aimed walk to the front, an aimed strafe to the sides, an aimed walk
+-- backward to the rear.
+-- The speeds are calibrated in play: the player's own walking pace while aiming is measured
+-- (LF_Watch -> LF.Move.adsPace) and the scales are nudged until patrolling men walk at that pace.
+LF.Move.DEFAULT_ADS = 0.9               -- tiles per second, until the player's has been measured
+LF.Move.patrolScale = LF.Move.patrolScale or 0.7
+LF.Move.scanScale = LF.Move.scanScale or 0.9
+local function setVars(character, patrol, scan)
+    character:setVariable("LFPatrol", patrol)
+    character:setVariable("LFScan", scan or "none")
+    character:setVariable("LFPatrolSpeed", LF.Move.patrolScale)
+    character:setVariable("LFScanSpeed", LF.Move.scanScale)
+end
+local SCAN_TURN = { fwd = 0, left = -90, right = 90, back = 180 }
 
 local function applyGait(character, gait)
     if gait == "patrol" then
         character:setSprinting(false)
         character:setRunning(false)
-        if LF.Move.speedWorks ~= false then
-            local ok = pcall(setWalkSpeed, character, LF.Move.PATROL_WALK)
-            if LF.Move.speedWorks == nil then
-                local ok2, v = pcall(readWalkSpeed, character)
-                LF.Move.speedWorks = ok and ok2 and math.abs(v - LF.Move.PATROL_WALK) < 0.01 or false
-                LF.log("MOVE patrol pace " .. (LF.Move.speedWorks and "works (slow walk)" or ("not available (WalkSpeed reads " .. tostring(v) .. ")")))
-            end
-        end
     elseif gait == "aim" then
         character:setSprinting(false)
         character:setRunning(false)
@@ -71,7 +74,7 @@ local function clearGait(character)
     character:setRunning(false)
     character:setSprinting(false)
     if LF.Move.aimWorks then pcall(setAim, character, false) end
-    if LF.Move.speedWorks then pcall(setWalkSpeed, character, 1) end
+    pcall(setVars, character, false, "none")
 end
 
 local function now()
@@ -113,12 +116,75 @@ function LF_MoveAction:update()
         return
     end
     ISWalkToTimedAction.update(self)
+    if self.gait == "patrol" then LF.guard("patrol walk", self.patrolStep, self) end
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
     -- stops retrying the same unreachable spot.
     if self.result == BehaviorResult.Failed and LF.Move and LF.Move.onFailed then
         LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
     end
 end
+
+-- Patrol walk: the animation variables, the scan facing, and the pace calibration.
+local CAL_TICKS = 60
+function LF_MoveAction.patrolStep(self)
+    local c = self.character
+    local scanning = self.scan and self.scanUntil and LF.tick < self.scanUntil
+    local scan = scanning and self.scan or nil
+    if scan and scan ~= "fwd" and LF.Move.strafeWorks == false then scan = "fwd" end
+    setVars(c, true, scan)
+    -- Turned out to his side while walking on: face the travel direction turned by the scan.
+    local px, py = c:getX(), c:getY()
+    if self.lastX then
+        local mx, my = px - self.lastX, py - self.lastY
+        local ml = math.sqrt(mx * mx + my * my)
+        if ml > 0.005 then self.dirX, self.dirY = mx / ml, my / ml end
+    end
+    self.lastX, self.lastY = px, py
+    if scan and scan ~= "fwd" and self.dirX then
+        local r = math.rad(SCAN_TURN[scan])
+        local fx = self.dirX * math.cos(r) - self.dirY * math.sin(r)
+        local fy = self.dirX * math.sin(r) + self.dirY * math.cos(r)
+        c:setForwardDirection(fx, fy)
+        c:setTargetAndCurrentDirection(fx, fy)
+    end
+    -- Pace: measure his speed over each second of steady walking and nudge the scale toward the
+    -- player's aiming pace. A sideways scan that stalls him means strafing doesn't work here.
+    self.calT = (self.calT or 0) + 1
+    if not self.calX then self.calX, self.calY, self.calScan = px, py, scan end
+    if self.calT >= CAL_TICKS then
+        local speed = LF.dist(self.calX, self.calY, px, py) * 60 / self.calT
+        local target = LF.Move.adsPace or LF.Move.DEFAULT_ADS
+        if self.calScan == scan and speed > 0.15 then
+            local f = math.max(0.7, math.min(1.3, 1 + 0.4 * (target / speed - 1)))
+            if scan then
+                LF.Move.scanScale = math.max(0.3, math.min(1.6, LF.Move.scanScale * f))
+            else
+                LF.Move.patrolScale = math.max(0.25, math.min(1.6, LF.Move.patrolScale * f))
+            end
+            LF.Move.lastPace = speed
+        elseif scan and scan ~= "fwd" and self.calScan == scan and speed <= 0.15 and LF.Move.strafeWorks == nil then
+            LF.Move.strafeWorks = false
+            LF.log("MOVE sideways scan stalls the walk; scans will look ahead instead")
+        end
+        if scan and scan ~= "fwd" and speed > 0.15 and LF.Move.strafeWorks == nil then
+            LF.Move.strafeWorks = true
+            LF.log("MOVE sideways scan works (walking on while turned out)")
+        end
+        self.calT, self.calX, self.calY, self.calScan = 0, px, py, scan
+    end
+end
+
+-- Now and then (at most every ~10 s): the patrol pace against the player's aiming pace.
+local lastPaceLog = -100000
+Events.EveryOneMinute.Add(function()
+    if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
+        lastPaceLog = LF.tick
+        LF.log(string.format("PACE patrol %.2f tiles/s (target %.2f%s) - scales walk %.2f, scan %.2f",
+            LF.Move.lastPace, LF.Move.adsPace or LF.Move.DEFAULT_ADS, LF.Move.adsPace and ", your aiming pace" or ", default",
+            LF.Move.patrolScale, LF.Move.scanScale))
+        LF.Move.lastPace = nil
+    end
+end)
 
 local function logSpeed(self, how)
     if not (LF.Config.logGait and self.startMs and self.startMs > 0) then return end

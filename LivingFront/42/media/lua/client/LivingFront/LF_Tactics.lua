@@ -192,8 +192,8 @@ function LF.Tactics.place(rec)
     end
     -- On the march: his place in the column.
     do
-        local role, x, y, z, face, gait = LF.March.place(rec)
-        if role then return role, x, y, z, face, gait end
+        local role, x, y, z, face, gait, scan = LF.March.place(rec)
+        if role then return role, x, y, z, face, gait, scan end
     end
     local alone = rec.team and teams[rec.team]
     alone = alone and alone.alone and alone.heard and alone or nil

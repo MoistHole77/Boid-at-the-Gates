@@ -542,10 +542,18 @@ local function holdingAim(body, holdOnly)
     return a ~= nil and a.Type == "LF_HoldAimAction" and not (holdOnly and a.untilTick)
 end
 
+-- An ongoing scan rides on whichever patrol walk he is on (a re-path makes a new one).
+local function carryScan(body, m)
+    local q = ISTimedActionQueue.getTimedActionQueue(body)
+    local a = q and q.queue and q.queue[1]
+    if a and a.Type == "LF_MoveAction" and a.gait == "patrol" then a.scan, a.scanUntil = m.scanDir, m.scanUntil end
+end
+
 local FILE_WORDS = { aim = "going in", march = "on patrol", point = "on point", wait = "waiting to fall in",
+                     catchup = "catching up",
                      halt = "halted - down, aiming outboard" }
 
-local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
+local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist, scanDir)
     m.order, m.point = "file", nil
     local range = gait == "aim" and CFG.clearFireRange
         or ((gait == "halt" or gait == "wait") and CFG.fireRange or CFG.stackFireRange)
@@ -575,27 +583,21 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     end
     if holdingAim(body, true) then ISTimedActionQueue.clear(body) end -- his place has moved: get up
     local key = tx .. "," .. ty .. "," .. gait
-    local walkGait = (gait == "march" or gait == "point") and "patrol" or (gait == "halt" and "walk" or gait)
-    local moving = gait == "march" or gait == "point"
-    if moving and gait == "march" and LF.Move.speedWorks and isMoving(body) and LF.tick >= (m.nextScan or 0) then
-        -- Now and then: stop a moment and scan his side of the route with the rifle up.
+    local walkGait = (gait == "march" or gait == "point") and "patrol"
+        or ((gait == "halt" or gait == "catchup") and "walk" or gait)
+    local moving = gait == "march" or gait == "point" or gait == "catchup"
+    if (gait == "march" or gait == "point") and scanDir and LF.tick >= (m.nextScan or 0) then
+        -- Now and then: keep walking but bring the rifle up and scan his own outboard side (the
+        -- way he would face at a halt) for a second or two.
         local first = m.nextScan == nil
-        m.nextScan = LF.tick + 900 + ZombRand(1200)          -- every ~15-35 s
-        if not first then
-            local fx, fy = face.x - body:getX(), face.y - body:getY()
-            local fl = math.max(0.1, math.sqrt(fx * fx + fy * fy))
-            fx, fy = fx / fl, fy / fl
-            local side = ZombRand(2) == 0 and -1 or 1
-            local a = math.rad(60 + ZombRand(60)) * side       -- 60-120 degrees off the line of march
-            local sx2 = fx * math.cos(a) - fy * math.sin(a)
-            local sy2 = fx * math.sin(a) + fy * math.cos(a)
-            m.scanPt = m.scanPt or LF.Tactics.point(0, 0, 0)
-            m.scanPt.x, m.scanPt.y, m.scanPt.z = body:getX() + sx2 * 10, body:getY() + sy2 * 10, body:getZ()
-            ISTimedActionQueue.clear(body)
-            ISTimedActionQueue.add(LF_HoldAimAction:new(body, m.scanPt, LF.Combat.arm(body), "LF_AimRifle", 60 + ZombRand(40)))
-            m.lastPath = LF.tick
-            return
-        end
+        m.nextScan = LF.tick + 600 + ZombRand(1200)          -- every ~10-30 s
+        if not first then m.scanDir, m.scanUntil = scanDir, LF.tick + 90 + ZombRand(90) end
+    end
+    if m.scanUntil and LF.tick < m.scanUntil then carryScan(body, m) end
+    if moving and m.marchGait ~= walkGait then
+        -- Changing pace (falling behind / caught up): a new walk at the new pace.
+        if m.marchGait and isMoving(body) then ISTimedActionQueue.clear(body); m.lastPath = -10000 end
+        m.marchGait = walkGait
     end
     if moving then
         -- On the march his place moves up the road: re-path only when it has moved well on
@@ -617,6 +619,7 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
         walkTo(body, tx, ty, math.floor(sz), walkGait)
         m.lastPath = LF.tick
+        if m.scanUntil and LF.tick < m.scanUntil then carryScan(body, m) end
     end
 end
 
@@ -730,10 +733,11 @@ local function decide(id, body, rec, m)
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
         local role, sx, sy, sz, point, watching, coverPoint, stand, win, shove = LF.Tactics.place(rec)
+        local scanDir = role == "file" and coverPoint or nil     -- (patrol: his outboard side)
         local leash = CFG.holdLeash
         if role == "file" then
             -- (place returns the face point and gait in the point / watching slots)
-            holdFile(id, body, rec, m, sx, sy, sz, point, watching, pick, threatId, dist)
+            holdFile(id, body, rec, m, sx, sy, sz, point, watching, pick, threatId, dist, scanDir)
             return
         end
         if role == "post" and stuckNear(m, sx, sy) and LF.Tactics.postUnreachable(rec) then
