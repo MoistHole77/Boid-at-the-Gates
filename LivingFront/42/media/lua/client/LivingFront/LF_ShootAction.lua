@@ -150,3 +150,28 @@ function LF_FlinchAction:new(character, anim)
     o.ignoreHandsWounds = true
     return o
 end
+
+-- LF_HoldAimAction: crouched, rifle up, aiming at a point (a halted patrol's man covering his
+-- sector). Holds until something else clears the queue (moving off, opening fire).
+LF_HoldAimAction = ISBaseTimedAction:derive("LF_HoldAimAction")
+
+function LF_HoldAimAction:isValid() return not self.character:isDead() end
+function LF_HoldAimAction:waitToStart() return false end
+function LF_HoldAimAction:start()
+    self:setActionAnim("LF_AimCrouch")
+    if self.gun then self:setOverrideHandModels(self.gun, nil) end
+    self.character:faceLocation(self.point.x, self.point.y)
+end
+function LF_HoldAimAction:update()
+    if LF.tick % 30 == 0 then self.character:faceLocation(self.point.x, self.point.y) end
+end
+function LF_HoldAimAction:stop() ISBaseTimedAction.stop(self) end
+function LF_HoldAimAction:perform() ISBaseTimedAction.perform(self) end
+function LF_HoldAimAction:new(character, point, gun)
+    local o = ISBaseTimedAction.new(self, character)
+    o.point, o.gun = point, gun
+    o.maxTime = -1
+    o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
+    o.ignoreHandsWounds = true
+    return o
+end

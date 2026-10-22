@@ -1265,7 +1265,7 @@ end
 -- Change a unit's stance (offensive / defensive). The unit starts afresh: a defensive unit forms
 -- its perimeter where its commander stands.
 function LF.Tactics.setStance(squad, stance, holdAt)
-    if stance == "defensive" then LF.March.cancel(squad.id) end
+    if stance ~= "patrolling" then LF.March.cancel(squad.id) end
     squad.stance = stance
     squad.holdAt = holdAt
     squads[squad.id] = nil
@@ -1699,7 +1699,7 @@ local function considerStance(squad, sq, cid, cmd)
     if fitN == 0 then return false end
     local x, y, z = cmd:getX(), cmd:getY(), math.floor(cmd:getZ())
     local want, why = nil, nil
-    if st.name == "offensive" then
+    if st.name ~= "defensive" then
         -- Nearest known enemy, and is he getting closer?
         local d = nil
         for _, c in ipairs(contacts) do

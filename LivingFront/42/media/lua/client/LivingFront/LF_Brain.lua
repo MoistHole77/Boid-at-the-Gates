@@ -535,11 +535,21 @@ end
 -- Clearing a building (LF_Tactics.clearPlace): walk (or run) to his place in the file - the
 -- stack by the door, then his spot in the room, rifle up - and face where he's told. An enemy
 -- in view close by: stop and shoot, then carry on.
+local function holdingAim(body)
+    local q = ISTimedActionQueue.getTimedActionQueue(body)
+    local a = q and q.queue and q.queue[1]
+    return a ~= nil and a.Type == "LF_HoldAimAction"
+end
+
+local FILE_WORDS = { aim = "going in", march = "on the march", wait = "waiting to fall in",
+                     halt = "halted - down, aiming outboard" }
+
 local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist)
     m.order, m.point = "file", nil
-    local range = gait == "aim" and CFG.clearFireRange or CFG.stackFireRange
+    local range = gait == "aim" and CFG.clearFireRange
+        or ((gait == "halt" or gait == "wait") and CFG.fireRange or CFG.stackFireRange)
     if pick and dist <= range then
-        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        if isMoving(body) or holdingAim(body) then ISTimedActionQueue.clear(body) end
         if m.state ~= "engage" then
             setState(id, body, rec, m, "engage", "clearing - target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
@@ -547,15 +557,24 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         m.targetId, m.targetDist = threatId, dist
         return
     end
-    setState(id, body, rec, m, "file", gait == "aim" and "going in" or (gait == "march" and "on the march" or "stacking up"))
+    setState(id, body, rec, m, "file", FILE_WORDS[gait] or "stacking up")
     m.targetId = nil
     m.fileFace, m.fileGait = face, gait
     local tx, ty = math.floor(sx), math.floor(sy)
     local there = math.floor(body:getX()) == tx and math.floor(body:getY()) == ty
+    if gait == "wait" then there = true end         -- he waits where he stands
     m.fileThere = there
-    if there then return end
+    if there then
+        -- Halted: crouch, rifle up, aiming outboard.
+        if gait == "halt" and not body:isPerformingAnAction() then
+            LF.Posture.set(body, true)
+            ISTimedActionQueue.add(LF_HoldAimAction:new(body, face, LF.Combat.arm(body)))
+        end
+        return
+    end
+    if holdingAim(body) then ISTimedActionQueue.clear(body) end      -- his place has moved: get up
     local key = tx .. "," .. ty .. "," .. gait
-    local walkGait = gait == "march" and "walk" or gait
+    local walkGait = (gait == "march" or gait == "halt") and "walk" or gait
     if gait == "march" then
         -- On the march his place moves up the road: re-path only when it has moved well on
         -- (or he has stopped), not every step.
@@ -866,7 +885,7 @@ local function act(id, body, rec, m)
     elseif m.state == "file" then
         -- In the stack (kneeling, facing the door) or on his spot in the room (standing, facing on).
         if m.fileThere and not body:isPerformingAnAction() then
-            if m.fileGait ~= "aim" and m.fileGait ~= "march" then hunkerDown(body) end
+            if m.fileGait ~= "aim" and m.fileGait ~= "march" and m.fileGait ~= "wait" then hunkerDown(body) end
             local f = m.fileFace
             if f and LF.tick % 20 == 0 then body:faceLocation(f.x, f.y) end
         end

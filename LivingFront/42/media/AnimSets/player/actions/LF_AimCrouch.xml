@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_AimCrouch</m_Name>
+	<m_AnimName>Bob_IdleAimRifle</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.20</m_BlendTime>
+	<m_BlendOutTime>0.20</m_BlendOutTime>
+	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Spine1</boneName>
+	</m_SubStateBoneWeights>
+	<m_Conditions x_name="lf-lf-aimcrouch-0001">
+		<m_Name>PerformingAction</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>LF_AimCrouch</m_Value>
+	</m_Conditions>
+</animNode>

@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: troop movements (a squad marching by road in a
--- tactical column); also the building tests and clearing.
+-- commands for the test at hand. Current test: the patrolling stance (ranger file, tactical
+-- column, wedge; halts); also the building tests and clearing.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -284,8 +284,8 @@ local function clearOrder(x, y, z)
     end
 end
 
--- March the nearest (offensive) unit to the clicked spot in a tactical column, by road.
-local function marchNearest(x, y, z)
+-- Send the nearest (not defending) unit on patrol to the clicked spot in a formation.
+local function marchNearest(x, y, z, form)
     local best, bestD = nil, math.huge
     for id, body in pairs(LF.Bodies.all()) do
         local rec = LF.Records.get(id)
@@ -298,8 +298,8 @@ local function marchNearest(x, y, z)
         end
     end
     if not best then LF.say("No unit nearby (a defending unit won't march: set it offensive first)"); return end
-    local ok, why = LF.March.order(best, x, y, z)
-    LF.say(ok and (best.name .. " marches here") or ("Can't march: " .. tostring(why)))
+    local ok, why = LF.March.order(best, x, y, z, form)
+    LF.say(ok and (best.name .. " patrols here in " .. LF.March.FORMATIONS[form]) or ("Can't move: " .. tostring(why)))
 end
 
 local function setStanceNearest(x, y, z, stance)
@@ -327,11 +327,20 @@ local function onMenu(playerNum, context, worldObjects, test)
     context:addSubMenu(option, sub)
 
     -- Current test.
-    sub:addOption("Test: spawn a German squad here (to march)", nil, function()
+    sub:addOption("Test: spawn a German squad here (to patrol)", nil, function()
         LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, false)
-        LF.say("German squad spawned - right-click somewhere and choose March nearest unit here")
+        LF.say("German squad spawned - right-click somewhere and choose Patrol nearest unit here")
     end)
-    sub:addOption("March nearest unit here (tactical column, by road)", nil, function() marchNearest(x, y, z) end)
+    sub:addOption("Test: spawn a German fire team here (to patrol)", nil, function()
+        LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, true)
+        LF.say("German fire team spawned")
+    end)
+    local po = sub:addOption("Patrol nearest unit here")
+    local pm = ISContextMenu:getNew(sub)
+    sub:addSubMenu(po, pm)
+    pm:addOption("Ranger file (by road)", nil, function() marchNearest(x, y, z, "file") end)
+    pm:addOption("Tactical column (by road)", nil, function() marchNearest(x, y, z, "column") end)
+    pm:addOption("Wedge (cross-country)", nil, function() marchNearest(x, y, z, "wedge") end)
     sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
     sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
     sub:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()

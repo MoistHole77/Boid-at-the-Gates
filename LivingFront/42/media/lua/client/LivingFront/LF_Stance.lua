@@ -6,6 +6,8 @@
 --
 --   offensive - everything built before stances: bearings, advance, hold, reposition, flank,
 --               fall back when broken; wounded men pull back to the rear.
+--   patrolling - moving somewhere in a tactical formation (ranger file, tactical column, wedge);
+--               halted, every man crouches and aims outboard; in a fight, offensive rules
 --   defensive - all-round defence (a 360-degree perimeter) around where the sergeant called it:
 --               every man is in cover facing out of his team's sector and is reluctant to leave
 --               it; leaders give no maneuver orders; wounded men go down where they are; the
@@ -27,6 +29,17 @@ local S = {
         woundedWithdraw = true,  -- badly wounded men hide or pull back to the squad's rear
         withdrawWhenBroken = true,
         stickyCover = false,     -- keep a cover spot even when it is only so-so
+    },
+    patrolling = {
+        -- Moving somewhere in a tactical formation (LF_March). In a fight it fights by the
+        -- offensive rules.
+        name = "patrolling",
+        maneuvers = true,
+        bearings = true,
+        woundedWithdraw = true,
+        withdrawWhenBroken = true,
+        stickyCover = false,
+        patrol = true,
     },
     defensive = {
         name = "defensive",

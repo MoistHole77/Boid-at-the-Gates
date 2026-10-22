@@ -1,18 +1,15 @@
--- Living Front: troop movements - a squad marching along a road in a tactical column.
+-- Living Front: troop movements - patrolling in a tactical formation.
 --
--- LF.March.order(squad, x, y, z) plans a route to (x, y): from the road nearest the squad, along
--- the road (asphalt street tiles and the map's "Nav" road zones), to the road nearest the
--- destination, then on to the destination itself. With no road to follow it goes straight.
+-- LF.March.order(squad, x, y, z, form) puts the unit in the patrolling stance and moves it to
+-- (x, y) in a formation: ranger file or tactical column (by road where there is one: asphalt
+-- street tiles and the map's "Nav" road zones, then on to the spot) or wedge (straight across
+-- country). The point man sets off; every other man waits where he is and falls into his place
+-- as it comes up to him. The head of the formation waits for anyone who drops behind.
+-- Contact: the patrol halts and the unit fights as usual (LF_Tactics, offensive rules). Once it
+-- has been quiet for ~10 s it sets off again on the point man.
+-- At the destination it halts: every man crouches and aims outboard (see the formations below).
 --
--- The column: a staggered file on both sides of the road, ~2.5 tiles between men, in order
---   Alpha 1, Alpha 2, the sergeant (in the centre), Bravo 1, Bravo 2
--- (a lone team: its four men). The head of the column walks along the route; every man walks to
--- his own place behind it. The head waits for anyone who falls behind.
--- Contact: the column halts and the squad fights as usual (LF_Tactics). Once it has been quiet
--- for ~10 s with no orders, the sergeant forms the column up again and marches on.
--- At the destination: "Halt!" - the squad stands in its usual formation, facing on.
---
--- Bodies only exist near the player, so a column only moves while you are near it.
+-- Bodies only exist near the player, so a patrol only moves while you are near it.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -121,7 +118,7 @@ local function roadRoute(sx, sy, gx, gy, z)
     return nil
 end
 
--- ---- the route --------------------------------------------------------------------------------
+-- ---- the route ------------------------------------------------------------------------------
 
 -- Cumulative lengths of a polyline.
 local function measure(pts)
@@ -130,26 +127,70 @@ local function measure(pts)
     return s
 end
 
--- The point s tiles along the route and the direction of travel there: x, y, dx, dy.
+local function segDir(pts, i)
+    local dx, dy = pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y
+    local l = math.max(0.01, math.sqrt(dx * dx + dy * dy))
+    return dx / l, dy / l
+end
+
+-- The point s tiles along the route and the direction of travel there: x, y, dx, dy. Before
+-- the start the route runs on straight back the way it came (so men behind the point man have
+-- places too); past the end it stops at the end.
 local function pointAt(M, s)
     local pts, len = M.pts, M.len
     if s <= 0 then
-        local dx, dy = pts[2].x - pts[1].x, pts[2].y - pts[1].y
-        local l = math.max(0.01, math.sqrt(dx * dx + dy * dy))
-        return pts[1].x, pts[1].y, dx / l, dy / l
+        local dx, dy = segDir(pts, 2)
+        return pts[1].x + dx * s, pts[1].y + dy * s, dx, dy
     end
     for i = 2, #pts do
         if s <= len[i] or i == #pts then
             local seg = math.max(0.01, len[i] - len[i - 1])
             local t = math.min(1, (s - len[i - 1]) / seg)
-            local dx, dy = pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y
-            local l = math.max(0.01, math.sqrt(dx * dx + dy * dy))
-            return pts[i - 1].x + dx * t, pts[i - 1].y + dy * t, dx / l, dy / l
+            local dx, dy = segDir(pts, i)
+            return pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t, dx, dy
         end
     end
 end
 
--- The column, in order: Alpha 1, Alpha 2, the sergeant, Bravo 1, Bravo 2 (living men only).
+-- How far along the route the point nearest (x, y) is (negative: behind the start).
+local function project(M, x, y)
+    local pts, len = M.pts, M.len
+    local bestS, bestD = 0, math.huge
+    for i = 2, #pts do
+        local ax, ay = pts[i - 1].x, pts[i - 1].y
+        local dx, dy = pts[i].x - ax, pts[i].y - ay
+        local L2 = math.max(0.0001, dx * dx + dy * dy)
+        local t = ((x - ax) * dx + (y - ay) * dy) / L2
+        if i == 2 and t < 0 then
+            -- behind the start: keep the (negative) distance
+        elseif t < 0 then t = 0 end
+        if t > 1 then t = 1 end
+        local px, py = ax + dx * t, ay + dy * t
+        local d = LF.dist(x, y, px, py)
+        if d < bestD then bestD, bestS = d, len[i - 1] + t * math.sqrt(L2) end
+    end
+    return bestS
+end
+
+-- ---- formations -----------------------------------------------------------------------------
+--
+--   file   - ranger file: single file on the line of the route, ~2.5 tiles apart
+--   column - tactical column: a staggered file, men alternately ~1.5 tiles either side
+--   wedge  - each team a wedge (point man, two men back-left and back-right, one behind); the
+--            squad's teams in a wedge too - Alpha 1 at the point, Alpha 2 back-left, Bravo 1
+--            back-right, Bravo 2 at the rear, the sergeant in the middle
+-- Order of march (file and column): Alpha 1, Alpha 2, the sergeant (in the centre), Bravo 1,
+-- Bravo 2. The point man is the first man of Alpha 1.
+-- Halted (stopped while patrolling): every man crouches and aims outboard - in a file or column
+-- the point man to the front, the rear man to the back, the rest alternately left and right; in
+-- a wedge each man out from the middle of the formation (an all-round defence).
+
+LF.March.FORMATIONS = { file = "ranger file", column = "tactical column", wedge = "wedge" }
+
+local TEAM_WEDGE = { { 0, 0 }, { -7, -7 }, { -7, 7 }, { -14, 0 } }     -- by team slot: forward, lateral
+local MAN_WEDGE = { { 0, 0 }, { -2, -2 }, { -2, 2 }, { -4, 0 } }       -- by place in the team
+
+-- The order of march (living men only).
 local function columnOrder(squad)
     local order = {}
     local function addTeam(slot)
@@ -172,119 +213,217 @@ local function columnOrder(squad)
     return order
 end
 
--- Order a squad to march to (x, y). Returns true if it could plan a route.
-function LF.March.order(squad, x, y, z)
-    local cid = LF.Units.commander(squad)
-    local cmd = cid and LF.Bodies.get(cid)
-    if not cmd then return false, "its commander isn't here" end
-    z = math.floor(z or 0)
-    local cx, cy = cmd:getX(), cmd:getY()
-    local pts = { { x = cx, y = cy } }
-    local how = "straight (no road)"
-    local rsx, rsy = nearestRoad(cx, cy, z)
-    local rgx, rgy = nearestRoad(x, y, z)
-    if rsx and rgx then
-        local route = roadRoute(rsx, rsy, rgx, rgy, z)
-        if route then
-            for i = 1, #route, CFG.nodeEvery do pts[#pts + 1] = { x = route[i].x + 0.5, y = route[i].y + 0.5 } end
-            local last = route[#route]
-            pts[#pts + 1] = { x = last.x + 0.5, y = last.y + 0.5 }
-            how = "by road (" .. #route .. " squares)"
+-- Each man's place relative to the point man (forward, lateral) and the way he faces at a halt
+-- (forward, lateral unit vector).
+local function layOut(squad, M)
+    local n = #M.order
+    M.off = {}
+    if M.form == "wedge" then
+        local k = {}
+        local cf, cl = 0, 0
+        for _, rid in ipairs(M.order) do
+            local r = LF.Records.get(rid)
+            local f, l
+            if rid == squad.leader then
+                f, l = -7, 0
+            else
+                local team = LF.Units.get(r.team)
+                local slot = squad.teamOnly and 1 or (team and team.slot or 1)
+                k[slot] = (k[slot] or 0) + 1
+                local t, mo = TEAM_WEDGE[slot], MAN_WEDGE[math.min(k[slot], 4)]
+                f, l = t[1] + mo[1], t[2] + mo[2]
+            end
+            M.off[rid] = { f = f, l = l }
+            cf, cl = cf + f, cl + l
+        end
+        cf, cl = cf / math.max(1, n), cl / math.max(1, n)
+        for i, rid in ipairs(M.order) do
+            local o = M.off[rid]
+            local ff, ll = o.f - cf, o.l - cl
+            if i == 1 then ff, ll = 1, 0 end
+            local len = math.max(0.01, math.sqrt(ff * ff + ll * ll))
+            o.hf, o.hl = ff / len, ll / len
+        end
+    else
+        for i, rid in ipairs(M.order) do
+            local side = (i % 2 == 1) and -1 or 1
+            local l = M.form == "column" and side * CFG.lateral or 0
+            local o = { f = -(i - 1) * CFG.spacing, l = l }
+            if i == 1 then o.hf, o.hl = 1, 0
+            elseif i == n then o.hf, o.hl = -1, 0
+            else o.hf, o.hl = 0, side end
+            M.off[rid] = o
+        end
+    end
+end
+
+-- Where a man's place is (x, y) and, for a halt, the point he aims at.
+local function placeOf(M, rid, lead)
+    local o = M.off[rid]
+    local s = math.min(M.head, M.total) + o.f
+    if lead and not M.arrived then s = math.min(s + lead, M.total + o.f) end
+    local x, y, dx, dy = pointAt(M, s)
+    local rx, ry = -dy, dx
+    local px, py = x + rx * o.l, y + ry * o.l
+    local hx, hy = dx * o.hf + rx * o.hl, dy * o.hf + ry * o.hl
+    return px, py, px + hx * 8, py + hy * 8
+end
+
+-- Plan the route (road for a file or column, straight for a wedge) from (sx, sy) to (x, y).
+local function planRoute(sx, sy, x, y, z, byRoad)
+    local pts = { { x = sx, y = sy } }
+    local how = byRoad and "straight (no road)" or "straight (cross-country)"
+    if byRoad then
+        local rsx, rsy = nearestRoad(sx, sy, z)
+        local rgx, rgy = nearestRoad(x, y, z)
+        if rsx and rgx then
+            local route = roadRoute(rsx, rsy, rgx, rgy, z)
+            if route then
+                for i = 1, #route, CFG.nodeEvery do pts[#pts + 1] = { x = route[i].x + 0.5, y = route[i].y + 0.5 } end
+                local last = route[#route]
+                pts[#pts + 1] = { x = last.x + 0.5, y = last.y + 0.5 }
+                how = "by road (" .. #route .. " squares)"
+            end
         end
     end
     pts[#pts + 1] = { x = x + 0.5, y = y + 0.5 }
-    -- Drop points on top of each other.
     local clean = { pts[1] }
     for i = 2, #pts do
         if LF.dist(clean[#clean].x, clean[#clean].y, pts[i].x, pts[i].y) > 0.5 then clean[#clean + 1] = pts[i] end
     end
-    if #clean < 2 then return false, "already there" end
-    local M = { pts = clean, z = z, dest = { x = x + 0.5, y = y + 0.5 } }
-    M.len = measure(clean)
-    M.total = M.len[#clean]
-    M.order = columnOrder(squad)
-    M.head = (#M.order - 1) * CFG.spacing        -- the column unrolls from where the squad is
+    return clean, how
+end
+
+local WORDS = { file = "Ranger file", column = "Tactical column", wedge = "Wedge" }
+
+-- Order a unit to patrol to (x, y) in a formation ("file", "column" or "wedge"). It goes into the
+-- patrolling stance. The point man sets off; the others fall in as their places reach them.
+-- Returns true, or false and why.
+function LF.March.order(squad, x, y, z, form)
+    form = LF.March.FORMATIONS[form] and form or "column"
+    local cid = LF.Units.commander(squad)
+    if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end
+    local order = columnOrder(squad)
+    local point = nil
+    for _, rid in ipairs(order) do
+        local b = LF.Bodies.get(rid)
+        if b and not b:isDead() then point = b; break end
+    end
+    if not point then return false, "nobody here to lead" end
+    z = math.floor(z or 0)
+    local pts, how = planRoute(point:getX(), point:getY(), x, y, z, form ~= "wedge")
+    if #pts < 2 then return false, "already there" end
+    if LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(squad, "patrolling") end
+    local M = { pts = pts, z = z, form = form, dest = { x = x + 0.5, y = y + 0.5 }, x = x, y = y }
+    M.len = measure(pts)
+    M.total = M.len[#pts]
+    M.order = order
+    layOut(squad, M)
+    -- Everyone starts where he stands; he joins when his place in the formation reaches him.
+    M.proj, M.joined, M.wait = {}, {}, {}
+    for _, rid in ipairs(order) do
+        local b = LF.Bodies.get(rid)
+        local r = LF.Records.get(rid)
+        local bx, by = b and b:getX() or r.x, b and b:getY() or r.y
+        M.proj[rid] = project(M, bx, by) - M.off[rid].f
+        M.wait[rid] = { x = bx, y = by }
+    end
+    M.head = 0
+    M.joined[order[1]] = true
     M.started = LF.tick
     marches[squad.id] = M
-    LF.log("MARCH " .. squad.name .. " to " .. math.floor(x) .. "," .. math.floor(y) .. ", "
-        .. string.format("%.0f", M.total) .. " tiles " .. how .. ", " .. #M.order .. " men in column")
-    if LF.Tactics and LF.Tactics.shout then LF.Tactics.shout(cid, "Column of route - on the road! Move out!") end
+    LF.log("PATROL " .. squad.name .. " to " .. math.floor(x) .. "," .. math.floor(y) .. " in " .. LF.March.FORMATIONS[form]
+        .. ", " .. string.format("%.0f", M.total) .. " tiles " .. how .. ", " .. #order .. " men")
+    if LF.Tactics and LF.Tactics.shout then LF.Tactics.shout(cid, WORDS[form] .. " - on the point man! Move out!") end
     return true
 end
 
--- A man's place in the column: x, y, and the point he faces (ahead along the road). With lead,
--- the place a few tiles further on (so a walking man keeps walking instead of stopping and
--- starting as his place moves up the road).
-local function placeOf(M, i, lead)
-    local s = math.min(M.head, M.total) - (i - 1) * CFG.spacing
-    if lead and M.head < M.total then s = math.min(s + lead, M.total - (i - 1) * CFG.spacing) end
-    s = math.max(0, s)
-    local x, y, dx, dy = pointAt(M, s)
-    local side = (i % 2 == 1) and -1 or 1
-    local lx, ly = -dy * side * CFG.lateral, dx * side * CFG.lateral
-    return x + lx, y + ly, x + dx * 6, y + dy * 6
-end
-
--- The brain asks where a marching man goes: "file", x, y, z, facePoint, "march" - or nil.
+-- The brain asks where a patrolling man goes: "file", x, y, z, facePoint, gait - or nil.
+--   gait "march" (walking in formation), "wait" (where he stands until his place reaches him),
+--   "halt" (stopped: crouch and aim outboard)
 function LF.March.place(rec)
     local M = rec.squad and marches[rec.squad]
-    if not M or M.halted then return nil end
-    for i, rid in ipairs(M.order) do
-        if rid == rec.id then
-            local x, y, fx, fy = placeOf(M, i, CFG.lead)
-            M.faces = M.faces or {}
-            local f = M.faces[rid]
-            if not f then f = LF.Tactics.point(fx, fy, M.z); M.faces[rid] = f end
-            f.x, f.y = fx, fy
-            return "file", x, y, M.z, f, "march"
-        end
+    if not M or M.halted or not M.off[rec.id] then return nil end
+    M.faces = M.faces or {}
+    local f = M.faces[rec.id]
+    if not f then f = LF.Tactics.point(0, 0, M.z); M.faces[rec.id] = f end
+    if not M.joined[rec.id] then
+        local w = M.wait[rec.id]
+        local x, y = placeOf(M, rec.id)
+        f.x, f.y = x, y                              -- watching his place come up the route
+        return "file", w.x, w.y, M.z, f, "wait"
     end
-    return nil
+    local x, y, hx, hy = placeOf(M, rec.id, not M.arrived and CFG.lead or nil)
+    if M.arrived then
+        f.x, f.y = hx, hy
+        return "file", x, y, M.z, f, "halt"
+    end
+    local _, _, dx, dy = pointAt(M, math.min(M.head, M.total) + M.off[rec.id].f)
+    f.x, f.y = x + dx * 6, y + dy * 6
+    return "file", x, y, M.z, f, "march"
 end
 
--- Each tactics update. Returns true while the column is marching (the squad's other orders wait).
+-- Each tactics update. Returns true while the patrol is under way (the squad's other orders wait).
 function LF.March.update(squad, cid, cmd, contact, quietTicks)
     local M = marches[squad.id]
     if not M then return false end
     if contact then
         if not M.halted then
             M.halted = true
-            LF.log("MARCH " .. squad.name .. ": contact - the column halts")
-            LF.Tactics.shout(cid, "Contact! Off the road - take cover!")
+            LF.log("PATROL " .. squad.name .. ": contact - halt and fight")
+            LF.Tactics.shout(cid, "Contact! Take cover!")
         end
         return false
     end
     if M.halted then
         if (quietTicks or 0) < CFG.resumeQuiet then return false end
-        M.halted = false
-        M.order = columnOrder(squad)                -- the fallen are left out
-        LF.log("MARCH " .. squad.name .. ": quiet again - forming up and marching on")
-        LF.Tactics.shout(cid, "Form up on the road! Move out!")
+        if M.arrived then
+            M.halted = false
+            LF.log("PATROL " .. squad.name .. ": quiet again - back into the halt")
+            LF.Tactics.shout(cid, "All quiet - back in position, eyes out!")
+            return true
+        end
+        -- Quiet again: set off again from where the men are, on the point man.
+        LF.log("PATROL " .. squad.name .. ": quiet again - moving on")
+        local ok = LF.March.order(squad, M.x, M.y, M.z, M.form)
+        if not ok then marches[squad.id] = nil end
+        return ok
     end
-    -- Wait for anyone who has fallen behind; otherwise the head walks on.
+    if M.arrived then return true end
+    -- Men fall in as their places reach them; the head waits for anyone who has dropped behind.
     local behind, done = false, true
-    for i, rid in ipairs(M.order) do
+    for _, rid in ipairs(M.order) do
         local r = LF.Records.get(rid)
         local b = LF.Bodies.get(rid)
         if r and r.alive and b then
-            local x, y = placeOf(M, i)
-            local d = LF.dist(b:getX(), b:getY(), x, y)
-            if d > CFG.waitBehind then behind = true end
-            if d > CFG.arrive then done = false end
+            if not M.joined[rid] and math.min(M.head, M.total) >= M.proj[rid] - 1 then
+                M.joined[rid] = true
+            end
+            if M.joined[rid] then
+                local x, y = placeOf(M, rid)
+                local d = LF.dist(b:getX(), b:getY(), x, y)
+                if d > CFG.waitBehind then behind = true end
+                if d > CFG.arrive then done = false end
+            else
+                done = false
+            end
         end
     end
     if M.head < M.total then
         if not behind then M.head = math.min(M.total, M.head + CFG.step) end
         return true
     end
-    if done then
-        -- Arrived: halt, facing on along the last stretch.
+    if done or LF.tick - (M.endAt or LF.tick) > 1800 then
+        M.arrived = true
         local _, _, dx, dy = pointAt(M, M.total)
         squad.facingX, squad.facingY = dx, dy
-        marches[squad.id] = nil
-        LF.log("MARCH " .. squad.name .. " arrived (" .. math.floor((LF.tick - M.started) / 60) .. " s)")
-        LF.Tactics.shout(cid, "Halt! Take a breather - eyes open.")
-        return false
+        LF.log("PATROL " .. squad.name .. " halts at its destination (" .. math.floor((LF.tick - M.started) / 60)
+            .. " s) - down and eyes outboard")
+        LF.Tactics.shout(cid, "Halt! Get down - eyes out!")
+        return true
     end
+    M.endAt = M.endAt or LF.tick
+    -- Men whose places never reached them (they were ahead of the route): they join now.
+    for _, rid in ipairs(M.order) do M.joined[rid] = true end
     return true
 end
