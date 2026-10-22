@@ -20,6 +20,11 @@
 		<m_Type>STRING</m_Type>
 		<m_Value>back</m_Value>
 	</m_Conditions>
+	<m_Conditions x_name="lf-lf_patrolscanback-4">
+		<m_Name>LFScanOn</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
 	<m_Events x_name="lf-lf_patrolscanback-e1">
 		<m_EventName>Footstep</m_EventName>
 		<m_TimePc>0.2</m_TimePc>

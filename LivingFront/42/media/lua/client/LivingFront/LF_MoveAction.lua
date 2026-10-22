@@ -37,12 +37,22 @@ local function setAim(character, on) character:setIsAiming(on) end
 -- The speeds are calibrated in play: the player's own walking pace while aiming is measured
 -- (LF_Watch -> LF.Move.adsPace) and the scales are nudged until patrolling men walk at that pace.
 LF.Move.DEFAULT_ADS = 0.9               -- tiles per second, until the player's has been measured
+-- Legs: the ADS shuffle (Bob_WalkAimRifle, short steps made for that pace, so the feet match the
+-- ground) with the rifle held at the ready over the upper body (LF_RifleLow, played as the walk
+-- action's own animation on the upper-body bones); while scanning the overlay is the aimed rifle
+-- (LF_AimCrouch's upper-body aim). If the overlay turns out to stop the walk, it falls back to the
+-- plain walk slowed down (LF.Move.shuffle = false, logged).
 LF.Move.patrolScale = LF.Move.patrolScale or 0.7
 LF.Move.scanScale = LF.Move.scanScale or 0.9
+LF.Move.shuffleScale = LF.Move.shuffleScale or 1.0
 local function setVars(character, patrol, scan)
+    local shuffle = patrol and LF.Move.shuffle ~= false
     character:setVariable("LFPatrol", patrol)
+    character:setVariable("LFShuffle", shuffle)
     character:setVariable("LFScan", scan or "none")
+    character:setVariable("LFScanOn", scan ~= nil)
     character:setVariable("LFPatrolSpeed", LF.Move.patrolScale)
+    character:setVariable("LFShuffleSpeed", LF.Move.shuffleScale)
     character:setVariable("LFScanSpeed", LF.Move.scanScale)
 end
 local SCAN_TURN = { fwd = 0, left = -90, right = 90, back = 180 }
@@ -132,6 +142,17 @@ function LF_MoveAction.patrolStep(self)
     local scan = scanning and self.scan or nil
     if scan and scan ~= "fwd" and LF.Move.strafeWorks == false then scan = "fwd" end
     setVars(c, true, scan)
+    -- Upper body: rifle at the ready, or aimed while scanning (shuffle walk only).
+    if LF.Move.shuffle ~= false then
+        local want = scan and "LF_AimCrouch" or "LF_RifleLow"
+        if self.overlay ~= want then
+            self:setActionAnim(want)
+            self.overlay = want
+        end
+    elseif self.overlay then
+        self:setActionAnim("")
+        self.overlay = nil
+    end
     -- Turned out to his side while walking on: face the travel direction turned by the scan.
     local px, py = c:getX(), c:getY()
     if self.lastX then
@@ -154,10 +175,26 @@ function LF_MoveAction.patrolStep(self)
     if self.calT >= CAL_TICKS then
         local speed = LF.dist(self.calX, self.calY, px, py) * 60 / self.calT
         local target = LF.Move.adsPace or LF.Move.DEFAULT_ADS
+        -- An overlay that stops the walk dead (twice running) means it can't be used here.
+        if self.overlay and speed <= 0.05 then
+            self.stalls = (self.stalls or 0) + 1
+            if self.stalls >= 2 and LF.Move.shuffleOk ~= true and LF.Move.shuffle ~= false then
+                LF.Move.shuffle = false
+                LF.log("MOVE patrol shuffle with the rifle at the ready stalls the walk; plain slow walk instead")
+            end
+        elseif speed > 0.15 then
+            self.stalls = 0
+            if self.overlay and not LF.Move.shuffleOk then
+                LF.Move.shuffleOk = true
+                LF.log("MOVE patrol shuffle works (ADS steps, rifle at the ready)")
+            end
+        end
         if self.calScan == scan and speed > 0.15 then
             local f = math.max(0.7, math.min(1.3, 1 + 0.4 * (target / speed - 1)))
             if scan then
                 LF.Move.scanScale = math.max(0.3, math.min(1.6, LF.Move.scanScale * f))
+            elseif LF.Move.shuffle ~= false then
+                LF.Move.shuffleScale = math.max(0.3, math.min(1.6, LF.Move.shuffleScale * f))
             else
                 LF.Move.patrolScale = math.max(0.25, math.min(1.6, LF.Move.patrolScale * f))
             end
@@ -179,9 +216,9 @@ local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol %.2f tiles/s (target %.2f%s) - scales walk %.2f, scan %.2f",
+        LF.log(string.format("PACE patrol %.2f tiles/s (target %.2f%s) - scales shuffle %.2f, walk %.2f, scan %.2f",
             LF.Move.lastPace, LF.Move.adsPace or LF.Move.DEFAULT_ADS, LF.Move.adsPace and ", your aiming pace" or ", default",
-            LF.Move.patrolScale, LF.Move.scanScale))
+            LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale))
         LF.Move.lastPace = nil
     end
 end)
@@ -197,12 +234,14 @@ end
 
 function LF_MoveAction:stop()
     logSpeed(self, "stopped")
+    if self.overlay then self:setActionAnim(""); self.overlay = nil end
     clearGait(self.character)
     ISWalkToTimedAction.stop(self)
 end
 
 function LF_MoveAction:perform()
     logSpeed(self, "arrived")
+    if self.overlay then self:setActionAnim(""); self.overlay = nil end
     clearGait(self.character)
     ISWalkToTimedAction.perform(self)
 end

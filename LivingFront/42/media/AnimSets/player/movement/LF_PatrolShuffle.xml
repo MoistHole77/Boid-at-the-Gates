@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_PatrolShuffle</m_Name>
+	<m_AnimName>Bob_WalkAimRifle</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.25</m_BlendTime>
+	<m_SpeedScale>LFShuffleSpeed</m_SpeedScale>
+	<m_Conditions x_name="lf-lf_patrolshuffle-1">
+		<m_Name>isTurningAround</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>false</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_patrolshuffle-2">
+		<m_Name>LFPatrol</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_patrolshuffle-3">
+		<m_Name>LFShuffle</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Events x_name="lf-lf_patrolshuffle-e1">
+		<m_EventName>Footstep</m_EventName>
+		<m_TimePc>0.2</m_TimePc>
+		<m_ParameterValue>walk</m_ParameterValue>
+	</m_Events>
+	<m_Events x_name="lf-lf_patrolshuffle-e2">
+		<m_EventName>Footstep</m_EventName>
+		<m_TimePc>0.65</m_TimePc>
+		<m_ParameterValue>walk</m_ParameterValue>
+	</m_Events>
+</animNode>
