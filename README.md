@@ -24,7 +24,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Suppression, area fire, sergeant intent (advance / hold / fall back), corporal bounding drills, shouted orders | Working |
 | Squad maneuver: flanking on fire superiority (alpha teams go round, bravo teams pin; one side at a time); opening "bearings" seconds; self-aid; safer hiding spots; corporal repositions | Working |
 | Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Working |
-| Stances: offensive (everything above) and defensive - an all-round defence (alpha teams north and west, bravo teams south and east, turned to face a known threat), men stay in cover, wounded go down in place, no maneuver orders, fight to the death | Built, awaiting in-game test |
+| Stances: offensive (everything above) and defensive - an all-round defence (alpha teams north and west, bravo teams south and east), men stay in cover, wounded go down in place, no maneuver orders, fight to the death | Working (0.16.0) |
+| Defence re-forms around a known threat (front, two flanks, rear security; cover faces the enemy); sergeant takes his own cover; corporals cut off from their sergeant run their own teams; repositions work outward and round instead of back and forth | Built, awaiting in-game test |
 | Defensive stance inside buildings (each team takes a wall's windows) | Next |
 | Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |

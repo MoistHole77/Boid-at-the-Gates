@@ -36,6 +36,7 @@ local S = {
         withdrawWhenBroken = false, -- fight to the death
         stickyCover = true,      -- stay in cover unless it no longer protects at all
         sectorLeash = 3,         -- cover within this of his perimeter spot
+        sgtLeash = 8,            -- the sergeant, in the middle, looks this far for cover
         shiftLeash = 3,          -- a man without a shot may shift this far within his sector
         shiftInterval = 1800,    -- ... at most once per ~30 s
         radius = 7,              -- squad perimeter: teams this far out from the centre

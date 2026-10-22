@@ -57,6 +57,7 @@ local CFG = {
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
     holdLeash = 4,          -- ... and within this of their spot while their unit has orders
+    commandLeash = 7,       -- the sergeant looks this far from his spot for cover (his teams don't move)
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
     bearingsLeash = 5,      -- opening seconds of a fight: take the nearest cover within this many tiles
     stuckLeash = 7,         -- can't reach his spot: take the nearest cover within this many tiles
@@ -454,8 +455,11 @@ local function holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPo
         setState(id, body, rec, m, "alert", "covering " .. math.floor(point.x) .. "," .. math.floor(point.y))
         m.targetId = nil
     end
-    -- Cover against the enemy he covers, or out of his quarter when there is none.
-    planCover(id, body, m, watching and coverPoint or point, sx, sy, st.sectorLeash, true)
+    -- Cover against the enemy (or out of his quarter when none is known). The sergeant, having
+    -- called the defence, looks further afield for cover; the perimeter stays where he called it.
+    local squad = LF.Units.get(rec.squad)
+    local leash = (squad and squad.leader == rec.id) and st.sgtLeash or st.sectorLeash
+    planCover(id, body, m, watching and coverPoint or point, sx, sy, leash, true)
     if not m.cover and not LF.Suppress.isPinned(body) then followSlot(m, body, rec, sx, sy, sz) end
     -- No shot for a while with the enemy in his arc: look for a covered square with a shot,
     -- close by in his quarter.
@@ -588,6 +592,7 @@ local function decide(id, body, rec, m)
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
             if role == "move" then role = "hold" end
         end
+        if role == "command" then leash = CFG.commandLeash end
         if role == "sector" then
             holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPoint, pick, threat, threatId, dist)
             return

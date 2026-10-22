@@ -125,6 +125,19 @@ local function cleanPlayer(p)
     p:resetModel()
 end
 
+-- Fog off (kept off: the setting is saved and re-applied when the game loads).
+local function clearFog()
+    local cm = getClimateManager()
+    local f = cm:getClimateFloat(ClimateManager.FLOAT_FOG_INTENSITY)
+    f:setEnableModded(true)
+    f:setModdedValue(0)
+    f:setModdedInterpolate(1)
+end
+
+Events.OnGameStart.Add(function()
+    if LF.Records.data().noFog then LF.guard("clear fog", clearFog) end
+end)
+
 -- Clear corpses, blood and battlefield debris around the player, forget the dead, and restore
 -- the player's health and needs.
 local function resetWorld(playerNum)
@@ -148,10 +161,12 @@ local function resetWorld(playerNum)
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
     end
     getGameTime():setTimeOfDay(8.0)
+    LF.Records.data().noFog = true
+    LF.guard("clear fog", clearFog)
     LF.guard("heal player", healPlayer, p)
     LF.guard("clean player", cleanPlayer, p)
     LF.log("RESET WORLD removed " .. counts.corpses .. " corpses, " .. counts.items .. " items, "
-        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed; time set to 08:00")
+        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed; time set to 08:00; fog off")
     LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
 end
 
@@ -239,7 +254,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         end
     end
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
-    sub:addOption("Reset world (clear bodies, blood, debris; heal me; 08:00)", nil, function() resetWorld(playerNum) end)
+    sub:addOption("Reset world (clear bodies, blood, debris; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
 end
 
 Events.OnFillWorldObjectContextMenu.Add(onMenu)
