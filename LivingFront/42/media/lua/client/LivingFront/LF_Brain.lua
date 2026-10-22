@@ -232,6 +232,7 @@ local function planCover(id, body, m, threat, ax, ay, leash)
             or not withinLeash(m.cover.x, m.cover.y, ax, ay, 3, leash) then
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
+            LF.Cover.reserve(m.cover.x, m.cover.y, m.cover.z, id)   -- keep the claim while holding it
             resumeWalk(body, m, m.cover)
             return
         end
@@ -644,8 +645,6 @@ local function stepNpc(id, body, rec)
         else
             m.zeroSince = nil
         end
-    end
-    if (LF.tick + id) % CFG.thinkTicks == 0 then
         LF.Brain.decide(id, body, rec, m)
         -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
         -- he is in position.

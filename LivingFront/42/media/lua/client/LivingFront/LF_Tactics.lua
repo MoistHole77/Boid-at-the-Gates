@@ -114,10 +114,13 @@ Events.OnPostUIDraw.Add(function() LF.guard("draw shouts", drawShouts) end)
 
 -- ---- helpers --------------------------------------------------------------------------------
 
+-- Fit to fight: alive, not relieved for wounds, and (if he has a body here) not badly hurt.
+-- A soldier without a body (out of range of the player) counts as fit, so a unit that is
+-- only partly near the player doesn't think it has lost half its men.
 local function fit(rec)
     if not (rec and rec.alive and not rec.wounded) then return false end
     local body = LF.Bodies.get(rec.id)
-    return body ~= nil and LF.Combat.health(body) >= CFG.fitHealth
+    return body == nil or LF.Combat.health(body) >= CFG.fitHealth
 end
 
 local function facing(squad) return squad.facingX or 1, squad.facingY or 0 end
@@ -473,7 +476,8 @@ local function updateSquad(squad)
             total = total + 1
             if fit(r) then
                 fitN = fitN + 1
-                if LF.Suppress.isPinned(LF.Bodies.get(rid)) then pinnedN = pinnedN + 1 end
+                local b = LF.Bodies.get(rid)
+                if b and LF.Suppress.isPinned(b) then pinnedN = pinnedN + 1 end
             end
         end
     end

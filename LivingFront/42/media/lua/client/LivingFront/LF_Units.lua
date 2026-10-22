@@ -53,6 +53,28 @@ end
 
 Events.OnInitGlobalModData.Add(function() memberCache = {} end)
 
+-- Remove squads (and their teams) with nobody left alive. Returns how many were removed.
+function LF.Units.pruneDead()
+    local data = units()
+    local removed = 0
+    for id, squad in pairs(data.units) do
+        if squad.kind == "squad" then
+            local anyAlive = false
+            for _, rid in ipairs(LF.Units.members(id)) do
+                local r = LF.Records.get(rid)
+                if r and r.alive then anyAlive = true; break end
+            end
+            if not anyAlive then
+                for _, tid in ipairs(squad.teams) do data.units[tid] = nil end
+                data.units[id] = nil
+                memberCache[id] = nil
+                removed = removed + 1
+            end
+        end
+    end
+    return removed
+end
+
 -- "Sgt. Hans Becker" for soldiers, the plain name for everyone else.
 function LF.Units.title(rec)
     local short = rec.rank and RANK_SHORT[rec.rank]

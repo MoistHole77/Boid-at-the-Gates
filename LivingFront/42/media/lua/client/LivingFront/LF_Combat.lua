@@ -237,7 +237,7 @@ function LF.Combat.resolveAreaShot(shooter, point, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
     if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
     local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA, nil)
-    if LF.Config.logShots then
+    if LF.Config.logAreaFire then
         LF.log("AREA #" .. tostring(shooter:getModData().LF_id) .. " -> " .. math.floor(point:getX()) .. ","
             .. math.floor(point:getY()) .. " suppressing " .. n)
     end

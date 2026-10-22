@@ -71,8 +71,9 @@ function LF.Squad.contactPoints(squadId, maxAge, maxN)
     local out = {}
     local k = know[squadId]
     if not k then return out end
-    for _, c in pairs(k.contacts) do
-        if LF.tick - c.tick <= maxAge then
+    for enemyId, c in pairs(k.contacts) do
+        local rec = LF.Records.get(enemyId)
+        if LF.tick - c.tick <= maxAge and rec and rec.alive then
             out[#out + 1] = c
             if #out >= maxN then break end
         end

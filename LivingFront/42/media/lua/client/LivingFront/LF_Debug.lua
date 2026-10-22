@@ -139,6 +139,8 @@ local function resetWorld(playerNum)
             end
         end
     end
+    -- Units with nobody left go first (they need the dead records to know who was in them).
+    local unitsRemoved = LF.Units.pruneDead()
     local forgotten = 0
     for id, rec in pairs(LF.Records.all()) do
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
@@ -146,7 +148,7 @@ local function resetWorld(playerNum)
     LF.guard("heal player", healPlayer, p)
     LF.guard("clean player", cleanPlayer, p)
     LF.log("RESET WORLD removed " .. counts.corpses .. " corpses, " .. counts.items .. " items, "
-        .. forgotten .. " dead records; player healed")
+        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed")
     LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
 end
 

@@ -120,11 +120,17 @@ local function standable(sq, body)
     return true
 end
 
+local fireCands = {}
+local function byFireScore(a, b) return a.score > b.score end
+local FIRE_CHECKS = 120     -- at most this many candidate squares get the (costly) cover checks
+
 -- Best firing position for a fighter against a threat: LOW cover toward the threat, line of
 -- sight over it, within maxRange of the threat, preferring nearby squares and ones that don't
 -- walk toward the enemy. With an anchor (ax, ay) and leash, only squares within leash tiles of
 -- the anchor count, and the search is centred there (a soldier stays near his team).
 -- `threat` may be a body or anything with getX/getY/getZ (a last-known position).
+-- Squares are ranked by distance alone first (cheap), and the cover and sight-line checks run
+-- from the best down until one passes, so most squares never cost an engine call.
 -- Returns x, y, z, quality or nil.
 function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
     local cell = getCell()
@@ -140,28 +146,32 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash)
     end
     local maxRangeSq = maxRange * maxRange
     local myThreatDist = LF.dist(bx, by, tx, ty)
-    local bestScore, best = nil, nil
+    local n = 0
     for x = cx - r, cx + r do
         for y = cy - r, cy + r do
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
             if tdsq <= maxRangeSq and tdsq > 9
                 and (not leashSq or LF.distSq(x + 0.5, y + 0.5, ax, ay) <= leashSq) then
-                local q = LF.Cover.quality(x, y, bz, tx, ty)
-                if q == LOW and not isTaken(x, y, bz, id) then
-                    local sq = cell:getGridSquare(x, y, bz)
-                    if sq and standable(sq, body) and LF.Cover.canSeeFrom(x, y, bz, threat) then
-                        local travel = LF.dist(bx, by, x, y)
-                        local closer = myThreatDist - math.sqrt(tdsq)   -- > 0 means toward the enemy
-                        local score = -travel - math.max(0, closer) * 0.5
-                        if not bestScore or score > bestScore then
-                            bestScore, best = score, { x, y, bz }
-                        end
-                    end
-                end
+                local travel = LF.dist(bx, by, x, y)
+                local closer = myThreatDist - math.sqrt(tdsq)   -- > 0 means toward the enemy
+                n = n + 1
+                local c = fireCands[n]
+                if not c then c = {}; fireCands[n] = c end
+                c.x, c.y, c.score = x, y, -travel - math.max(0, closer) * 0.5
             end
         end
     end
-    if best then return best[1], best[2], best[3], LOW end
+    for i = #fireCands, n + 1, -1 do fireCands[i] = nil end
+    table.sort(fireCands, byFireScore)
+    for i = 1, math.min(n, FIRE_CHECKS) do
+        local c = fireCands[i]
+        if LF.Cover.quality(c.x, c.y, bz, tx, ty) == LOW and not isTaken(c.x, c.y, bz, id) then
+            local sq = cell:getGridSquare(c.x, c.y, bz)
+            if sq and standable(sq, body) and LF.Cover.canSeeFrom(c.x, c.y, bz, threat) then
+                return c.x, c.y, bz, LOW
+            end
+        end
+    end
     return nil
 end
 
