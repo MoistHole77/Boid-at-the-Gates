@@ -18,8 +18,10 @@
 
 require "TimedActions/ISBaseTimedAction"
 require "TimedActions/WalkToTimedAction"
+require "LivingFront/LF_Core"
 
 LF_MoveAction = ISWalkToTimedAction:derive("LF_MoveAction")
+LF.Move = LF.Move or {}
 
 local function applyGait(character, gait)
     if gait == "sprint" then
@@ -56,6 +58,11 @@ function LF_MoveAction:update()
             .. " state=" .. tostring(self.character:getCurrentActionContextStateName()))
     end
     ISWalkToTimedAction.update(self)
+    -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
+    -- stops retrying the same unreachable spot.
+    if self.result == BehaviorResult.Failed and LF.Move and LF.Move.onFailed then
+        LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
+    end
 end
 
 local function logSpeed(self, how)

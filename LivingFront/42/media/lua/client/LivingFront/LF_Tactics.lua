@@ -10,8 +10,8 @@
 --   Once his squad has fire superiority (enough of the enemy near the contact is suppressed)
 --   and it is healthy and not pinned itself, a sergeant orders a FLANK: his alpha teams
 --   maneuver around one side (the side with more cover) while his bravo teams hold and keep the
---   enemy pinned; when the alphas are in position, all hold. Only one side of a fight can be
---   flanking at a time.
+--   enemy pinned; when the alphas are in position, all hold. After one side starts a flank the
+--   other side must wait ~25 s before it can flank in turn.
 --   Corporal turns the order into a drill for his team's two elements (pairs):
 --     HOLD     - both pairs take cover around their positions and fire
 --     ADVANCE  - bounding: one pair runs a bound forward past the other while the other covers
@@ -52,14 +52,15 @@ local CFG = {
     bearingsTicks = 300,    -- the first ~5 s of a fight: everyone for himself, no orders
     -- Flanking (squads only)
     flankMinHold = 180,     -- HOLD at least ~3 s before considering a flank
-    flankSuperiority = 0.5, -- ... and at least this share of the enemy near the contact suppressed
+    flankSuperiority = 0.3, -- ... and at least this share of the enemy near the contact suppressed
     superiorityRadius = 25, -- enemies within this of the contact count toward that share
     flankCooldown = 1800,   -- ... at most once per 30 s
     flankFit = 0.6,         -- ... only while at least this share of the squad is fit
     flankPinned = 0.34,     -- ... and less than this share of the fit men is pinned
-    flankOut = 10,          -- first waypoint: this far out to the side
-    flankStandoff = 14,     -- final waypoint: this far short of the enemy (along the squad's facing) ...
-    flankWide = 12,         -- ... and this far off to the side of him
+    flankOut = 14,          -- first waypoint: this far out to the side
+    flankStandoff = 10,     -- final waypoint: this far short of the enemy (along the squad's facing) ...
+    flankWide = 16,         -- ... and this far off to the side of him
+    counterFlankTicks = 1500, -- after one side starts a flank, the other must wait this long (~25 s)
     flankTimeout = 5400,    -- give up on a flank after ~90 s
 }
 LF.Tactics.CFG = CFG
@@ -192,35 +193,53 @@ end
 
 -- ---- corporal: drills -----------------------------------------------------------------------
 
--- Has every fit, unpinned soldier of the moving element reached his spot?
+-- Has the moving pair finished its bound? Every fit, unpinned man in it must have reached his
+-- spot (or found he can't get there). If all its fit men are pinned, it waits; a pair with no
+-- fit men left is done at once (the other pair carries on alone).
 local function boundDone(team, t, squad)
     if LF.tick - t.phaseStart > CFG.phaseTimeout then return true end
     local fx, fy = facing(squad)
     local p = t.pos[t.moving]
+    local movers, pinned = 0, 0
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
         if r and r.team == team.id and r.element == t.moving and fit(r) then
             local b = LF.Bodies.get(rid)
-            if b and not LF.Suppress.isPinned(b) then
-                local lat = LF.Units.slotLat(r)
-                local x, y = p.x - fy * lat, p.y + fx * lat
-                if LF.dist(b:getX(), b:getY(), x, y) > CFG.arriveDistance then return false end
+            if b then
+                if LF.Suppress.isPinned(b) then
+                    pinned = pinned + 1
+                else
+                    movers = movers + 1
+                    local lat = LF.Units.slotLat(r)
+                    local x, y = p.x - fy * lat, p.y + fx * lat
+                    if LF.dist(b:getX(), b:getY(), x, y) > CFG.arriveDistance and not (LF.Brain and LF.Brain.isStuck and LF.Brain.isStuck(rid, x, y)) then
+                        return false
+                    end
+                end
             end
         end
     end
+    if movers == 0 and pinned > 0 then return false end
     return true
 end
 
 -- Start a bound: element `el` moves (dx, dy) * bound past the covering pair, or onto
 -- (tx, ty) if that is nearer.
-local function startBound(team, t, el, dx, dy, tx, ty)
+local function startBound(team, t, el, dx, dy, tx, ty, contact)
     local other = t.pos[OTHER[el]]
     local mine = t.pos[el]
     if not (other and mine) then return end
+    local len = CFG.bound
+    if contact then
+        -- An advance never puts a pair closer to the enemy than the stopping distance.
+        local room = LF.dist(other.x, other.y, contact.x, contact.y) - (CFG.advanceStop - 2)
+        if room < len then len = room end
+        if len < 1 then t.moving = nil; return end
+    end
     t.moving = el
     t.phaseStart = LF.tick
-    local nx, ny = other.x + dx * CFG.bound, other.y + dy * CFG.bound
-    if tx and LF.dist(other.x, other.y, tx, ty) <= CFG.bound then nx, ny = tx, ty end
+    local nx, ny = other.x + dx * len, other.y + dy * len
+    if tx and LF.dist(other.x, other.y, tx, ty) <= len then nx, ny = tx, ty end
     mine.x, mine.y = nx, ny
     if team.leader then
         LF.Tactics.shout(team.leader, ELEMENT_NAME[el] .. ", move! " .. ELEMENT_NAME[OTHER[el]] .. ", cover!")
@@ -248,11 +267,12 @@ local function driveTeam(team, t, squad, sq)
     local fx, fy = facing(squad)
     if order == "ADVANCE" or order == "FALLBACK" then
         local dir = order == "ADVANCE" and 1 or -1
+        local contact = (dir > 0) and sq.contact or nil
         if t.order ~= order then
             t.order = order
-            startBound(team, t, "A", fx * dir, fy * dir)
+            startBound(team, t, "A", fx * dir, fy * dir, nil, nil, contact)
         elseif t.moving and boundDone(team, t, squad) then
-            startBound(team, t, OTHER[t.moving], fx * dir, fy * dir)
+            startBound(team, t, OTHER[t.moving], fx * dir, fy * dir, nil, nil, contact)
         end
     elseif order == "MANEUVER" then
         if t.maneuverDone then
@@ -286,6 +306,12 @@ local function driveTeam(team, t, squad, sq)
         end
         startBound(team, t, el, dx, dy, tx, ty)
     elseif order == "HOLD" and t.order ~= "HOLD" then
+        -- Hold where the men are: a pair caught mid-bound stops where it is rather than
+        -- finishing the run alone.
+        if t.moving then
+            local x, y = elementCentre(team, t.moving)
+            if x then t.pos[t.moving].x, t.pos[t.moving].y = x, y end
+        end
         t.order, t.moving = "HOLD", nil
     end
 end
@@ -359,10 +385,10 @@ local function enemySuppression(squad, c)
     return supCtx.supp, supCtx.total
 end
 
--- Is a squad of another faction flanking right now? (Only one side flanks at a time.)
+-- Did a squad of another faction start a flank recently? (The other side must wait its turn.)
 local function otherSideFlanking(faction)
     for sid, s in pairs(squads) do
-        if s.intent == "FLANK" then
+        if s.flankStartTick and LF.tick - s.flankStartTick < CFG.counterFlankTicks then
             local u = LF.Units.get(sid)
             if u and u.faction ~= faction then return true end
         end
@@ -491,6 +517,7 @@ local function updateSquad(squad)
             local plan = planFlank(squad, c)
             if plan then
                 sq.flank = plan
+                sq.flankStartTick = LF.tick
                 intent, why = "FLANK", "fire superiority: " .. supp .. "/" .. enemies .. " enemy suppressed"
             else
                 sq.lastFlank = LF.tick

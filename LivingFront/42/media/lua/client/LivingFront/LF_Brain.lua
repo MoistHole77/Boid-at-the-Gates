@@ -185,6 +185,32 @@ local function resumeWalk(body, m, spot)
     end
 end
 
+-- ---- unreachable spots ------------------------------------------------------------------
+-- When the game can't find a path to a spot (a locked gate, a wall), the soldier remembers it
+-- for a while and fights from where he is instead of retrying forever.
+local STUCK_TICKS = 900
+
+LF.Move = LF.Move or {}
+function LF.Move.onFailed(body, x, y)
+    local id = body:getModData().LF_id
+    local m = id and minds[id]
+    if not m then return end
+    if not (m.stuck and LF.dist(m.stuck.x, m.stuck.y, x, y) < 1) then
+        LF.log("BRAIN #" .. id .. " can't reach " .. math.floor(x) .. "," .. math.floor(y) .. "; fighting from here")
+    end
+    m.stuck = { x = x, y = y, tick = LF.tick }
+end
+
+-- Has this soldier recently failed to reach a spot near (x, y)?
+local function stuckNear(m, x, y)
+    local st = m.stuck
+    return st ~= nil and LF.tick - st.tick < STUCK_TICKS and LF.dist(st.x, st.y, x, y) < 3
+end
+function LF.Brain.isStuck(id, x, y)
+    local m = minds[id]
+    return m ~= nil and stuckNear(m, x, y)
+end
+
 local function withinLeash(x, y, ax, ay, extra, leash)
     if not ax then return true end
     local r = (leash or CFG.leash) + (extra or 0)
@@ -198,6 +224,7 @@ local function planCover(id, body, m, threat, ax, ay, leash)
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
         if q ~= LF.Cover.LOW or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
+            or (not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5))
             or not withinLeash(m.cover.x, m.cover.y, ax, ay, 3, leash) then
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
@@ -273,7 +300,7 @@ end
 local function followSlot(m, body, rec, sx, sy, sz)
     if not sx then return false end
     local d = LF.dist(body:getX(), body:getY(), sx, sy)
-    if d <= CFG.followDistance then return true end
+    if d <= CFG.followDistance or stuckNear(m, sx, sy) then return true end
     if body:isPerformingAnAction() and not isMoving(body) then return false end   -- busy (shooting, flinching)
     if LF.tick - m.lastPath < CFG.followReissueTicks then return false end
     if walkNear(body, sx, sy, sz, 1, d > 10 and "run" or "walk") then m.lastPath = LF.tick end
@@ -346,7 +373,7 @@ end
 
 -- Bounding: run to the spot the corporal gave, re-pathing when the spot moves.
 local function moveTo(m, body, x, y, z)
-    if LF.dist(body:getX(), body:getY(), x, y) <= 1.5 then return true end
+    if LF.dist(body:getX(), body:getY(), x, y) <= 1.5 or stuckNear(m, x, y) then return true end
     if body:isPerformingAnAction() and not isMoving(body) then return false end   -- finishing a shot
     local moved = not m.dest or LF.dist(m.dest.x, m.dest.y, x, y) > 1.5
     if not moved and isMoving(body) then return false end
@@ -443,15 +470,20 @@ local function decide(id, body, rec, m)
             or LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
         if c then
             local g = ghostOf(m, c)
-            setState(id, body, rec, m, "alert", "returning fire at " .. math.floor(c.x) .. "," .. math.floor(c.y))
+            setState(id, body, rec, m, "alert", "taking cover facing " .. math.floor(c.x) .. "," .. math.floor(c.y))
             m.targetId, m.order, m.point = nil, "bearings", g
-            if m.combat.nextFire then planCover(id, body, m, g, m.bearX, m.bearY, CFG.bearingsLeash) end
+            -- No enemy in his own sights: get into cover straight away (and fire from there).
+            planCover(id, body, m, g, m.bearX, m.bearY, CFG.bearingsLeash)
             return
         end
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
         local role, sx, sy, sz, point = LF.Tactics.place(rec)
+        if role and stuckNear(m, sx, sy) then
+            sx, sy = body:getX(), body:getY()      -- can't get there: hold and fight from here
+            if role == "move" then role = "hold" end
+        end
         if role then
             m.order, m.point = role, point
             local pinned = LF.Suppress.isPinned(body)
