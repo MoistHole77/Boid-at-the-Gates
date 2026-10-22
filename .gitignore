@@ -1,0 +1,10 @@
+# OS / editor clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
+.idea/
+# logs pulled for debugging
+*.log
+console*.txt
