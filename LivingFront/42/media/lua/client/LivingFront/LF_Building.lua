@@ -61,8 +61,9 @@ function LF.Building.at(x, y, z)
                     for w, d in ipairs(WALL_DIR) do
                         local nb = cell:getGridSquare(ix + d[1], iy + d[2], z)
                         if nb and bid(nb) ~= id and sq:isWindowTo(nb) then
+                            local okM, mov = pcall(LF.Building.movableOn, sq)
                             blockedWin[#blockedWin + 1] = { x = ix, y = iy, dx = d[1], dy = d[2], kind = "window", wall = w,
-                                                            blocked = true, movable = LF.Building.movableOn(sq) ~= nil }
+                                                            blocked = true, movable = okM and mov ~= nil }
                         end
                     end
                 end
@@ -107,7 +108,7 @@ function LF.Building.movableOn(sq)
     for i = 0, objs:size() - 1 do
         local o = objs:get(i)
         local props = o:getProperties()
-        if o ~= sq:getFloor() and props and props:Is("IsMoveAble") then
+        if o ~= sq:getFloor() and props and props:has("IsMoveAble") then
             if o:getSpriteGrid() ~= nil then return nil end
             if found then return nil end            -- more than one piece: leave it
             found = o
@@ -122,8 +123,8 @@ function LF.Building.shove(L, x, y, dx, dy, avoid)
     local cell = getCell()
     local sq = cell:getGridSquare(x, y, L.z)
     if not sq then return false end
-    local obj = LF.Building.movableOn(sq)
-    if not obj then return sq:isFree(false) end
+    local okM, obj = pcall(LF.Building.movableOn, sq)
+    if not (okM and obj) then return sq:isFree(false) end
     -- Along the wall first, then further in.
     local tries = { { -dy, dx }, { dy, -dx }, { -dy - dx, dx - dy }, { dy - dx, -dx - dy }, { -2 * dx, -2 * dy } }
     for _, t in ipairs(tries) do
@@ -168,16 +169,74 @@ function LF_ShoveAction:isValid() return not self.character:isDead() end
 function LF_ShoveAction:waitToStart() return false end
 function LF_ShoveAction:start()
     self.character:faceLocation(self.win.x + 0.5, self.win.y + 0.5)
+    self:setActionAnim("LF_Shove")
+    if self.gun then self:setOverrideHandModels(self.gun, nil) end
 end
 function LF_ShoveAction:stop() ISBaseTimedAction.stop(self) end
 function LF_ShoveAction:perform()
     if self.onDone then LF.guard("shove", self.onDone, self.rec) end
     ISBaseTimedAction.perform(self)
 end
-function LF_ShoveAction:new(character, rec, win, onDone)
+function LF_ShoveAction:new(character, rec, win, onDone, gun)
     local o = ISBaseTimedAction.new(self, character)
-    o.rec, o.win, o.onDone = rec, win, onDone
+    o.rec, o.win, o.onDone, o.gun = rec, win, onDone, gun
     o.maxTime = 60
+    o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
+    o.ignoreHandsWounds = true
+    return o
+end
+
+-- ---- smashing a window ------------------------------------------------------------------------
+
+-- The window in an opening (the inside square's window to the outside), or nil.
+function LF.Building.windowOf(o, z)
+    local cell = getCell()
+    local a = cell:getGridSquare(o.x, o.y, z)
+    local b = cell:getGridSquare(o.x + o.dx, o.y + o.dy, z)
+    return a and b and a:getWindowTo(b) or nil
+end
+
+-- Does this window still have glass in it (not smashed, not open)?
+function LF.Building.windowIntact(o, z)
+    local w = LF.Building.windowOf(o, z)
+    if not w then return false end
+    return not w:isSmashed() and not w:isDestroyed() and not w:IsOpen()
+end
+
+-- A defender smashes the glass out of his window with his rifle butt before firing from it.
+LF_SmashAction = ISBaseTimedAction:derive("LF_SmashAction")
+local SMASH_AT = 16         -- ticks into the swing when the butt hits the glass
+
+function LF_SmashAction:isValid() return not self.character:isDead() end
+function LF_SmashAction:waitToStart() return false end
+function LF_SmashAction:start()
+    self.character:faceLocation(self.win.x + 0.5 + self.win.dx, self.win.y + 0.5 + self.win.dy)
+    self:setActionAnim("LF_ButtStrike")
+    if self.gun then self:setOverrideHandModels(self.gun, nil) end
+    self.hitAt = LF.tick + SMASH_AT
+end
+local function smash(self)
+    if self.done then return end
+    self.done = true
+    local w = LF.Building.windowOf(self.win, self.z)
+    if w and not w:isSmashed() then
+        w:smashWindow()
+        LF.log("BUILDING #" .. tostring(self.character:getModData().LF_id) .. " smashes out his window at "
+            .. self.win.x .. "," .. self.win.y)
+    end
+end
+function LF_SmashAction:update()
+    if self.hitAt and LF.tick >= self.hitAt then LF.guard("smash window", smash, self) end
+end
+function LF_SmashAction:stop() ISBaseTimedAction.stop(self) end
+function LF_SmashAction:perform()
+    LF.guard("smash window", smash, self)
+    ISBaseTimedAction.perform(self)
+end
+function LF_SmashAction:new(character, win, z, gun)
+    local o = ISBaseTimedAction.new(self, character)
+    o.win, o.z, o.gun = win, z, gun
+    o.maxTime = 50
     o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
     o.ignoreHandsWounds = true
     return o

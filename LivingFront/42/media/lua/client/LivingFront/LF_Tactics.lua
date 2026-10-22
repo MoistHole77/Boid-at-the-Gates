@@ -1032,7 +1032,8 @@ function LF.Tactics.shoveWindow(rec)
 end
 
 -- Where a soldier stands in the building's defence: "post", x, y, z, point, watching,
--- coverPoint, stand (at a window: stand to fire), shoveWin (the window to clear first, or nil).
+-- coverPoint, stand (at a window: stand to fire), win (his window's opening, or nil), shove
+-- (furniture in it to shove aside first).
 function LF.Tactics.buildingPlace(squad, sq, rec)
     local P = sq.perim
     local L = P.layout
@@ -1068,15 +1069,15 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
         cp = reusePoint(sq.coverPts, rec.id)
         cp.x, cp.y, cp.z = sx + dx * 15, sy + dy * 15, P.z
     end
-    local shoveWin = p.shove and p.win or nil
-    if best then return "post", sx, sy, P.z, best, false, cp, p.stand, shoveWin end
+    local win = (p.depth or 0) <= 1 and p.win or nil      -- close enough to reach the glass
+    if best then return "post", sx, sy, P.z, best, false, cp, p.stand, win, p.shove end
     local wx, wy = dx, dy
     if e1 then wx, wy = wx + e1[1], wy + e1[2] end
     if e2 then wx, wy = wx + e2[1], wy + e2[2] end
     local wl = math.max(0.1, math.sqrt(wx * wx + wy * wy))
     local wp = reusePoint(sq.watchPts, rec.id)
     wp.x, wp.y, wp.z = sx + wx / wl * 15, sy + wy / wl * 15, P.z
-    return "post", sx, sy, P.z, wp, true, cp, p.stand, shoveWin
+    return "post", sx, sy, P.z, wp, true, cp, p.stand, win, p.shove
 end
 
 local function updateDefensive(squad, sq, cid, cmd)
