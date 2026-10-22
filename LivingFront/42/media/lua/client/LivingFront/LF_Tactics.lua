@@ -27,9 +27,11 @@
 --   A team out of earshot keeps doing its last order.
 -- Objectives (LF_Objective): a unit told to DEFEND mans its posts and fights from them; a unit
 -- told to ATTACK marches on the objective (all teams bounding in) until it meets the enemy, gets
--- its bearings, returns fire for a few seconds and then storms it: bravo teams bound straight
--- for the nearest door, alpha teams swing round a flank to another door (or the same one).
--- A pinned team waits; the rest keep going. A stalled assault is tried again after a pause.
+-- its bearings, returns fire for a few seconds and then closes in (CLOSE): bravo teams bound up
+-- in front of the nearest door, alpha teams swing round a flank, and everyone fires on the
+-- windows. Only when the sergeant judges the defence is down to a few men (CFG.enterAt) does he
+-- send them in (ASSAULT): bravo teams by the front door, alpha teams by a side door, each to its
+-- own part of the inside. A pinned team waits; a stalled move is tried again after a pause.
 -- Attackers don't run the ordinary flank or advance (the storm is their maneuver).
 -- The brain asks LF.Tactics.place(rec) where a soldier belongs and what his role is.
 -- Runtime only: after a load, units re-form from where their men stand.
@@ -85,7 +87,8 @@ local CFG = {
     shiftsBeforeStalemate = 2, -- repositions tried before a stalemate flank (or 2x stalemateTicks)        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
     -- Attacking an objective
-    assaultDelay = 300,     -- return fire this long (~5 s) after the opening before storming
+    assaultDelay = 300,     -- return fire this long (~5 s) after the opening before closing in
+    enterAt = 3,            -- go into the building only when this many defenders or fewer are left
     assaultCooldown = 900,  -- after an assault ends or stalls, try again ~15 s later
     assaultTimeout = 5400,  -- an assault not in after ~90 s has stalled
 }
@@ -175,7 +178,7 @@ end
 -- A soldier's sideways place in his pair. Storming a building the pairs bunch up (doorways).
 local function latOf(rec, t)
     local lat = LF.Units.slotLat(rec)
-    if t and t.tight then lat = lat * 0.35 end
+    if t and t.tight then lat = lat * 0.6 end
     return lat
 end
 
@@ -264,6 +267,7 @@ function LF.Tactics.taskChanged(squad)
     local sq = squads[squad.id]
     if sq then
         sq.intent, sq.flank, sq.fightStart, sq.contact, sq.engaged = nil, nil, nil, nil, nil
+        sq.closed, sq.attackSide = nil, nil
     end
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
 end
@@ -670,7 +674,7 @@ end
 
 -- What a team should do under the squad's intent.
 local function orderFor(team, sq)
-    if sq.intent == "FLANK" or sq.intent == "ASSAULT" then
+    if sq.intent == "FLANK" or sq.intent == "ASSAULT" or sq.intent == "CLOSE" then
         if sq.flank and sq.flank.routes[team.id] then return "MANEUVER" end
         return "HOLD"
     end
@@ -692,8 +696,10 @@ local function setIntent(squad, sq, cid, intent, why)
         local words = INTENT_WORDS[intent]
         if intent == "FLANK" and sq.flank then
             words = "Alpha teams, flank " .. (sq.flank.side < 0 and "left" or "right") .. "! Bravo teams, cover!"
+        elseif intent == "CLOSE" and sq.flank then
+            words = "Bravo teams, up to the door! Alpha teams, round the " .. (sq.flank.side < 0 and "left" or "right") .. "! Keep their heads down!"
         elseif intent == "ASSAULT" and sq.flank and sq.flank.storm then
-            words = "Bravo teams, take the door! Alpha teams, round the " .. (sq.flank.side < 0 and "left" or "right") .. "!"
+            words = "They're almost done - go in! Clear it!"
         end
         LF.Tactics.shout(cid, words)
     end
@@ -756,6 +762,12 @@ local function planAssault(squad, obj, blind)
     return plan
 end
 
+-- The flank side this squad already chose for its attack (kept for the assault), or nil.
+local function sq_side_of(squad)
+    local sq = squads[squad.id]
+    return sq and sq.attackSide or nil
+end
+
 -- A free square near (x, y) (searching out to 3 tiles), or (x, y) itself.
 local function freeNear(x, y, z)
     local cell = getCell()
@@ -773,13 +785,17 @@ local function freeNear(x, y, z)
     return x, y
 end
 
--- Storm an objective, in two prongs:
---   bravo teams - bound straight for the entrance nearest them and go in;
---   alpha teams - swing out round one flank, come in along the building's side and go in by
---                 the entrance furthest round that side (the same door if it has only one).
+-- Attacking a building, in two prongs:
+--   bravo teams - bound up to a spot in front of the entrance nearest them;
+--   alpha teams - swing out round one flank and come up along the building's side.
+-- enter = false (CLOSE): stop there and fire on the windows.
+-- enter = true (ASSAULT, only once the defence is down to a few men): bravo teams go in by the
+--   front door, alpha teams by the door furthest round their side (if there is only one door,
+--   they stay outside and cover). Each team heads for its own part of the inside, so they
+--   don't pile into one room.
 -- Teams bound pair by pair, so the pair on the ground covers the pair running; a team whose
 -- men are pinned waits until they can move again. Returns the plan or nil.
-local function planStorm(squad, obj, c)
+local function planStorm(squad, obj, c, enter)
     local fx, fy = facing(squad)
     local rx, ry = -fy, fx
     local z = obj.z
@@ -808,19 +824,21 @@ local function planStorm(squad, obj, c)
         end
     end
     -- Front entrance: the nearest to us. Flank side: away from the front door if it is off to one
-    -- side, else the side with more cover.
+    -- side, else the side with more cover. The same plan side is kept for a later assault.
     local front, frontD = nil, math.huge
     for _, e in ipairs(ents) do
         local d = LF.dist(sx, sy, e.ox + 0.5, e.oy + 0.5)
         if d < frontD then front, frontD = e, d end
     end
-    local side
-    if front and math.abs(Lat(front.ox + 0.5, front.oy + 0.5)) > 2 then
-        side = Lat(front.ox + 0.5, front.oy + 0.5) > 0 and -1 or 1
-    else
-        local covL = coverAround(obj.x - rx * (maxL - minL), obj.y - ry * (maxL - minL), z, c.x, c.y)
-        local covR = coverAround(obj.x + rx * (maxL - minL), obj.y + ry * (maxL - minL), z, c.x, c.y)
-        side = covR >= covL and 1 or -1
+    local side = sq_side_of(squad)
+    if not side then
+        if front and math.abs(Lat(front.ox + 0.5, front.oy + 0.5)) > 2 then
+            side = Lat(front.ox + 0.5, front.oy + 0.5) > 0 and -1 or 1
+        else
+            local covL = coverAround(obj.x - rx * (maxL - minL), obj.y - ry * (maxL - minL), z, c.x, c.y)
+            local covR = coverAround(obj.x + rx * (maxL - minL), obj.y + ry * (maxL - minL), z, c.x, c.y)
+            side = covR >= covL and 1 or -1
+        end
     end
     -- Flank entrance: the one furthest round that side (furthest out, then furthest back).
     local flankE, flankScore = nil, -math.huge
@@ -832,25 +850,38 @@ local function planStorm(squad, obj, c)
     local sideEdge = side > 0 and maxL or -minL      -- how far the building reaches out that side
 
     local function at(f, l) return obj.x + fx * f + rx * l, obj.y + fy * f + ry * l end
-    local function doorRoute(route, e, k)
-        if not e then
-            local x, y = freeNear(obj.x, obj.y, z)
-            route[#route + 1] = { x = x, y = y }
-            return
+    local function add(route, x, y)
+        x, y = freeNear(x, y, z)
+        route[#route + 1] = { x = x, y = y }
+    end
+    -- Each entering team gets its own part of the inside: the square near its door furthest from
+    -- where the other teams are going.
+    local used = {}
+    local function pickInside(e)
+        local best, bestS = nil, -math.huge
+        for _, q in ipairs(L.inside) do
+            local dd = LF.dist(q.x, q.y, e.ix, e.iy)
+            if dd >= 2 and dd <= 8 then
+                local s = math.min(dd, 4)
+                for _, u in ipairs(used) do s = math.min(s, LF.dist(q.x, q.y, u.x, u.y)) end
+                if s > bestS then best, bestS = q, s end
+            end
         end
-        -- Stack up beside the doorway (out from the wall, a little to one side), then go in.
+        if best then used[#used + 1] = best; return best.x + 0.5, best.y + 0.5 end
+        return obj.x, obj.y
+    end
+    local function goIn(route, e, k)
+        -- Stack up beside the doorway (out from the wall, a little to one side), then in.
         local off = (k % 2 == 1) and 1.5 or -1.5
-        local px, py = e.ox + 0.5 + e.dx * 2 - e.dy * off, e.oy + 0.5 + e.dy * 2 + e.dx * off
-        px, py = freeNear(px, py, z)
-        route[#route + 1] = { x = px, y = py }
+        add(route, e.ox + 0.5 + e.dx * 2 - e.dy * off, e.oy + 0.5 + e.dy * 2 + e.dx * off)
         route[#route + 1] = { x = e.ox + 0.5, y = e.oy + 0.5 }
         route[#route + 1] = { x = e.ix + 0.5, y = e.iy + 0.5 }
-        local ix, iy = freeNear(e.ix + 0.5 - e.dx * 2, e.iy + 0.5 - e.dy * 2, z)
-        route[#route + 1] = { x = ix, y = iy }
+        local x, y = pickInside(e)
+        route[#route + 1] = { x = x, y = y }
     end
 
-    local plan = { assault = true, storm = true, started = LF.tick, routes = {}, teams = {}, side = side }
-    local kB, kA = 0, 0
+    local plan = { assault = true, storm = true, enter = enter, started = LF.tick, routes = {}, teams = {}, side = side }
+    local kB, kA, inB, inA = 0, 0, 0, 0
     for _, tid in ipairs(squad.teams) do
         local team, t = LF.Units.get(tid), teams[tid]
         local cpl = team and team.leader and LF.Records.get(team.leader)
@@ -859,35 +890,55 @@ local function planStorm(squad, obj, c)
             local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
             local inside = obj.building and buildingAt(cx, cy, z) == obj.building
             if inside then
-                local x, y = freeNear(obj.x, obj.y, z)
-                route[1] = { x = x, y = y }
+                if enter then add(route, obj.x, obj.y) end
             elseif team.element == "B" then
                 kB = kB + 1
-                doorRoute(route, front, kB)
+                if front and enter then
+                    goIn(route, front, kB); inB = inB + 1
+                elseif front then
+                    -- In front of the door, spread either side of it, ~7 tiles out.
+                    local off = (kB % 2 == 1 and 1 or -1) * 3
+                    add(route, front.ox + 0.5 + front.dx * 7 - front.dy * off, front.oy + 0.5 + front.dy * 7 + front.dx * off)
+                elseif not enter then
+                    add(route, at(minF - 8, (kB % 2 == 1 and 1 or -1) * 3))
+                else
+                    add(route, obj.x, obj.y); inB = inB + 1
+                end
             else
                 kA = kA + 1
                 local wide = sideEdge + 6 + (kA - 1) * 3
-                -- Out to the side, then level with the near corner well clear of the wall, then
-                -- along the side of the building.
-                local w1x, w1y = cx + rx * side * CFG.flankOut, cy + ry * side * CFG.flankOut
-                local w2x, w2y = at(minF - 5, side * wide)
                 local w3x, w3y = at((minF + F(flankE and flankE.ox or obj.x, flankE and flankE.oy or obj.y)) / 2, side * wide)
-                for _, w in ipairs({ { w1x, w1y }, { w2x, w2y }, { w3x, w3y } }) do
-                    local x, y = freeNear(w[1], w[2], z)
-                    route[#route + 1] = { x = x, y = y }
+                local far = LF.dist(cx, cy, w3x, w3y) > 8
+                if far then
+                    -- Out to the side, then level with the near corner well clear of the wall,
+                    -- then along the side of the building.
+                    add(route, cx + rx * side * CFG.flankOut, cy + ry * side * CFG.flankOut)
+                    add(route, at(minF - 5, side * wide))
+                    add(route, w3x, w3y)
                 end
-                doorRoute(route, flankE, kA)
+                if enter then
+                    if flankE and flankE ~= front then goIn(route, flankE, kA); inA = inA + 1
+                    elseif not flankE then add(route, obj.x, obj.y); inA = inA + 1 end
+                end
             end
-            plan.routes[tid] = route
-            plan.teams[#plan.teams + 1] = tid
-            t.maneuverDone, t.pushes, t.order, t.moving, t.shifting = nil, 0, nil, nil, nil
-            t.tight = obj.building ~= nil
+            if #route > 0 then
+                plan.routes[tid] = route
+                plan.teams[#plan.teams + 1] = tid
+                t.maneuverDone, t.pushes, t.order, t.moving, t.shifting = nil, 0, nil, nil, nil
+                t.tight = enter and obj.building ~= nil
+            end
         end
     end
     if #plan.teams == 0 then return nil end
-    LF.log("ASSAULT " .. squad.name .. " storms " .. obj.name .. ": " .. kB .. " team(s) to the "
-        .. (front and ("door at " .. front.ox .. "," .. front.oy) or "centre") .. ", " .. kA .. " team(s) round the "
-        .. (side < 0 and "left" or "right") .. (flankE and (" to the door at " .. flankE.ox .. "," .. flankE.oy) or ""))
+    if enter then
+        LF.log("ASSAULT " .. squad.name .. " goes into " .. obj.name .. ": " .. inB .. " team(s) by the "
+            .. (front and ("door at " .. front.ox .. "," .. front.oy) or "centre") .. ", " .. inA .. " team(s) by the "
+            .. (flankE and flankE ~= front and ("door at " .. flankE.ox .. "," .. flankE.oy) or "same door (none)"))
+    else
+        LF.log("CLOSE " .. squad.name .. " closes on " .. obj.name .. ": " .. kB .. " team(s) up to the "
+            .. (front and ("door at " .. front.ox .. "," .. front.oy) or "front") .. ", " .. kA .. " team(s) round the "
+            .. (side < 0 and "left" or "right"))
+    end
     return plan
 end
 
@@ -912,7 +963,7 @@ local function updateDefender(squad, sq, cid, cmd, obj)
         sq.contact = nil
     end
     sq.fightStart = nil
-    LF.Objective.updatePosts(squad, obj, sq.contact and sq.contact.x, sq.contact and sq.contact.y)
+    LF.Objective.updatePosts(squad, obj)
     setIntent(squad, sq, cid, "DEFEND", "holding " .. obj.name)
 end
 
@@ -1023,35 +1074,44 @@ local function updateSquad(squad)
         sq.broken = true
         if front < CFG.fallbackClear then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
         else intent, why = "HOLD", "fallen back out of range" end
-    elseif intent ~= "HOLD" and intent ~= "FLANK" and intent ~= "ASSAULT" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
+    elseif intent ~= "HOLD" and intent ~= "FLANK" and intent ~= "ASSAULT" and intent ~= "CLOSE" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         -- Too many men pinned to keep advancing. (A squad already holding still goes on to the
         -- flank checks below, and a flank under way carries on.)
         intent, why = "HOLD", pinnedN .. "/" .. fitN .. " pinned"
-    elseif intent == "ASSAULT" then
-        -- Storming the objective: carry on until the teams are in (or it has stalled).
+    elseif intent == "ASSAULT" or intent == "CLOSE" then
+        -- Closing in / going in: carry on until the teams are there (or it has stalled).
         if planDone(sq) then
-            intent, why = "HOLD", "assault teams in " .. obj.name
+            intent, why = "HOLD", intent == "ASSAULT" and ("assault teams in " .. obj.name) or "closed in"
+            if sq.intent == "CLOSE" then sq.closed = true end
             sq.lastAssault = LF.tick
         elseif sq.flank and LF.tick - sq.flank.started > CFG.assaultTimeout then
-            intent, why = "HOLD", "assault stalled"
+            intent, why = "HOLD", "stalled"
             sq.lastAssault = LF.tick
         end
-    elseif kind == "attack" then
-        -- Attacking: after a few seconds of returning fire, storm it - and again after a pause
-        -- if the first go stalls. Not while most of the squad is pinned.
-        local steady = fitN > 0 and pinnedN / fitN < CFG.pinnedHold
-        if intent ~= "HOLD" then
-            intent, why = "HOLD", "contact at " .. math.floor(front) .. " tiles"
-        elseif steady and LF.tick - (sq.holdSince or LF.tick) >= CFG.assaultDelay
-            and LF.tick - (sq.lastAssault or -100000) >= CFG.assaultCooldown then
-            local plan = planStorm(squad, obj, c)
-            sq.lastAssault = LF.tick
-            if plan then
-                sq.flank = plan
-                intent, why = "ASSAULT", defendersAt(squad, obj) .. " defenders at " .. obj.name
-                    .. string.format(", %.0f%% of them suppressed", sq.supShare * 100)
+    elseif kind == "attack" and intent ~= "HOLD" then
+        intent, why = "HOLD", "contact at " .. math.floor(front) .. " tiles"
+    elseif kind == "attack" and LF.tick - (sq.holdSince or LF.tick) >= CFG.assaultDelay
+        and LF.tick - (sq.lastAssault or -100000) >= CFG.assaultCooldown
+        and fitN > 0 and pinnedN / fitN < CFG.pinnedHold
+        and (defendersAt(squad, obj) <= CFG.enterAt or not sq.closed) then
+        -- Attacking: close in on the building first (teams to the door and round a flank, all
+        -- firing on the windows); go in only when the defence is down to a few men.
+        local left = defendersAt(squad, obj)
+        local enter = left <= CFG.enterAt
+        local plan = planStorm(squad, obj, c, enter)
+        sq.lastAssault = LF.tick
+        if plan then
+            sq.flank = plan
+            sq.attackSide = plan.side
+            if enter then
+                intent, why = "ASSAULT", left .. " defenders left in " .. obj.name
+            else
+                intent, why = "CLOSE", left .. string.format(" defenders in %s, %.0f%% of them suppressed", obj.name, sq.supShare * 100)
             end
         end
+    elseif kind == "attack" then
+        -- Closed in and the defence still too strong to go in: hold and keep firing on the
+        -- windows (teams without a shot still reposition). No ordinary flank or advance.
     elseif intent == "FLANK" then
         -- Carry on until every flanking team is in position (or it takes too long).
         local done = true

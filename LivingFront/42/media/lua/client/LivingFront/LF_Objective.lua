@@ -4,11 +4,11 @@
 --   defend - the men take posts: in a building, standing in the windows (and doorways) that
 --            face the enemy, a second man behind each front window, then the flank windows;
 --            in the open, covered squares facing it. Men without a post wait a few tiles inside
---            as a reserve and step up when a post falls vacant. Posts are re-dealt against where
---            the enemy actually is. Defenders don't advance, reposition or flank.
---   attack - the unit marches on it and, once in a fight, storms it (LF_Tactics ASSAULT): the
---            bravo teams bound straight for the nearest entrance, the alpha teams swing round
---            a flank to another entrance; a pinned team waits, the rest keep going.
+--            as a reserve. Once in position, defenders don't move.
+--   attack - the unit marches on it and, once in a fight, closes in (LF_Tactics CLOSE): bravo
+--            teams bound up in front of the nearest door, alpha teams swing round a flank, and
+--            all fire on the windows. Only when the defence is down to a few men does the
+--            sergeant send them in (ASSAULT).
 -- The objective's building doors are unlocked and opened when it is created.
 -- Whoever has the only living soldiers inside the radius holds it. When attackers take it,
 -- their task becomes defend (posts facing on, the way they came).
@@ -130,9 +130,7 @@ end
 --   then doorways, then the square behind a front window (a second man fires past the first),
 --   then windows on the flanks. Windows facing away from the threat are kept for when it moves.
 -- Men left over wait as a reserve a few tiles inside behind the front posts (each on his own
--- square) and step up to a post when its man falls.
--- Posts are re-dealt every few seconds against where the enemy actually is, so the defence
--- turns to face a flank. A man keeps his post unless a better one needs him.
+-- square). Posts are dealt once; once in position the defenders don't move.
 
 local postCache = {}       -- record id -> post { x, y, z, ox, oy (a point out of the window), reserve }
 local postsAt = {}         -- squad id -> tick posts were last dealt
@@ -255,32 +253,12 @@ local function assignPosts(squad, obj, fx, fy, why)
     end
 end
 
--- Re-deal the posts against where the enemy is (every few seconds, and whenever a posted man
--- has fallen). (tx, ty): the enemy's last-known position, or nil.
-function LF.Objective.updatePosts(squad, obj, tx, ty)
-    local fx, fy = squad.facingX or 1, squad.facingY or 0
-    if tx then
-        local dx, dy = tx - obj.x, ty - obj.y
-        local len = math.sqrt(dx * dx + dy * dy)
-        if len > 2 then fx, fy = dx / len, dy / len end
-    end
-    local last = postsAt[squad.id]
-    local vacant = false
-    if last then
-        for rid, p in pairs(postCache) do
-            if not p.reserve then
-                local r = LF.Records.get(rid)
-                if r and r.squad == squad.id and (not r.alive or r.wounded) then vacant = true; break end
-            end
-        end
-    end
-    if not last then
-        assignPosts(squad, obj, fx, fy, "first posting")
-    elseif vacant then
-        assignPosts(squad, obj, fx, fy, "a post fell vacant")
-    elseif LF.tick - last >= 300 then
-        assignPosts(squad, obj, fx, fy, nil)
-    end
+-- Deal the posts once, when the squad first takes up the defence (against the direction the
+-- attack is expected from). After that nobody moves: a man at a window stays at that window,
+-- and the reserve stays put.
+function LF.Objective.updatePosts(squad, obj)
+    if postsAt[squad.id] then return end
+    assignPosts(squad, obj, squad.facingX or 1, squad.facingY or 0, "first posting")
 end
 
 -- A defender's post: x, y, z, isPost, outX, outY (a point outside to face).
