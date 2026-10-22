@@ -161,7 +161,7 @@ local function setState(id, body, rec, m, state, detail)
     m.state = state
     m.combat = {}
     m.lastPath = -10000
-    m.atRear = nil
+    m.atRear, m.safeLogged = nil, nil
 end
 
 -- Claim a spot and run to it (or settle if already there).
@@ -569,6 +569,11 @@ local function act(id, body, rec, m)
     elseif m.state == "flee" then
         local safe = (m.hide and isAt(body, m.hide)) or m.atRear
         if m.hide and isAt(body, m.hide) then hunkerDown(body) end
+        if safe and m.fighter and not m.safeLogged then
+            m.safeLogged = true
+            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " reached safety (" .. (m.atRear and "squad rear" or "hiding spot")
+                .. "), health " .. math.floor(LF.Combat.health(body)))
+        end
         -- Out of the fight: bandage bleeding wounds, one at a time.
         if safe and m.fighter and not body:isPerformingAnAction() and LF.tick - (m.lastAid or -10000) > 90 then
             m.lastAid = LF.tick
