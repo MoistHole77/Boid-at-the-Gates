@@ -20,6 +20,7 @@ require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
 require "LivingFront/LF_MoveAction"
+require "LivingFront/LF_Posture"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -149,7 +150,7 @@ end
 local function leavePosition(id, body, m)
     if m.cover or m.hide then LF.Cover.release(id) end
     m.cover, m.hide = nil, nil
-    if body:isSneaking() then body:setSneaking(false) end
+    LF.Posture.set(body, false)
 end
 
 local function setState(id, body, rec, m, state, detail)
@@ -299,7 +300,7 @@ end
 -- Crouch while holding a position, but only when not mid-action: the aim/fire actions play
 -- standing clips, so a crouched soldier pops up to shoot and drops back down afterwards.
 local function hunkerDown(body)
-    if not body:isPerformingAnAction() and not body:isSneaking() then body:setSneaking(true) end
+    if not body:isPerformingAnAction() and not LF.Posture.crouched(body) then LF.Posture.set(body, true) end
 end
 
 -- Per-tick behaviour for states that need it.
@@ -344,6 +345,7 @@ local function onTick()
         for id in pairs(minds) do
             if not LF.Bodies.get(id) then
                 LF.Cover.release(id)
+                LF.Posture.forget(id)
                 minds[id] = nil
             end
         end

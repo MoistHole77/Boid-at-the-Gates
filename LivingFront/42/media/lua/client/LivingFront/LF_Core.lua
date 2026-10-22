@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.6.0"
+LF.VERSION = "0.6.1"
 
 LF.Config = {
     spawnRadius = 30,        -- a record gets a body when the player is within this many tiles
