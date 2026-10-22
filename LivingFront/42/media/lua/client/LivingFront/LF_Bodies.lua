@@ -9,6 +9,7 @@
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
 require "LivingFront/LF_Appearance"
+require "LivingFront/LF_Perf"
 
 LF.Bodies = LF.Bodies or {}
 
@@ -52,6 +53,7 @@ function LF.Bodies.spawn(rec)
     local sq = cell:getGridSquare(math.floor(rec.x), math.floor(rec.y), math.floor(rec.z))
     if not sq then return nil end -- chunk not loaded yet; try again next pass
 
+    local t0 = LF.Perf.start()
     local desc = LF.Appearance.makeDescriptor(rec)
     if not desc then return nil end
     local body = LF.try("IsoPlayer.new", function()
@@ -69,7 +71,7 @@ function LF.Bodies.spawn(rec)
         return true
     end)
     LF.try("identity", function()
-        local name = LF.Records.fullName(rec)
+        local name = LF.Units and LF.Units.title(rec) or LF.Records.fullName(rec)
         body:setUsername(name)
         body:setDisplayName(name)
         body:getModData().LF_id = rec.id
@@ -81,7 +83,11 @@ function LF.Bodies.spawn(rec)
     setStat(body, "THIRST", rec.thirst)
     setStat(body, "FATIGUE", rec.fatigue)
 
+    -- Soldiers (and anyone recorded as armed) carry their rifle from the start.
+    if (rec.faction ~= "CIV" or rec.armed) and LF.Combat then LF.guard("arm on spawn", LF.Combat.arm, body) end
+
     bodies[rec.id] = body
+    LF.Perf.stop("spawn", t0)
     LF.log("spawned #" .. rec.id .. " " .. LF.Records.fullName(rec) .. " (" .. rec.faction .. ") at "
         .. math.floor(rec.x) .. "," .. math.floor(rec.y) .. " wearing " .. wornCount .. " items")
     return body
@@ -145,7 +151,9 @@ end
 
 local function onTick()
     if LF.tick % LF.Config.managerInterval == 0 then
+        local t0 = LF.Perf.start()
         LF.guard("managerPass", managerPass)
+        LF.Perf.stop("manager", t0)
     end
 end
 
@@ -162,9 +170,11 @@ end
 
 -- One guarded call per body per frame, with no closures created.
 local function onRenderOpaque(playerIndex, _x, _y, _z, _square)
+    local t0 = LF.Perf.start()
     for _, body in pairs(bodies) do
         LF.guard("draw body", drawBody, body, playerIndex)
     end
+    LF.Perf.stop("draw", t0)
 end
 
 -- Keep records current right before the game writes the save.

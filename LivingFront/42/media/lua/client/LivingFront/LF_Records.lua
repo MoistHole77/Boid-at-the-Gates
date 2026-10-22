@@ -25,6 +25,11 @@ end
 
 Events.OnInitGlobalModData.Add(function() cached = nil end)
 
+-- The whole saved table (records, units, id counters), for other modules that store data.
+function LF.Records.data()
+    return store()
+end
+
 local function javaListToTable(list)
     local out = {}
     if not list then return out end

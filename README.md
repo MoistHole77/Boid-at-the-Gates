@@ -19,7 +19,9 @@ Pure Lua. No Java, no ZombieBuddy.
 | Civilians flee gunfire; armed civilians fight Germans | Working |
 | Cover: soldiers crouch behind low cover, wounded hide behind walls; cover reduces hit chance | Built, awaiting in-game test |
 | Running and sprinting (real run animations, endurance limits) | Built, awaiting in-game test |
-| Squads, ammo, period weapons | Next |
+| Squads: fixed units (sergeant + 4 fire teams of 4) saved with the world, spawned in formation | Built, awaiting stress test |
+| Squad tactics (cohesion, shared contacts, bounding, suppression, flanking) | Next (see design doc) |
+| Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
 The player is currently neutral: NPCs ignore you.
@@ -47,6 +49,8 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Combat.lua` | Gunfire: turning, aiming stance, hit resolution, damage, gunfire memory |
 | `LF_ShootAction.lua` | Timed actions: aim + fire (with target tracking), flinch |
 | `LF_MoveAction.lua` | Walk / run / sprint to a square (the timed action that makes running work) |
+| `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
+| `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
 | `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |
 | `LF_Brain.lua` | Perceive / decide / act loop per NPC |
 | `LF_Debug.lua` | Right-click debug menu |

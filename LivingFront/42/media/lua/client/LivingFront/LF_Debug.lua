@@ -7,6 +7,8 @@ require "LivingFront/LF_Combat"
 require "LivingFront/LF_Brain"
 require "LivingFront/LF_MoveAction"
 require "LivingFront/LF_Cover"
+require "LivingFront/LF_Units"
+require "LivingFront/LF_Perf"
 
 LF.Debug = LF.Debug or {}
 
@@ -123,9 +125,25 @@ local function checkCover(x, y, z)
     LF.say(msg)
 end
 
+-- One full squad here, facing east (+x) or west (-x).
+local function spawnSquad(faction, x, y, z, fx)
+    local squad = LF.Units.createSquad(faction, x + 0.5, y + 0.5, z, fx, 0)
+    LF.say("Spawned " .. squad.name .. " (17 soldiers)")
+end
+
+-- Squad vs squad: Germans 14 tiles west facing east, Soviets 14 tiles east facing west.
+-- Their front teams start about 20 tiles apart, inside sight range.
+local function squadBattle(x, y, z)
+    LF.Units.createSquad("GER", x - 13.5, y + 0.5, z, 1, 0)
+    LF.Units.createSquad("SOV", x + 14.5, y + 0.5, z, -1, 0)
+    LF.log("DEBUG squad battle around " .. x .. "," .. y)
+    LF.say("Squad battle: 17 vs 17")
+end
+
 local function deleteAll()
     LF.Bodies.despawnAll()
     for id in pairs(LF.Records.all()) do LF.Records.remove(id) end
+    LF.Units.clear()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
 end
@@ -166,6 +184,14 @@ local function onMenu(playerNum, context, worldObjects, test)
         LF.say("NPC running " .. (LF.Brain.running and "ON" or "OFF"))
     end)
     combat:addOption("Brain report", nil, LF.Brain.report)
+    local squadOption = sub:addOption("Squads / stress test")
+    local squads = ISContextMenu:getNew(sub)
+    sub:addSubMenu(squadOption, squads)
+    squads:addOption("Squad battle: German squad (west) vs Soviet squad (east)", nil, function() squadBattle(x, y, z) end)
+    squads:addOption("Spawn German squad here (facing east)", nil, function() spawnSquad("GER", x, y, z, 1) end)
+    squads:addOption("Spawn Soviet squad here (facing west)", nil, function() spawnSquad("SOV", x, y, z, -1) end)
+    squads:addOption("Unit report", nil, LF.Units.report)
+    squads:addOption((LF.Config.logPerf and "Performance log OFF" or "Performance log ON"), nil, LF.Perf.toggle)
     sub:addOption("Delete ALL NPCs", nil, deleteAll)
 end
 

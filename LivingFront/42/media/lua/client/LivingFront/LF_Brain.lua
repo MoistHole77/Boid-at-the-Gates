@@ -14,6 +14,7 @@
 -- no closures are allocated per tick.
 
 require "LivingFront/LF_Core"
+require "LivingFront/LF_Perf"
 require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Combat"
@@ -332,6 +333,7 @@ end
 
 local function onTick()
     if not LF.Brain.enabled then return end
+    local t0 = LF.Perf.start()
     for id, body in pairs(LF.Bodies.all()) do
         local rec = LF.Records.get(id)
         if rec and not body:isDead() then
@@ -346,6 +348,7 @@ local function onTick()
             end
         end
     end
+    LF.Perf.stop("brain", t0)
 end
 
 function LF.Brain.toggle()

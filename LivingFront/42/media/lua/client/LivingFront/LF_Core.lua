@@ -1,17 +1,19 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.5.0"
+LF.VERSION = "0.6.0"
 
 LF.Config = {
     spawnRadius = 30,        -- a record gets a body when the player is within this many tiles
     despawnRadius = 45,      -- a body is put away beyond this distance (gap prevents flapping)
     managerInterval = 30,    -- ticks between body-manager passes (about twice a second)
-    maxSpawnsPerPass = 2,    -- spread spawns over frames to avoid hitches
+    maxSpawnsPerPass = 4,    -- spread spawns over frames to avoid hitches
     -- Off-screen need rates per 10 in-game minutes, measured from a spawned body in testing.
     rates = { hunger = 0.0037, thirst = 0.0031, fatigue = 0.0042 },
     logShots = true,         -- one log line per shot (debugging); turn off for long sessions
     logGait = true,          -- running/sprinting checks and measured speed (debugging)
+    logPerf = true,          -- frame rate and the mod's own cost, every perfWindowMs (stress testing)
+    perfWindowMs = 5000,
 }
 
 -- femaleChance: share of new NPCs who are women. Soldiers are all men; civilians lean female
