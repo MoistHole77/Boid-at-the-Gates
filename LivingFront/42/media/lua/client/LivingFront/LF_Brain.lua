@@ -57,6 +57,7 @@ local CFG = {
     holdLeash = 4,          -- ... and within this of their spot while their unit has orders
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
     bearingsLeash = 5,      -- opening seconds of a fight: take the nearest cover within this many tiles
+    stuckLeash = 7,         -- can't reach his spot: take the nearest cover within this many tiles
     followDistance = 2.5,   -- idle squad soldiers walk back to their slot beyond this distance
     followReissueTicks = 90,
     rearDistance = 8,       -- the squad's rear is this far behind its leader
@@ -196,9 +197,12 @@ function LF.Move.onFailed(body, x, y)
     local m = id and minds[id]
     if not m then return end
     if not (m.stuck and LF.dist(m.stuck.x, m.stuck.y, x, y) < 1) then
-        LF.log("BRAIN #" .. id .. " can't reach " .. math.floor(x) .. "," .. math.floor(y) .. "; fighting from here")
+        LF.log("BRAIN #" .. id .. " can't reach " .. math.floor(x) .. "," .. math.floor(y) .. "; taking the nearest cover instead")
     end
-    m.stuck = { x = x, y = y, tick = LF.tick }
+    m.stuck = { x = x, y = y, tick = LF.tick, fromX = body:getX(), fromY = body:getY() }
+    -- Nobody picks that square as cover for a while, and this soldier looks for cover now.
+    LF.Cover.reserve(math.floor(x), math.floor(y), math.floor(body:getZ()), -1)
+    m.lastCoverSearch = nil
 end
 
 -- Has this soldier recently failed to reach a spot near (x, y)?
@@ -480,8 +484,10 @@ local function decide(id, body, rec, m)
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
         local role, sx, sy, sz, point = LF.Tactics.place(rec)
+        local leash = CFG.holdLeash
         if role and stuckNear(m, sx, sy) then
-            sx, sy = body:getX(), body:getY()      -- can't get there: hold and fight from here
+            -- Can't get there: take the nearest cover around where he got stuck.
+            sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
             if role == "move" then role = "hold" end
         end
         if role then
@@ -506,7 +512,7 @@ local function decide(id, body, rec, m)
                 setState(id, body, rec, m, "alert", "covering " .. math.floor(point.x) .. "," .. math.floor(point.y))
                 m.targetId = nil
             end
-            planCover(id, body, m, pick and threat or point, sx, sy, CFG.holdLeash)
+            planCover(id, body, m, pick and threat or point, sx, sy, leash)
             if not m.cover and not pinned then followSlot(m, body, rec, sx, sy, sz) end
             return
         end
@@ -641,6 +647,10 @@ local function stepNpc(id, body, rec)
     end
     if (LF.tick + id) % CFG.thinkTicks == 0 then
         LF.Brain.decide(id, body, rec, m)
+        -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
+        -- he is in position.
+        local moving = m.state == "bound" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))
+        LF.Suppress.setMoving(id, moving)
     end
     LF.Brain.act(id, body, rec, m)
 end

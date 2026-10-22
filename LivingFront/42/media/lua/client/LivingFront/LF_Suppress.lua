@@ -5,7 +5,9 @@
 --   pinned     (65+): stays crouched, fires 3x slower and 60% less accurately, won't move
 -- Aimed shots suppress their target (more on a hit) and anyone hostile to the shooter right next
 -- to it; area fire (shooting at where the enemy was last seen) suppresses everyone near that
--- point. Runtime only.
+-- point. Soldiers moving under orders (bounding, a flank, running to their cover) can't be
+-- suppressed or pinned until they are in position: they don't pick up suppression on the way,
+-- and any they had doesn't count until they arrive. Runtime only.
 
 require "LivingFront/LF_Core"
 
@@ -20,6 +22,7 @@ local CFG = {
 LF.Suppress.CFG = CFG
 
 local levels = {}       -- record id -> { v, tick }
+local immune = {}       -- record id -> true while moving under orders
 
 local function idOf(body) return body:getModData().LF_id end
 
@@ -33,12 +36,18 @@ end
 
 function LF.Suppress.value(body)
     local id = idOf(body)
-    return id and valueOf(id) or 0
+    if not id or immune[id] then return 0 end
+    return valueOf(id)
+end
+
+-- Moving under orders: no suppression picked up or felt until in position.
+function LF.Suppress.setMoving(id, moving)
+    immune[id] = moving or nil
 end
 
 function LF.Suppress.add(body, amount)
     local id = idOf(body)
-    if not id then return end
+    if not id or immune[id] then return end
     local was = valueOf(id)
     local v = math.min(CFG.max, was + amount)
     local l = levels[id]
@@ -68,5 +77,5 @@ function LF.Suppress.accuracy(body)
     return 1
 end
 
-function LF.Suppress.forget(id) levels[id] = nil end
-function LF.Suppress.forgetAll() levels = {} end
+function LF.Suppress.forget(id) levels[id] = nil; immune[id] = nil end
+function LF.Suppress.forgetAll() levels = {}; immune = {} end
