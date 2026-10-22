@@ -39,6 +39,7 @@ require "LivingFront/LF_Combat"
 require "LivingFront/LF_Cover"
 require "LivingFront/LF_Sense"
 require "LivingFront/LF_Stance"
+require "LivingFront/LF_Building"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -173,7 +174,10 @@ function LF.Tactics.place(rec)
     if not (sq.intent or alone) then return nil end
     local squad = LF.Units.get(rec.squad)
     if not squad then return nil end
-    if sq.intent == "DEFEND" and sq.perim then return LF.Tactics.perimeterPlace(squad, sq, rec) end
+    if sq.intent == "DEFEND" and sq.perim then
+        if sq.perim.layout then return LF.Tactics.buildingPlace(squad, sq, rec) end
+        return LF.Tactics.perimeterPlace(squad, sq, rec)
+    end
     local fx, fy = facing(squad)
     local z = rec.z or 0
     local point = (alone and alone.contact) or sq.contact
@@ -819,6 +823,202 @@ function LF.Tactics.perimeterPlace(squad, sq, rec)
     return "sector", sx, sy, P.z, wp, true, cp
 end
 
+-- ---- defensive stance inside a building ------------------------------------------------------
+--
+-- When the sergeant calls the defence standing in a building, the teams take its walls instead
+-- of quarters in the open: by the compass (Alpha 1 north, Alpha 2 west, Bravo 1 south, Bravo 2
+-- east) until the enemy is known, then Alpha 1 on the wall facing him, Alpha 2 and Bravo 2 on the
+-- walls either side, Bravo 1 on the back wall.
+-- A team's posts on its wall, in order: covering each door from 2 tiles inside, then each window
+-- (he stands in it to fire, ducking only under fire), then a back line 2 tiles in from the wall.
+-- A wall with no windows or doors gets one man watching it from inside; the rest of that team
+-- reinforce the wall with the most openings. The sergeant takes the middle.
+-- Posts are dealt once. They are re-dealt only when the attack comes at a different wall (the
+-- first time the enemy shows, then at most once per ~45 s) - a man whose post is unchanged
+-- stays put. A man's post is his cover: he doesn't go looking for anything better.
+
+local WALL_DIR = LF.Building.WALL_DIR
+local WALL_NAME = LF.Building.WALL_NAME
+
+-- The wall each team slot holds when the enemy is at wall `front` (1 = compass order).
+local function wallsFor(front)
+    local f = front or 1
+    return { f, f % 4 + 1, (f + 1) % 4 + 1, (f + 2) % 4 + 1 }
+end
+
+-- The wall that faces a point.
+local function threatWall(L, tx, ty)
+    local dx, dy = tx - L.cx, ty - L.cy
+    local best, bd = 1, -math.huge
+    for w, d in ipairs(WALL_DIR) do
+        local v = d[1] * dx + d[2] * dy
+        if v > bd then best, bd = w, v end
+    end
+    return best
+end
+
+-- Posts on one wall, best first: doors (covered from inside), windows, then the back line.
+local function wallPosts(L, w)
+    local list = {}
+    local d = WALL_DIR[w]
+    for _, o in ipairs(L.openings) do
+        if o.wall == w and o.kind == "door" then
+            local x, y = LF.Building.inward(L, o.x, o.y, o.dx, o.dy, 2)
+            list[#list + 1] = { x = x or o.x, y = y or o.y, wall = w, stand = false, kind = "door" }
+        end
+    end
+    for _, o in ipairs(L.openings) do
+        if o.wall == w and o.kind == "window" then
+            list[#list + 1] = { x = o.x, y = o.y, wall = w, stand = true, kind = "window" }
+        end
+    end
+    -- Back line: 2 tiles in from the wall, spread out from its middle.
+    local edges = {}
+    for _, e in ipairs(L.edges[w]) do edges[#edges + 1] = e end
+    table.sort(edges, function(a, b)
+        if d[1] ~= 0 then return a.y < b.y end
+        return a.x < b.x
+    end)
+    local n = #edges
+    local mid = math.floor((n + 1) / 2)
+    local seen = {}
+    for k = 0, n do
+        for _, idx in ipairs({ mid + k * 3, mid - k * 3 }) do
+            local e = edges[idx]
+            if e then
+                local x, y = LF.Building.inward(L, e.x, e.y, d[1], d[2], 2)
+                if x and not seen[x .. "," .. y] then
+                    seen[x .. "," .. y] = true
+                    list[#list + 1] = { x = x, y = y, wall = w, stand = false, kind = "back" }
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function dealBuilding(squad, sq, front)
+    local P = sq.perim
+    local L = P.layout
+    local walls = wallsFor(front)
+    P.walls, P.front, P.formedAt = walls, front, LF.tick
+    local old = sq.posts or {}
+    local posts, taken, spares = {}, {}, {}
+    local function take(rid, p) posts[rid] = p; taken[p.x .. "," .. p.y] = true end
+    local function free(list)
+        for _, p in ipairs(list) do if not taken[p.x .. "," .. p.y] then return p end end
+        return nil
+    end
+    local function able(rid)
+        local r = LF.Records.get(rid)
+        return r and r.alive and not r.wounded
+    end
+    -- Groups that each hold a wall: the teams (a lone team: each man).
+    local groups = {}
+    for _, tid in ipairs(squad.teams) do
+        local team = LF.Units.get(tid)
+        if team then
+            if squad.teamOnly then
+                for _, rid in ipairs(team.members) do
+                    local r = LF.Records.get(rid)
+                    if able(rid) then groups[#groups + 1] = { slot = r.slot, men = { rid } } end
+                end
+            else
+                local men = {}
+                for _, rid in ipairs(team.members) do if able(rid) then men[#men + 1] = rid end end
+                groups[#groups + 1] = { slot = team.slot, men = men }
+            end
+        end
+    end
+    for _, g in ipairs(groups) do
+        local w = walls[g.slot] or walls[1]
+        local list = wallPosts(L, w)
+        local room = L.wallOpenings[w] > 0 and #g.men or 1      -- a blank wall: one man watches it
+        for k, rid in ipairs(g.men) do
+            local p = k <= room and free(list) or nil
+            if p then take(rid, p) else spares[#spares + 1] = rid end
+        end
+    end
+    -- Spares reinforce the wall with the most openings (the front wall on a tie), then any wall.
+    local busy = walls[1]
+    for w = 1, 4 do if L.wallOpenings[w] > L.wallOpenings[busy] then busy = w end end
+    local lists = { wallPosts(L, busy) }
+    for _, w in ipairs(walls) do if w ~= busy then lists[#lists + 1] = wallPosts(L, w) end end
+    for _, rid in ipairs(spares) do
+        for _, list in ipairs(lists) do
+            local p = free(list)
+            if p then take(rid, p); break end
+        end
+    end
+    -- The sergeant: the middle.
+    if squad.leader and able(squad.leader) then
+        local best, bd = nil, math.huge
+        for _, q in ipairs(L.inside) do
+            local d = LF.dist(q.x + 0.5, q.y + 0.5, L.cx, L.cy)
+            if d < bd and not taken[q.x .. "," .. q.y] then best, bd = q, d end
+        end
+        if best then posts[squad.leader] = { x = best.x, y = best.y, wall = walls[1], stand = false, kind = "centre", any = true } end
+    end
+    sq.posts = posts
+    local moved, wins = 0, 0
+    for rid, p in pairs(posts) do
+        local o = old[rid]
+        if not (o and o.x == p.x and o.y == p.y) then moved = moved + 1 end
+        if p.kind == "window" then wins = wins + 1 end
+    end
+    LF.log("BUILDING " .. squad.name .. " holds the building: Alpha 1 " .. WALL_NAME[walls[1]] .. " wall, Alpha 2 "
+        .. WALL_NAME[walls[2]] .. ", Bravo 1 " .. WALL_NAME[walls[3]] .. ", Bravo 2 " .. WALL_NAME[walls[4]]
+        .. "; " .. wins .. " men at windows, " .. #spares .. " spare(s) to the " .. WALL_NAME[busy]
+        .. " wall; " .. moved .. " man/men to (new) posts")
+end
+
+-- Where a soldier stands in the building's defence: "post", x, y, z, point, watching,
+-- coverPoint, stand (at a window: stand to fire).
+function LF.Tactics.buildingPlace(squad, sq, rec)
+    local P = sq.perim
+    local L = P.layout
+    local st = LF.Stance.get(squad)
+    local p = sq.posts and sq.posts[rec.id]
+    if not p then
+        p = { x = math.floor(L.cx), y = math.floor(L.cy), wall = P.walls[1], stand = false, kind = "centre", any = true }
+    end
+    local sx, sy = p.x + 0.5, p.y + 0.5
+    local d = WALL_DIR[p.wall]
+    local dx, dy = d[1], d[2]
+    -- His arc: out of his wall, plus a neighbouring wall whose team is gone.
+    local lostW = {}
+    for slot = 1, 4 do if sq.lost[slot] then lostW[P.walls[slot]] = true end end
+    local n1, n2 = (p.wall + 2) % 4 + 1, p.wall % 4 + 1
+    local e1 = lostW[n1] and WALL_DIR[n1] or nil
+    local e2 = lostW[n2] and WALL_DIR[n2] or nil
+    local best, bestD = nil, math.huge
+    for _, c in ipairs(sq.contacts or {}) do
+        local vx, vy = c.x - sx, c.y - sy
+        local dd = math.sqrt(vx * vx + vy * vy)
+        if dd > 0.5 and dd < bestD then
+            local ok = p.any or (vx * dx + vy * dy) / dd >= st.arcCos
+            if not ok and e1 then ok = (vx * e1[1] + vy * e1[2]) / dd >= st.arcCos end
+            if not ok and e2 then ok = (vx * e2[1] + vy * e2[2]) / dd >= st.arcCos end
+            if ok then best, bestD = c, dd end
+        end
+    end
+    sq.watchPts = sq.watchPts or {}
+    local cp = sq.contact
+    if not cp then
+        sq.coverPts = sq.coverPts or {}
+        cp = reusePoint(sq.coverPts, rec.id)
+        cp.x, cp.y, cp.z = sx + dx * 15, sy + dy * 15, P.z
+    end
+    if best then return "post", sx, sy, P.z, best, false, cp, p.stand end
+    local wx, wy = dx, dy
+    if e1 then wx, wy = wx + e1[1], wy + e1[2] end
+    if e2 then wx, wy = wx + e2[1], wy + e2[2] end
+    local wl = math.max(0.1, math.sqrt(wx * wx + wy * wy))
+    local wp = reusePoint(sq.watchPts, rec.id)
+    wp.x, wp.y, wp.z = sx + wx / wl * 15, sy + wy / wl * 15, P.z
+    return "post", sx, sy, P.z, wp, true, cp, p.stand
+end
+
 local function updateDefensive(squad, sq, cid, cmd)
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     if c then
@@ -831,6 +1031,17 @@ local function updateDefensive(squad, sq, cid, cmd)
     sq.lost = sq.lost or {}
     if not sq.perim then
         sq.perim = { x = cmd:getX(), y = cmd:getY(), z = math.floor(cmd:getZ()) }
+        local L = LF.Building.at(cmd:getX(), cmd:getY(), cmd:getZ())
+        if L then
+            sq.perim.layout = L
+            local front = c and threatWall(L, c.x, c.y) or 1
+            sq.perim.faced = c ~= nil
+            dealBuilding(squad, sq, front)
+            sq.intent = nil
+            setIntent(squad, sq, cid, "DEFEND", "holding the building at " .. math.floor(L.cx) .. "," .. math.floor(L.cy)
+                .. (c and (", enemy to the " .. WALL_NAME[front]) or ", walls by the compass"))
+            return
+        end
         local how = "by the compass (no enemy known)"
         if c then
             faceThreat(sq, c.x, c.y)
@@ -841,7 +1052,18 @@ local function updateDefensive(squad, sq, cid, cmd)
             .. math.floor(sq.perim.y) .. ", " .. how)
         return
     end
-    if c then
+    if c and sq.perim.layout then
+        -- In a building: re-deal the walls if the enemy is at a different wall (the first time he
+        -- shows, then at most every ~45 s).
+        local P = sq.perim
+        local tw = threatWall(P.layout, c.x, c.y)
+        if tw ~= P.front and (not P.faced or LF.tick - P.formedAt >= CFG.reformTicks) then
+            dealBuilding(squad, sq, tw)
+            LF.log("BUILDING " .. squad.name .. " turns to face the enemy at the " .. WALL_NAME[tw] .. " wall")
+            LF.Tactics.shout(cid, "Enemy " .. WALL_NAME[tw] .. "! Alpha 1 the " .. WALL_NAME[tw] .. " wall - everyone to the windows!")
+        end
+        P.faced = true
+    elseif c then
         local P = sq.perim
         local bearing = math.atan2(c.y - P.y, c.x - P.x)
         local off = P.theta and math.abs(wrapAngle(bearing - P.theta)) or math.pi
@@ -859,7 +1081,9 @@ local function updateDefensive(squad, sq, cid, cmd)
         if not alive and not sq.lost[i] then
             sq.lost[i] = true
             local d = SECTOR_NAME[i]
-            if sq.perim.ang then
+            if sq.perim.layout then
+                d = WALL_NAME[sq.perim.walls[i]] .. " wall"
+            elseif sq.perim.ang then
                 local x, y = sectorDir(sq, i)
                 d = compassOf(x, y)
             end

@@ -26,7 +26,7 @@ Pure Lua. No Java, no ZombieBuddy.
 | Period weapons: Kar98k / Mosin (privates, corporals), MP40 / PPSh (sergeants); bursts, bolt cycling, magazines and reloads (ammo infinite for now) | Working |
 | Stances: offensive (everything above) and defensive - an all-round defence (alpha teams north and west, bravo teams south and east), men stay in cover, wounded go down in place, no maneuver orders, fight to the death | Working (0.16.0) |
 | Defence re-forms around a known threat (front, two flanks, rear security; cover faces the enemy); sergeant takes his own cover; corporals cut off from their sergeant run their own teams; repositions work outward and round instead of back and forth | Built, awaiting in-game test |
-| Defensive stance inside buildings (each team takes a wall's windows) | Next |
+| Defensive stance inside buildings: teams take walls (compass, then front/flanks/rear by threat), doors covered from inside, men stand in the windows to fire, back line, blank walls one man; posts dealt once | Built, awaiting in-game test |
 | Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
@@ -63,6 +63,7 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Suppress.lua` | Suppression: near misses pin soldiers, slowing and spoiling their fire |
 | `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders, the defensive perimeter |
 | `LF_Stance.lua` | Unit stances (offensive / defensive) and their settings |
+| `LF_Building.lua` | Building layouts: inside squares, windows and doors by wall |
 | `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
 | `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |
 | `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |

@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: stances - the defensive all-round defence
--- against an attacking (offensive) unit.
+-- commands for the test at hand. Current test: the defensive stance inside a building (and
+-- in the open) against an attacking (offensive) unit.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -14,6 +14,7 @@ require "LivingFront/LF_Units"
 require "LivingFront/LF_Squad"
 require "LivingFront/LF_Suppress"
 require "LivingFront/LF_Tactics"
+require "LivingFront/LF_Building"
 require "LivingFront/LF_Weapons"
 
 LF.Debug = LF.Debug or {}
@@ -191,6 +192,37 @@ local function perimeterTest(x, y, z, teamOnly)
     LF.say("Perimeter test: German " .. what .. " defends, Soviet " .. what .. " attacks from the east")
 end
 
+-- Building defence test: click inside a building. A German unit holds it (defensive stance;
+-- its sergeant spawns on the clicked square, so the defence forms on this building); a Soviet
+-- unit of the same size attacks from 30 tiles east.
+local function buildingTest(x, y, z, teamOnly)
+    if not LF.Building.idAt(x, y, z) then LF.say("Click inside a building for this test"); return end
+    local def = LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, teamOnly)
+    -- Everyone starts inside (the formation would put some men outside, behind a closed door).
+    local L = LF.Building.at(x, y, z)
+    if L then
+        local spots = {}
+        for _, q in ipairs(L.inside) do
+            if (q.x + q.y) % 2 == 0 and not (q.x == x and q.y == y) then spots[#spots + 1] = q end
+        end
+        table.sort(spots, function(a, b) return LF.dist(a.x, a.y, x, y) < LF.dist(b.x, b.y, x, y) end)
+        local k = 0
+        for _, rid in ipairs(LF.Units.members(def.id)) do
+            local r = LF.Records.get(rid)
+            if r and rid ~= def.leader then
+                k = k + 1
+                local q = spots[k]
+                if q then r.x, r.y, r.homeX, r.homeY = q.x + 0.5, q.y + 0.5, q.x + 0.5, q.y + 0.5 end
+            end
+        end
+    end
+    LF.Tactics.setStance(def, "defensive")
+    LF.Units.createSquad("SOV", x + 30.5, y + 0.5, z, -1, 0, teamOnly)
+    local what = teamOnly and "team" or "squad"
+    LF.log("DEBUG building defence test (" .. what .. ") at " .. x .. "," .. y)
+    LF.say("Building test: German " .. what .. " holds the building, Soviet " .. what .. " attacks from the east")
+end
+
 -- The unit of the living soldier nearest (x, y).
 local function nearestUnit(x, y)
     local best, bestD = nil, math.huge
@@ -228,8 +260,9 @@ local function onMenu(playerNum, context, worldObjects, test)
     -- Current test.
     sub:addOption("Test: team vs team (4 vs 4)", nil, function() battle(x, y, z, true, 14) end)
     sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
-    sub:addOption("Test: squad perimeter - Germans defend, Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
-    sub:addOption("Test: team perimeter - Germans defend, Soviets attack", nil, function() perimeterTest(x, y, z, true) end)
+    sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
+    sub:addOption("Test: team holds this building - Soviets attack", nil, function() buildingTest(x, y, z, true) end)
+    sub:addOption("Test: squad perimeter (open ground) - Soviets attack", nil, function() perimeterTest(x, y, z, false) end)
     local so = sub:addOption("Set stance of nearest unit")
     local stanceMenu = ISContextMenu:getNew(sub)
     sub:addSubMenu(so, stanceMenu)
