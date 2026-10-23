@@ -203,6 +203,14 @@ local function wound(target, partName, profile)
     target:getBodyDamage():ReduceGeneralHealth((IMPACT[partName] or 15) * profile.impact)
 end
 
+-- A shrapnel / blast wound: severity like a rifle wound's (0-100), plus a general health loss.
+function LF.Combat.blastWound(target, partName, severity, impact)
+    return LF.guard("blast wound", function()
+        target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(severity)
+        target:getBodyDamage():ReduceGeneralHealth(impact)
+    end)
+end
+
 -- ---- knocked off his feet ----------------------------------------------------------------------
 -- A hit can stagger a man, or put him down - the same stagger, fall and getting-up clips as the
 -- player's (the game's "bump"). The chance depends on where he's hit.
@@ -212,10 +220,11 @@ local KNOCK = {     -- part -> { fall %, stagger % }
     UpperArm_L = { 0, 30 }, UpperArm_R = { 0, 30 },
 }
 
-local function knock(target, shooter, fall)
+-- Knock him over (fall) or stagger him, from a hit or blast coming from (sx, sy).
+local function knockFrom(target, sx, sy, fall)
     -- From the front, he goes over backwards; from behind, forwards.
     local fx, fy = target:getForwardDirection():getX(), target:getForwardDirection():getY()
-    local front = (shooter:getX() - target:getX()) * fx + (shooter:getY() - target:getY()) * fy > 0
+    local front = (sx - target:getX()) * fx + (sy - target:getY()) * fy > 0
     ISTimedActionQueue.clear(target)
     if LF.Posture and LF.Posture.crouched(target) then LF.Posture.set(target, false) end
     target:setBumpType("stagger")
@@ -229,6 +238,8 @@ local function knock(target, shooter, fall)
         target:setVariable("BumpFallType", t)
     end
 end
+local function knock(target, shooter, fall) knockFrom(target, shooter:getX(), shooter:getY(), fall) end
+function LF.Combat.knock(target, sx, sy, fall) return LF.guard("knock", knockFrom, target, sx, sy, fall) end
 
 -- Staggering, or down on the ground (and getting up): he can't do anything else just now.
 function LF.Combat.knockedDown(body)

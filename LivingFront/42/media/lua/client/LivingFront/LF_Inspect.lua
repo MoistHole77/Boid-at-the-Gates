@@ -144,6 +144,11 @@ function LF_InspectWindow:render()
     end
     gap()
 
+    if LF.Grenade and rec.faction ~= "CIV" then
+        local g = LF.Grenade.count(rec)
+        if g > 0 or rec.rank == "SGT" or rec.rank == "CPL" then text("Grenades: " .. g, 0.8, 0.8, 0.8) end
+    end
+    gap()
     -- Traits.
     local s = LF.Service.of(rec)
     text("Traits", 1, 0.85, 0.5)

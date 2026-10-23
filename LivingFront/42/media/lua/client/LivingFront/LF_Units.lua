@@ -155,7 +155,7 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
     local sgt = nil
     if not teamOnly then
         local sx, sy = at(0, 0)
-        sgt = placeSoldier(faction, sx, sy, z, { squad = squad.id, rank = "SGT", element = "L", slot = 0 })
+        sgt = placeSoldier(faction, sx, sy, z, { squad = squad.id, rank = "SGT", element = "L", slot = 0, grenades = 2 })
         squad.leader = sgt.id
     end
 
@@ -169,7 +169,7 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
         for mi, ms in ipairs(MAN_SLOTS) do
             local mx, my = at(tf + ms.fwd, tl + ms.lat)
             local rec = placeSoldier(faction, mx, my, z, { squad = squad.id, team = team.id,
-                rank = ms.leader and "CPL" or "PVT", element = ms.element, slot = mi })
+                rank = ms.leader and "CPL" or "PVT", element = ms.element, slot = mi, grenades = ms.leader and 1 or 0 })
             team.members[mi] = rec.id
             if ms.leader then team.leader = rec.id end
         end
@@ -291,12 +291,13 @@ local function able(r)
 end
 
 -- Give a team a new corporal: the first able private, alphas first.
-local function refillTeam(team, why)
+local function refillTeam(team, why, from)
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
         if r and r.rank == "PVT" and r.team == team.id and able(r) then
             promote(r, "CPL", why)
             team.leader = r.id
+            if LF.Grenade and from then LF.Grenade.handOver(from, r) end     -- he takes the grenades
             return r
         end
     end
@@ -318,7 +319,7 @@ end
 local function handOver(rec, why)
     if not rec.squad then return true end
     local team = rec.team and LF.Units.get(rec.team)
-    if team and team.leader == rec.id then refillTeam(team, why) end
+    if team and team.leader == rec.id then refillTeam(team, why, rec) end
 
     local squad = LF.Units.get(rec.squad)
     if not (squad and squad.leader == rec.id) then return true end
@@ -343,6 +344,7 @@ local function handOver(rec, why)
     end
     local oldSlot = new.slot
     promote(new, "SGT", why)
+    if LF.Grenade then LF.Grenade.handOver(rec, new) end
     new.team, new.element, new.slot = nil, "L", 0
     squad.leader = new.id
     if fromTeam then

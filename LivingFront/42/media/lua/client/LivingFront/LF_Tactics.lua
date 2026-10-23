@@ -1334,7 +1334,14 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
     return "post", sx, sy, P.z, wp, true, cp, p.stand, win, p.shove
 end
 
+local updateDefensiveInner
 local function updateDefensive(squad, sq, cid, cmd)
+    local r = updateDefensiveInner(squad, sq, cid, cmd)
+    -- A defence throws only when it's losing (LF_Grenade decides).
+    if LF.Grenade then LF.guard("grenade", LF.Grenade.consider, squad, sq) end
+    return r
+end
+updateDefensiveInner = function(squad, sq, cid, cmd)
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     if c then
         if not sq.contact then sq.contact = LF.Tactics.point(c.x, c.y, c.z)
@@ -1862,6 +1869,17 @@ local function updateClear(team, t, squad)
                 LF.guard("open door", openDoor, door, point)
                 LF.log("CLEAR " .. team.name .. ": " .. (locked and "kicks the locked door in" or "opens the door"))
             end
+            -- An enemy known close inside: a grenade through the door first.
+            local wait = LF.Grenade and LF.guard("grenade into room", LF.Grenade.intoRoom, squad, team, C)
+            if wait then
+                C.phase, C.phaseAt, C.nadeWait = "grenade", LF.tick, wait
+                return true
+            end
+            if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Go! Go!") end
+            C.phase, C.next, C.manAt = "go", 1, LF.tick
+        end
+    elseif C.phase == "grenade" then
+        if LF.tick - C.phaseAt >= (C.nadeWait or 260) then
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Go! Go!") end
             C.phase, C.next, C.manAt = "go", 1, LF.tick
         end
@@ -2326,6 +2344,8 @@ local function updateSquad(squad)
     -- Pass it on (corporals out of earshot act on their own), then the drills.
     passOrders(squad, sq, cmd)
     chooseShift(squad, sq)
+    -- A grenade, if it could decide the fight (LF_Grenade).
+    if LF.Grenade then LF.guard("grenade", LF.Grenade.consider, squad, sq) end
 end
 
 local function onTick()

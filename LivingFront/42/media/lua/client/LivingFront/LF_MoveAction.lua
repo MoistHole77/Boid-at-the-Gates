@@ -162,17 +162,21 @@ local ghosts = {}           -- body -> tick when he is solid again
 
 local function setGhost(c, on) pcall(function() c:setGhostMode(on) end) end
 
+local ghostCount = 0         -- (Kahlua has no next(): count them instead)
+
 local function ghost(c)
     setGhost(c, true)
+    if not ghosts[c] then ghostCount = ghostCount + 1 end
     ghosts[c] = LF.tick + GHOST_TICKS
 end
 
 Events.OnTick.Add(function()
-    if next(ghosts) == nil then return end
+    if ghostCount == 0 then return end
     for c, untilTick in pairs(ghosts) do
         if LF.tick >= untilTick or c:isDead() then
             setGhost(c, false)
             ghosts[c] = nil
+            ghostCount = ghostCount - 1
         end
     end
 end)

@@ -39,38 +39,26 @@ local function key(x, y) return x .. "," .. y end
 -- Does this opening lead outdoors? A doorway into another building - a basement, a stairwell -
 -- or onto stairs isn't one to watch: the enemy comes from outside. (Not isOutside(): a porch
 -- under a roof counts as "inside" to that, and its door is very much one to watch.)
+-- ---- stairwells (basements, upper floors) -------------------------------------------------------
+-- One test, used everywhere: a stairwell square has stairs on it, stairs right below it, or no
+-- floor (the top of a flight going down). Stairwell squares are never part of the inside a unit
+-- defends (so nobody is posted at - or wanders down - the basement stairs), and an opening that
+-- leads onto one isn't a way in to watch. Two square lookups per square, once per building.
 local function hasStairs(q)
     if not q then return false end
     local ok, st = pcall(function() return q:HasStairs() end)
     return ok and st
 end
--- A way down: stairs here or on the level below, or a gap in the floor (the top of a stairwell
--- going down - basement stairs start on the level below, so at ground level there's just no floor).
-local function wayDown(cell, x, y, z)
-    local q = cell:getGridSquare(x, y, z)
-    if q and (hasStairs(q) or q:getFloor() == nil) then return true end
-    return hasStairs(cell:getGridSquare(x, y, z - 1))
+local function stairwell(q)
+    if not q then return false end
+    if q:getFloor() == nil or hasStairs(q) then return true end
+    return hasStairs(getCell():getGridSquare(q:getX(), q:getY(), q:getZ() - 1))
 end
--- Does this opening lead outdoors? Not if the square beyond belongs to another building (a
--- stairwell, a basement block), and - for a door - not if there is a way down just beyond it
--- (up to 3 tiles out, a tile either side): that's a basement door. (Not isOutside(): a porch under
--- a roof counts as "inside" to that, and its door is very much one to watch. And not "is there a
--- room underneath": a basement can reach out under the yard.)
-local function outdoors(nb, dx, dy, door)
-    if not nb then return false end
-    if nb:getBuilding() then return false end
-    if hasStairs(nb) then return false end
-    if door and dx then
-        local cell = getCell()
-        local x, y, z = nb:getX(), nb:getY(), nb:getZ()
-        local sx, sy = -dy, dx
-        for k = 0, 2 do
-            for side = -1, 1 do
-                if wayDown(cell, x + dx * k + sx * side, y + dy * k + sy * side, z) then return false end
-            end
-        end
-    end
-    return true
+LF.Building.stairwell = stairwell
+
+-- Does this opening lead outdoors (not into another building, not onto a stairwell)?
+local function outdoors(nb)
+    return nb ~= nil and nb:getBuilding() == nil and not stairwell(nb)
 end
 LF.Building.outdoors = outdoors
 
@@ -84,12 +72,15 @@ function LF.Building.at(x, y, z)
     if cache[ck] then return cache[ck] end
     local L = { id = id, z = z, inside = {}, insideSet = {}, openings = {}, edges = { {}, {}, {}, {} } }
     local blockedWin = {}
+    local stairSquares = 0
     local sx, sy = math.floor(x), math.floor(y)
     local tx, ty = 0, 0
     for ix = sx - SCAN, sx + SCAN do
         for iy = sy - SCAN, sy + SCAN do
             local sq = cell:getGridSquare(ix, iy, z)
-            if sq and bid(sq) == id then
+            if sq and bid(sq) == id and stairwell(sq) then
+                stairSquares = stairSquares + 1           -- (a stairwell: not part of the inside)
+            elseif sq and bid(sq) == id then
                 if sq:isFree(false) then
                     L.inside[#L.inside + 1] = { x = ix, y = iy }
                     L.insideSet[key(ix, iy)] = sq
@@ -98,7 +89,7 @@ function LF.Building.at(x, y, z)
                     -- Furniture (or something) on this square: still note a window in it.
                     for w, d in ipairs(WALL_DIR) do
                         local nb = cell:getGridSquare(ix + d[1], iy + d[2], z)
-                        if nb and bid(nb) ~= id and outdoors(nb, d[1], d[2], false) and sq:isWindowTo(nb) then
+                        if nb and bid(nb) ~= id and outdoors(nb) and sq:isWindowTo(nb) then
                             local okM, mov = pcall(LF.Building.movableOn, sq)
                             blockedWin[#blockedWin + 1] = { x = ix, y = iy, dx = d[1], dy = d[2], kind = "window", wall = w,
                                                             blocked = true, movable = okM and mov ~= nil }
@@ -119,11 +110,11 @@ function LF.Building.at(x, y, z)
                 local outside = nb and bid(nb) ~= id
                 if outside or not nb then L.edges[w][#L.edges[w] + 1] = { x = s.x, y = s.y } end
                 local isDoor = nb and sq:isDoorTo(nb)
-                if nb and outside and not outdoors(nb, d[1], d[2], isDoor) and (isDoor or sq:isWindowTo(nb)) then
+                if nb and outside and not outdoors(nb) and (isDoor or sq:isWindowTo(nb)) then
                     LF.log("BUILDING #" .. tostring(id) .. " ignores the " .. (sq:isDoorTo(nb) and "door" or "window") .. " at "
-                        .. s.x .. "," .. s.y .. " (leads to a basement, stairs or another building)")
+                        .. s.x .. "," .. s.y .. " (leads into another building or onto stairs)")
                 end
-                if nb and outside and outdoors(nb, d[1], d[2], isDoor) then
+                if nb and outside and outdoors(nb) then
                     if sq:isWindowTo(nb) then
                         L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "window", wall = w }
                     elseif sq:isDoorTo(nb) then
@@ -139,7 +130,8 @@ function LF.Building.at(x, y, z)
     L.wallOpenings = counts
     cache[ck] = L
     LF.log("BUILDING #" .. tostring(id) .. " floor " .. z .. ": " .. #L.inside .. " squares inside, openings north "
-        .. counts[1] .. ", west " .. counts[2] .. ", south " .. counts[3] .. ", east " .. counts[4])
+        .. counts[1] .. ", west " .. counts[2] .. ", south " .. counts[3] .. ", east " .. counts[4]
+        .. (stairSquares > 0 and (", " .. stairSquares .. " stairwell square(s) left out") or ""))
     for _, o in ipairs(L.openings) do
         LF.log("BUILDING #" .. tostring(id) .. "   " .. o.kind .. " at " .. o.x .. "," .. o.y .. " in the "
             .. LF.Building.WALL_NAME[o.wall] .. " wall" .. (o.blocked and " (furniture in it)" or ""))

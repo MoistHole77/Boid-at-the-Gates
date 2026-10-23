@@ -710,7 +710,23 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     end
 end
 
+-- A grenade landing next to him: he throws himself clear (a few tiles away from it) and does
+-- nothing else for a moment.
+function LF.Brain.dodge(id, body, gx, gy)
+    local m = minds[id]
+    if not m then return end
+    local dx, dy = body:getX() - gx, body:getY() - gy
+    local len = math.max(0.3, math.sqrt(dx * dx + dy * dy))
+    if m.rest and LF.Idle then LF.Idle.stop(body, m) end
+    ISTimedActionQueue.clear(body)
+    if LF.Brain.walkNear(body, body:getX() + dx / len * 5, body:getY() + dy / len * 5, body:getZ(), 1, "run") then
+        m.dodgeUntil = LF.tick + 120
+        m.detail = "diving clear of a grenade"
+    end
+end
+
 local function decide(id, body, rec, m)
+    if m.dodgeUntil and LF.tick < m.dodgeUntil then return end    -- diving clear of a grenade
     m.prevOrder = m.order
     m.order, m.point = nil, nil
     -- Fighters: soldiers, and civilians who are holding a gun (resistance).
