@@ -34,6 +34,8 @@ local CFG = {
     nodeEvery = 3,          -- keep every n-th square of the road route as a waypoint
     arrive = 2.0,           -- a man within this of his final place has arrived
     resumeQuiet = 600,      -- form up again after ~10 s with no contact and no orders
+    clockSlack = 3,         -- the pace clock stays within this of the point man
+    paceGain = 0.3,         -- per tile off his mark, a marching man walks this much faster / slower
     lead = 5,               -- a marching man walks toward a point this far ahead of his place
                             -- (far enough that he never quite gets there and stops)
     baseSlack = 3,          -- the head moves on only while the point man is this close to his place
@@ -548,6 +550,21 @@ function LF.March.place(rec)
     return "file", x, y, M.z, f, gait, M.off[rec.id].scan
 end
 
+-- How much faster or slower than usual a marching man should step to hold the patrol pace:
+-- the point man keeps with the pace clock, everyone else with his place in the formation (which
+-- moves with the point man). Steered by where he is, not by how fast he seems to be going, so the
+-- patrol averages exactly the patrol pace. A man who has fallen well behind is walking normally
+-- to catch up (gait "catchup") and isn't steered.
+function LF.March.paceMul(rec, body)
+    local M = rec.squad and marches[rec.squad]
+    if not M or M.halted or M.arrived or not M.off[rec.id] or not M.joined[rec.id] then return 1 end
+    local s = project(M, body:getX(), body:getY())
+    local want
+    if rec.id == M.order[1] then want = M.clock or s
+    else want = math.min(M.head, M.total) + M.off[rec.id].f end
+    return math.max(0.5, math.min(1.6, 1 + CFG.paceGain * (want - s)))
+end
+
 -- Each tactics update. Returns true while the patrol is under way (the squad's other orders wait).
 function LF.March.update(squad, cid, cmd, contact, quietTicks)
     local M = marches[squad.id]
@@ -600,6 +617,25 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         end
     end
     if M.head < M.total then
+        -- The pace clock: a point on the route moving on at exactly the patrol pace, which the
+        -- point man walks to keep up with (LF.March.paceMul). It never runs more than a few tiles
+        -- ahead of him or falls behind him, so a hold-up doesn't turn into a sprint afterward.
+        do
+            local pbc = LF.Bodies.get(M.order[1])
+            if pbc then
+                local ps = project(M, pbc:getX(), pbc:getY())
+                local nowMs = getTimestampMs and getTimestampMs() or 0
+                local dt = M.clockMs and (nowMs - M.clockMs) / 1000 or 0
+                M.clockMs = nowMs
+                dt = math.max(0, math.min(1, dt))
+                if (getGameSpeed and getGameSpeed() ~= 1) or not M.clock then
+                    M.clock = ps
+                else
+                    local pace = LF.Move and LF.Move.PATROL_PACE or 0.5
+                    M.clock = math.max(ps - CFG.clockSlack, math.min(ps + CFG.clockSlack, M.clock + pace * dt))
+                end
+            end
+        end
         -- The point man is the base: the formation is wherever he has got to along the route
         -- (he walks toward a point just ahead of his place, so he keeps drawing it on). If he is
         -- held up for ~5 s, the head edges on by itself so the patrol can't freeze on him.

@@ -594,6 +594,12 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         if not first then m.scanDir, m.scanUntil = scanDir, LF.tick + 90 + ZombRand(90) end
     end
     if m.scanUntil and LF.tick < m.scanUntil then carryScan(body, m) end
+    if walkGait == "patrol" then
+        -- Hold the patrol pace: step a little faster or slower by where he is against his mark.
+        local q = ISTimedActionQueue.getTimedActionQueue(body)
+        local a = q and q.queue and q.queue[1]
+        if a and a.Type == "LF_MoveAction" then a.paceMul = LF.March.paceMul(rec, body) end
+    end
     if moving and m.marchGait ~= walkGait then
         -- Changing pace (falling behind / caught up): a new walk at the new pace.
         if m.marchGait and isMoving(body) then ISTimedActionQueue.clear(body); m.lastPath = -10000 end

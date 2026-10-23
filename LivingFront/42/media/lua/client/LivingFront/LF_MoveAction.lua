@@ -47,16 +47,18 @@ LF.Move.patrolScale = LF.Move.patrolScale or 0.7
 LF.Move.scanScale = LF.Move.scanScale or 0.9
 LF.Move.sideScale = LF.Move.sideScale or 1.0
 LF.Move.shuffleScale = LF.Move.shuffleScale or 1.0
-local function setVars(character, patrol, scan)
+-- mul: this man's own pace correction (LF.March.paceMul) on top of the shared step speeds.
+local function setVars(character, patrol, scan, mul)
+    mul = mul or 1
     local shuffle = patrol and LF.Move.shuffle ~= false
     character:setVariable("LFPatrol", patrol)
     character:setVariable("LFShuffle", shuffle)
     character:setVariable("LFScan", scan or "none")
     character:setVariable("LFScanOn", scan ~= nil)
-    character:setVariable("LFPatrolSpeed", LF.Move.patrolScale)
-    character:setVariable("LFShuffleSpeed", LF.Move.shuffleScale)
-    character:setVariable("LFScanSpeed", LF.Move.scanScale)
-    character:setVariable("LFScanSideSpeed", LF.Move.sideScale)
+    character:setVariable("LFPatrolSpeed", LF.Move.patrolScale * mul)
+    character:setVariable("LFShuffleSpeed", LF.Move.shuffleScale * mul)
+    character:setVariable("LFScanSpeed", LF.Move.scanScale * mul)
+    character:setVariable("LFScanSideSpeed", LF.Move.sideScale * mul)
 end
 local SCAN_TURN = { fwd = 0, left = -90, right = 90, back = 180 }
 
@@ -155,11 +157,12 @@ local function saveScales()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     if not data then return end
     data.moveScales = data.moveScales or {}
+    data.moveScalesV = 2
     for _, k in ipairs({ "shuffleScale", "patrolScale", "scanScale", "sideScale" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
-    local s = data and data.moveScales
+    local s = data and data.moveScalesV == 2 and data.moveScales
     if s then
         for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
     end
@@ -169,7 +172,8 @@ function LF_MoveAction.patrolStep(self)
     local c = self.character
     local scanning = self.scan and self.scanUntil and LF.tick < self.scanUntil
     local scan = scanning and self.scan or nil
-    setVars(c, true, scan)
+    local mul = self.paceMul or 1
+    setVars(c, true, scan, mul)
 
     -- Turned out to his side while walking on: face the travel direction turned by the scan.
     local px, py = c:getX(), c:getY()
@@ -189,8 +193,9 @@ function LF_MoveAction.patrolStep(self)
     end
     -- Pace sample (see above).
     local ms = now()
-    if self.calScan ~= scan or step < 0.0005 or step > 0.3 or not self.calMs or ms <= 0 then
-        self.calMs, self.calLen, self.calScan = ms, 0, scan     -- broken: start a new sample
+    if self.calScan ~= scan or step < 0.0005 or step > 0.3 or not self.calMs or ms <= 0
+        or math.abs(mul - (self.calMul or mul)) > 0.1 then
+        self.calMs, self.calLen, self.calScan, self.calMul = ms, 0, scan, mul   -- broken: start a new sample
         return
     end
     self.calLen = (self.calLen or 0) + step
@@ -198,18 +203,26 @@ function LF_MoveAction.patrolStep(self)
     local normalSpeed = not (getGameSpeed and getGameSpeed() ~= 1) and not (isGamePaused and isGamePaused())
     if secs >= 1.0 and secs < 3 and normalSpeed then
         local speed = self.calLen / secs
+        -- His step speed without his own pace correction: what the shared scale gives.
+        local base = speed / ((mul + (self.calMul or mul)) / 2)
         local key = scaleKey(scan)
-        local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / speed - 1)
-        f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
-        LF.Move[key] = math.max(0.3, math.min(2.0, LF.Move[key] * f))
         LF.Move.lastPace = speed
+        -- A reading far off the patrol pace isn't the patrol step at all (the game's own walk
+        -- took over for a moment - turning, stepping round something): thrown away.
+        if base < LF.Move.PATROL_PACE * 0.4 or base > LF.Move.PATROL_PACE * 2 then
+            self.calMs, self.calLen, self.calMul = ms, 0, mul
+            return
+        end
+        local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / base - 1)
+        f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
+        LF.Move[key] = math.max(0.4, math.min(2.0, LF.Move[key] * f))
         LF.Move.samples = (LF.Move.samples or 0) + 1
         if LF.Move.samples % 50 == 0 then saveScales() end
         if (scan == "left" or scan == "right") and not LF.Move.sideLogged then
             LF.Move.sideLogged = true
             LF.log(string.format("MOVE sideways scan: walking on at %.2f tiles/s while turned out", speed))
         end
-        self.calMs, self.calLen = ms, 0
+        self.calMs, self.calLen, self.calMul = ms, 0, mul
     elseif secs >= 3 or (secs >= 1.0 and not normalSpeed) then
         self.calMs, self.calLen = ms, 0                         -- a hitch (loading, pause): throw it away
     end

@@ -779,11 +779,31 @@ local function clearing(squad)
 end
 
 -- What a team should do under the squad's intent.
+-- A "hold" is for teams already in rifle range: a team still out of range (the rear of a column
+-- that met the enemy, say) keeps bounding forward until it is, instead of sheltering far back.
+local function teamFront(team, sq)
+    local t, c = teams[team.id], sq.contact
+    if not (t and c and t.pos) then return 0 end
+    local f = math.huge
+    for _, p in pairs(t.pos) do
+        local d = LF.dist(p.x, p.y, c.x, c.y)
+        if d < f then f = d end
+    end
+    return f
+end
+local function closeUp(team, sq)
+    if sq.broken then return false end
+    local t = teams[team.id]
+    local f = teamFront(team, sq)
+    return f > CFG.advanceResume or (t ~= nil and t.heard == "ADVANCE" and f > CFG.advanceStop)
+end
+
 local function orderFor(team, sq)
     if sq.intent == "FLANK" then
         if sq.flank and sq.flank.routes[team.id] then return "MANEUVER" end
-        return "HOLD"
+        return closeUp(team, sq) and "ADVANCE" or "HOLD"
     end
+    if sq.intent == "HOLD" and closeUp(team, sq) then return "ADVANCE" end
     return sq.intent
 end
 
