@@ -46,13 +46,19 @@ LF.Move.PATROL_PACE = LF.Move.PATROL_PACE or 0.9
 -- One animation speed per kind of step (each animation has its own natural stride):
 --   shuffle (the slow walk), patrol (plain walk), scan (aimed walk forward / backward) and
 --   side (aimed strafe, scanning out to a side). Kept in the save once settled.
-LF.Move.patrolScale = LF.Move.patrolScale or 0.7
-LF.Move.scanScale = 1.0                  -- the ADS walk itself: always its own speed
-LF.Move.sideScale = LF.Move.sideScale or 1.0
-LF.Move.shuffleScale = LF.Move.shuffleScale or 1.2
+-- 0.32: no scaling at all. Every patrol step is an aimed (ADS) walk played at its own speed -
+-- forward, or strafing while scanning out to a side - so there is nothing to drift. (0.31's
+-- rifle-down walk, nudged to match, swung between 40% and 120% speed: the readings it was nudged
+-- by were too noisy, and a scaled clip's feet slide.) The patrol pace is simply how fast that
+-- walk goes, measured.
+LF.Move.patrolScale = 1.0
+LF.Move.scanScale = 1.0
+LF.Move.sideScale = 1.0
+LF.Move.shuffleScale = 1.0
 -- mul: this man's own pace correction (LF.March.paceMul) on top of the shared step speeds.
 local function setVars(character, patrol, scan, mul)
-    mul = mul or 1
+    mul = 1                                  -- (never scaled: see above)
+    if patrol and not scan then scan = "fwd" end      -- patrol walk = the ADS walk forward
     local shuffle = patrol and LF.Move.shuffle ~= false
     character:setVariable("LFPatrol", patrol)
     -- (An extra condition on every patrol walk node, so they outrank the game's own walks -
@@ -242,15 +248,14 @@ end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     local s = data and data.moveScalesV == 5 and data.moveScales
-    if s then
-        for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
-    end
+    if s and type(s.PATROL_PACE) == "number" then LF.Move.PATROL_PACE = s.PATROL_PACE end
 end)
 
 function LF_MoveAction.patrolStep(self)
     local c = self.character
     local scanning = self.scan and self.scanUntil and LF.tick < self.scanUntil
-    local scan = scanning and self.scan or nil
+    local scan = scanning and self.scan or "fwd"
+    if scan == "back" then scan = "fwd" end
     local mul = self.paceMul or 1
     setVars(c, true, scan, mul)
 
@@ -313,7 +318,7 @@ function LF_MoveAction.patrolStep(self)
         LF.Move.recent[key] = list
         list[#list + 1] = base
         if #list > CAL_KEEP then table.remove(list, 1) end
-        if #list >= 5 and key ~= "scanScale" then      -- (the aimed walks are never scaled)
+        if false then                                  -- (0.32: nothing is scaled any more)
             local sorted = {}
             for i = 1, #list do sorted[i] = list[i] end
             table.sort(sorted)

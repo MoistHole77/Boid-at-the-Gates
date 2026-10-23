@@ -24,7 +24,9 @@ require "LivingFront/LF_Combat"
 LF.March = LF.March or {}
 
 local CFG = {
-    spacing = 2.5,          -- tiles between men along the column
+    spacing = 2.5,          -- tiles between men along the column (stretched to disperse, below)
+    disperse = 5,           -- no two men nearer than this on patrol: one grenade (wounding out to
+                            -- 3.5 tiles, killing out to 1.5) can't take out two
     lateral = 1.5,          -- each man this far left or right of the road's line, alternately
     step = 0.45,            -- the head moves this far per tactics update - set from the aiming pace
     waitBehind = 5,         -- the head waits while anyone is further than this from his place
@@ -271,8 +273,10 @@ local function layOut(squad, M)
         -- His own distance in from the road's edge (column), and the side he scans (his halt
         -- facing snapped to front / left / right / back).
         o.margin = ZombRand(0, 51) / 100 * CFG.edgeMargin / 0.5
-        if math.abs(o.hf) >= math.abs(o.hl) then o.scan = o.hf > 0 and "fwd" or "back"
-        else o.scan = o.hl < 0 and "left" or "right" end
+        -- (The rear man scans out to a side, not backward: the aimed walk backward is slower than
+        -- the patrol pace, so he fell behind and had to walk to catch up every time.)
+        if math.abs(o.hf) >= math.abs(o.hl) and o.hf > 0 then o.scan = "fwd"
+        else o.scan = (o.hl < 0 or (o.hl == 0 and (o.l or 0) < 0)) and "left" or "right" end
     end
     if M.form == "wedge" then
         local k = {}
@@ -312,6 +316,37 @@ local function layOut(squad, M)
             finish(o)
             M.off[rid] = o
         end
+    end
+    -- Grenade dispersion: no two men close enough together for one grenade to hit them both.
+    -- The formation is stretched until every pair is at least CFG.disperse apart (a column along
+    -- its length only - its width is the road's).
+    local D = CFG.disperse
+    local ids = {}
+    for rid in pairs(M.off) do ids[#ids + 1] = rid end
+    local function minPair(kf, kl)
+        local m = math.huge
+        for i = 1, #ids do
+            local a = M.off[ids[i]]
+            for j = i + 1, #ids do
+                local b = M.off[ids[j]]
+                local df, dl = (a.f - b.f) * kf, (a.l - b.l) * kl
+                m = math.min(m, math.sqrt(df * df + dl * dl))
+            end
+        end
+        return m
+    end
+    if #ids >= 2 then
+        local wedge = M.form == "wedge"
+        local k = 1
+        while k < 4 and minPair(k, wedge and k or 1) < D do k = k + 0.1 end
+        if k > 1 then
+            for _, rid in ipairs(ids) do
+                local o = M.off[rid]
+                o.f = o.f * k
+                if wedge then o.l = o.l * k end
+            end
+        end
+        M.spread = k
     end
 end
 

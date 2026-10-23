@@ -1589,7 +1589,7 @@ local function roomKeyAt(L, x, y)
     return r and tostring(r) or nil
 end
 
-local function planRoom(squad, team, L, file, started, rooms)
+local function planRoom(squad, team, L, file, started, rooms, anchor)
     local live = {}
     local cx, cy = 0, 0
     for _, rid in ipairs(file) do
@@ -1601,6 +1601,8 @@ local function planRoom(squad, team, L, file, started, rooms)
     end
     if #live == 0 then return nil, "nobody left to go on" end
     cx, cy = cx / #live, cy / #live
+    -- From the man who cleared the last room (the others are still on their way through).
+    if anchor then cx, cy = anchor.x, anchor.y end
     rooms = rooms or {}
     local here = roomKeyAt(L, cx, cy)
     if here then rooms[here] = true end
@@ -1928,7 +1930,42 @@ local function updateClear(team, t, squad)
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Go! Go!") end
             C.phase, C.next, C.manAt = "go", 1, LF.tick
         end
-    elseif C.phase == "go" then
+    elseif C.phase == "go" or C.phase == "in" then
+        -- One man is enough to call a room clear: the first man in, on his spot, with no enemy
+        -- seen in the room. The team moves on to the next room from him while the rest are still
+        -- coming through behind (they follow on into the next room).
+        local lead = live[1]
+        local tg = lead and C.targets[lead]
+        local rk = C.room or roomKeyAt(C.L, C.door.x, C.door.y)
+        if tg and rk and at(lead, tg.x, tg.y) and LF.tick - C.phaseAt >= 30 then
+            local quiet = true
+            for _, c in ipairs(LF.Squad.contactPoints(squad.id, 300, 24)) do
+                if math.floor(c.z or 0) == C.L.z and roomKeyAt(C.L, c.x, c.y) == rk then quiet = false; break end
+            end
+            if quiet then
+                local lb = LF.Bodies.get(lead)
+                local rooms = C.rooms or {}
+                rooms[rk] = true
+                local count = (C.roomCount or 1)
+                local nextC = count < CFG.clearRooms
+                    and planRoom(squad, team, C.L, live, C.started, rooms, { x = lb:getX(), y = lb:getY() })
+                if nextC then
+                    nextC.roomCount = count + 1
+                    t.clear = nextC
+                    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": #" .. lead .. " calls the room clear, on to the next room ("
+                        .. nextC.roomCount .. ")")
+                    LF.Tactics.shout(lead, "Clear! Next room!")
+                    return true
+                end
+                LF.Tactics.shout(lead, "Clear!")
+                finish(team.leader ~= lead and "All clear - hold here!" or nil, "every room cleared - holding")
+                -- Hold where the man who called it is (inside), not halfway back to the door.
+                t.pos.A.x, t.pos.A.y, t.pos.B.x, t.pos.B.y = lb:getX(), lb:getY(), lb:getX(), lb:getY()
+                return false
+            end
+        end
+    end
+    if C.phase == "go" then
         local rid = C.file[C.next]
         local r = rid and LF.Records.get(rid)
         local b = rid and LF.Bodies.get(rid)
@@ -1944,7 +1981,7 @@ local function updateClear(team, t, squad)
             if C.next > #C.file then C.phase, C.phaseAt = "in", LF.tick end
         end
     elseif C.phase == "in" then
-        local all = true
+        local all = true                  -- (the room couldn't be called clear: someone was seen in it)
         for _, rid2 in ipairs(live) do
             local tg = C.targets[rid2]
             if tg and not at(rid2, tg.x, tg.y) then all = false end
