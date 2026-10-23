@@ -52,6 +52,9 @@ local function setVars(character, patrol, scan, mul)
     mul = mul or 1
     local shuffle = patrol and LF.Move.shuffle ~= false
     character:setVariable("LFPatrol", patrol)
+    -- (An extra condition on every patrol walk node, so they outrank the game's own walks -
+    -- including its walk through trees and bushes, which otherwise ties with them and wins.)
+    character:setVariable("LFPatrolMove", patrol)
     character:setVariable("LFShuffle", shuffle)
     character:setVariable("LFScan", scan or "none")
     character:setVariable("LFScanOn", scan ~= nil)
@@ -157,12 +160,12 @@ local function saveScales()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     if not data then return end
     data.moveScales = data.moveScales or {}
-    data.moveScalesV = 2
+    data.moveScalesV = 3
     for _, k in ipairs({ "shuffleScale", "patrolScale", "scanScale", "sideScale" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
-    local s = data and data.moveScalesV == 2 and data.moveScales
+    local s = data and data.moveScalesV == 3 and data.moveScales
     if s then
         for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
     end
@@ -206,7 +209,6 @@ function LF_MoveAction.patrolStep(self)
         -- His step speed without his own pace correction: what the shared scale gives.
         local base = speed / ((mul + (self.calMul or mul)) / 2)
         local key = scaleKey(scan)
-        LF.Move.lastPace = speed
         -- A reading far off the patrol pace isn't the patrol step at all (the game's own walk
         -- took over for a moment - turning, stepping round something): thrown away.
         if base < LF.Move.PATROL_PACE * 0.4 or base > LF.Move.PATROL_PACE * 2 then
@@ -216,6 +218,7 @@ function LF_MoveAction.patrolStep(self)
         local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / base - 1)
         f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
         LF.Move[key] = math.max(0.4, math.min(2.0, LF.Move[key] * f))
+        LF.Move.lastPace = base
         LF.Move.samples = (LF.Move.samples or 0) + 1
         if LF.Move.samples % 50 == 0 then saveScales() end
         if (scan == "left" or scan == "right") and not LF.Move.sideLogged then
@@ -233,7 +236,7 @@ local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol %.2f tiles/s (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
+        LF.log(string.format("PACE patrol step %.2f tiles/s before pace corrections (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
             LF.Move.lastPace, LF.Move.PATROL_PACE,
             LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale, LF.Move.sideScale))
         LF.Move.lastPace = nil
