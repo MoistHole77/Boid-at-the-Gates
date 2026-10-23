@@ -1021,20 +1021,21 @@ local function windowPost(L, o)
     return nil
 end
 
--- Posts on one wall, best first: doors (covered from inside), windows, then the back line.
+-- Posts on one wall, best first: windows, doors (covered from inside), then the back line.
+-- (Windows first: every wall that has one gets a man at it before anyone covers a door.)
 local function wallPosts(L, w)
     local list = {}
     local d = WALL_DIR[w]
     for _, o in ipairs(L.openings) do
-        if o.wall == w and o.kind == "door" then
-            local x, y = LF.Building.inward(L, o.x, o.y, o.dx, o.dy, 2)
-            list[#list + 1] = { x = x or o.x, y = y or o.y, wall = w, stand = false, kind = "door" }
-        end
-    end
-    for _, o in ipairs(L.openings) do
         if o.wall == w and o.kind == "window" then
             local p = windowPost(L, o)
             if p then list[#list + 1] = p end
+        end
+    end
+    for _, o in ipairs(L.openings) do
+        if o.wall == w and o.kind == "door" then
+            local x, y = LF.Building.inward(L, o.x, o.y, o.dx, o.dy, 2)
+            list[#list + 1] = { x = x or o.x, y = y or o.y, wall = w, stand = false, kind = "door" }
         end
     end
     -- Back line: 2 tiles in from the wall, spread out from its middle.
@@ -1104,6 +1105,21 @@ local function dealBuilding(squad, sq, front)
             local p = k <= room and free(list) or nil
             if p and blank then p.kind = "watch" end
             if p then take(rid, p) else spares[#spares + 1] = rid end
+        end
+    end
+    -- Every wall with a window has a man at one: a wall whose group is short (dead, wounded, a
+    -- small team) gets a spare first.
+    for _, w in ipairs(walls) do
+        if #spares == 0 then break end
+        local covered = false
+        for _, p in pairs(posts) do if p.wall == w and p.kind == "window" then covered = true; break end end
+        if not covered then
+            for _, p in ipairs(wallPosts(L, w)) do
+                if p.kind == "window" and not taken[p.x .. "," .. p.y] then
+                    take(table.remove(spares, 1), p)
+                    break
+                end
+            end
         end
     end
     -- Spares reinforce the wall with the most openings (the front wall on a tie), then any wall.
@@ -1394,6 +1410,8 @@ function LF.Tactics.forgetUnit(squad)
 end
 
 function LF.Tactics.setStance(squad, stance, holdAt)
+    -- Holding a building: standing-by fire teams nearby come and help hold it.
+    if stance == "defensive" and holdAt and LF.Join then LF.guard("join", LF.Join.gather, squad, "defend") end
     if stance ~= "patrolling" then LF.March.cancel(squad.id) end
     squad.stance = stance
     squad.holdAt = holdAt

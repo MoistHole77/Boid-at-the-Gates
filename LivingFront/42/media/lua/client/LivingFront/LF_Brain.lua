@@ -123,6 +123,8 @@ end
 -- Walk (or run) to a free square near (x, y). Tries a few spots. Returns true if a move was queued.
 -- awayX, awayY: this is a retreat from that point (abandoned if the route heads toward it).
 function LF.Brain.walkNear(body, x, y, z, spread, gait, awayX, awayY)
+    -- Sitting: get up first (the walk is asked for again next time).
+    if LF.Idle and LF.Idle.standUp(body) then return false end
     local cell = getCell()
     for _ = 1, 6 do
         local sq = cell:getGridSquare(math.floor(x + ZombRand(-spread, spread + 1)),
@@ -139,6 +141,7 @@ local walkNear = LF.Brain.walkNear
 
 -- Walk (or run) to an exact square.
 function LF.Brain.walkTo(body, x, y, z, gait, awayX, awayY)
+    if LF.Idle and LF.Idle.standUp(body) then return false end
     local sq = getCell():getGridSquare(x, y, z)
     if not sq then return false end
     ISTimedActionQueue.clear(body)
@@ -164,6 +167,8 @@ local KEEP_POSITION = { engage = true, alert = true, guard = true }
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
     m.detail = detail
+    -- Out of his rest (an enemy, an order): he gets up and takes his rifle back.
+    if m.rest and LF.Idle then LF.guard("end rest", LF.Idle.stop, body, m) end
     LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
     -- Losing and regaining sight (engage <-> alert <-> guard) keeps the soldier's position and rhythm;
@@ -881,11 +886,15 @@ local function decide(id, body, rec, m)
         if ax then placed = followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
         -- Standing by: on his spot, he passes the time (sits, smokes, checks his rifle...).
         if placed and fighter and LF.Idle and LF.Stance.of(rec).idle and not isMoving(body) then
-            local words = LF.Idle.maybeStart(body, m, LF.Combat.arm(body), function(b)
-                local mm = minds[id]
-                return mm ~= nil and mm.state == "idle" and LF.Stance.of(rec).idle == true
-            end)
-            if words then m.detail = words elseif not body:isPerformingAnAction() then m.detail = nil end
+            if not m.keepIdle then
+                m.keepIdle = function()
+                    local mm = minds[id]
+                    return mm ~= nil and mm.state == "idle" and LF.Stance.of(rec).idle == true
+                end
+            end
+            LF.guard("rest", LF.Idle.tick, body, m, m.keepIdle)
+        elseif m.rest and LF.Idle and not LF.Stance.of(rec).idle then
+            LF.guard("end rest", LF.Idle.stop, body, m)       -- the unit has something to do now
         end
         return
     end

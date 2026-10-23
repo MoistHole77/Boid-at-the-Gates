@@ -433,7 +433,7 @@ local SWITCH_WORDS = { file = "Ranger file - single file through here!", column 
 function LF.March.order(squad, x, y, z, form, opts)
     -- A new task (not the next leg, a resumption, or a team walking home): standing-by fire
     -- teams nearby join the unit first (LF_Join).
-    if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad) end
+    if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad, "patrol") end
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end

@@ -100,6 +100,7 @@ local function now()
 end
 
 function LF_MoveAction:start()
+    if LF.Idle then LF.Idle.standUp(self.character) end     -- sitting: up first
     ISWalkToTimedAction.start(self)
     applyGait(self.character, self.gait)
     self.startX, self.startY, self.startMs = self.character:getX(), self.character:getY(), now()

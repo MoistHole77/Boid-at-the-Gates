@@ -100,7 +100,7 @@ end
 
 -- Take it: patrol to the rally point short of it, then the assault.
 function LF.Objective.take(squad, obj)
-    if LF.Join then LF.guard("join", LF.Join.gather, squad) end     -- standing-by teams come along
+    if LF.Join then LF.guard("join", LF.Join.gather, squad, "take") end     -- standing-by teams come along
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
     if not cmd then return false, "its commander isn't here" end

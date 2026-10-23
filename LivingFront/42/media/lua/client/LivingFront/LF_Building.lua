@@ -36,6 +36,18 @@ end
 
 local function key(x, y) return x .. "," .. y end
 
+-- Does this opening lead outdoors? A doorway into another building - a basement, a stairwell -
+-- or onto stairs isn't one to watch: the enemy comes from outside. (Not isOutside(): a porch
+-- under a roof counts as "inside" to that, and its door is very much one to watch.)
+local function outdoors(nb)
+    if not nb then return false end
+    if nb:getBuilding() then return false end
+    local okS, stairs = pcall(function() return nb:HasStairs() end)
+    if okS and stairs then return false end
+    return true
+end
+LF.Building.outdoors = outdoors
+
 function LF.Building.at(x, y, z)
     local cell = getCell()
     z = math.floor(z)
@@ -60,7 +72,7 @@ function LF.Building.at(x, y, z)
                     -- Furniture (or something) on this square: still note a window in it.
                     for w, d in ipairs(WALL_DIR) do
                         local nb = cell:getGridSquare(ix + d[1], iy + d[2], z)
-                        if nb and bid(nb) ~= id and sq:isWindowTo(nb) then
+                        if nb and bid(nb) ~= id and outdoors(nb) and sq:isWindowTo(nb) then
                             local okM, mov = pcall(LF.Building.movableOn, sq)
                             blockedWin[#blockedWin + 1] = { x = ix, y = iy, dx = d[1], dy = d[2], kind = "window", wall = w,
                                                             blocked = true, movable = okM and mov ~= nil }
@@ -80,7 +92,7 @@ function LF.Building.at(x, y, z)
                 local nb = cell:getGridSquare(nx, ny, z)
                 local outside = nb and bid(nb) ~= id
                 if outside or not nb then L.edges[w][#L.edges[w] + 1] = { x = s.x, y = s.y } end
-                if nb and outside then
+                if nb and outside and outdoors(nb) then
                     if sq:isWindowTo(nb) then
                         L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "window", wall = w }
                     elseif sq:isDoorTo(nb) then

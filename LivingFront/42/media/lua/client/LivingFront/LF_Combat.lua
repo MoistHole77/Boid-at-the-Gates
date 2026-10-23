@@ -79,11 +79,63 @@ local function equipGun(body, itemType)
     return gun
 end
 
+-- ---- slinging the rifle ------------------------------------------------------------------------
+-- A man who needs his hands (eating, working on his kit, smoking) slings his rifle on his back
+-- (over his pack if he wears one) and takes it back afterwards.
+
+local BACK_SLOTS = { "Rifle On Back with Bag", "Rifle On Back" }
+
+local function backSlot(body)
+    local ok, bag = pcall(function() return body:getClothingItem_Back() end)
+    return (ok and bag) and BACK_SLOTS[1] or BACK_SLOTS[2]
+end
+
+-- The rifle on his back, and the slot it's in; nil if none.
+function LF.Combat.slungGun(body)
+    for _, loc in ipairs(BACK_SLOTS) do
+        local ok, g = pcall(function() return body:getAttachedItem(loc) end)
+        if ok and g then return g, loc end
+    end
+    return nil
+end
+
+local function doSling(body)
+    local gun = body:getPrimaryHandItem()
+    if not (gun and instanceof(gun, "HandWeapon")) then return false end
+    local loc = backSlot(body)
+    body:setPrimaryHandItem(nil)
+    body:setSecondaryHandItem(nil)
+    body:setAttachedItem(loc, gun)
+    gun:setAttachedSlot(1)
+    gun:setAttachedSlotType("Back")
+    gun:setAttachedToModel(loc)
+    return true
+end
+
+local function doUnsling(body)
+    local gun, loc = LF.Combat.slungGun(body)
+    if not gun then return nil end
+    if not pcall(function() body:removeAttachedItem(gun) end) then body:setAttachedItem(loc, nil) end
+    gun:setAttachedSlot(-1)
+    gun:setAttachedSlotType(nil)
+    gun:setAttachedToModel(nil)
+    body:setPrimaryHandItem(gun)
+    if gun:isTwoHandWeapon() then body:setSecondaryHandItem(gun) end
+    return gun
+end
+
+function LF.Combat.sling(body) return LF.guard("sling rifle", doSling, body) end
+function LF.Combat.unsling(body) return LF.guard("unsling rifle", doUnsling, body) end
+
 -- Make sure a body holds its own weapon (LF_Weapons: Kar98k, Mosin, MP40 or PPSh), loaded and in
--- both hands. Returns the gun.
+-- both hands. Returns the gun. (A slung rifle comes off his back first.)
 function LF.Combat.arm(body)
     local profile = LF.Weapons.profileOf(body)
     local gun = body:getPrimaryHandItem()
+    if not gun and LF.Combat.slungGun(body) then
+        LF.Combat.unsling(body)
+        gun = body:getPrimaryHandItem()
+    end
     if not (gun and instanceof(gun, "HandWeapon") and gun:isRanged() and gun:getFullType() == profile.item) then
         gun = LF.guard("equip " .. profile.name, equipGun, body, profile.item)
         if not gun then return nil end

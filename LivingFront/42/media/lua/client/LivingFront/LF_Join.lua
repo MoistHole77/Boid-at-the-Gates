@@ -1,11 +1,13 @@
 -- Living Front: standing-by fire teams join a unit that is given a task.
 --
--- When a unit gets an assignment (a patrol, an objective to take), any fire team of the same side
+-- When a unit gets an assignment (a patrol, an objective to take, a building to hold), any fire
+-- team of the same side
 -- that is standing by within CFG.radius of its leader joins it: the team becomes one more team of
 -- that unit (in a free formation slot - Bravo 1 first, so a lone team that gains a second has a
 -- base of fire) and goes wherever it goes, under its leader. When the task is over - the unit
--- stands down, or it has taken its objective and is holding it - the joined teams leave again,
--- walk back to where they were, and stand by there.
+-- stands down, or it has taken its objective and is holding it (a defence keeps its helpers
+-- until it stands down) - the joined teams leave again, walk back to where they were, and stand
+-- by there.
 --
 -- Only lone fire teams join (a full squad has no free slots and is too big to tag along), and a
 -- unit takes at most four teams in all.
@@ -68,7 +70,8 @@ local function merge(lead, u, slot, home)
 end
 
 -- A unit is about to be given a task: standing-by teams nearby join it first.
-function LF.Join.gather(lead)
+-- purpose: "patrol", "take" or "defend" (a defence keeps its helpers until it stands down).
+function LF.Join.gather(lead, purpose)
     if not lead or lead.kind ~= "squad" or lead.joined then return 0 end
     local lb = commanderBody(lead)
     if not lb then return 0 end
@@ -107,6 +110,7 @@ function LF.Join.gather(lead)
             end
         end
     end
+    if n > 0 and not lead.attachedFor then lead.attachedFor = purpose or "patrol" end
     return n
 end
 
@@ -115,7 +119,7 @@ end
 function LF.Join.release(lead, why)
     local list = lead.attached
     if not list then return end
-    lead.attached = nil
+    lead.attached, lead.attachedFor = nil, nil
     for _, uid in ipairs(list) do
         local u = LF.Units.get(uid)
         local T = u and LF.Units.get(u.joinTeam)
@@ -165,6 +169,7 @@ end
 function LF.Join.taskOver(lead)
     if not lead.attached then return false end
     if LF.Stance.get(lead).name == "standby" then return true end
+    if lead.attachedFor == "defend" then return false end      -- helping hold it: stay till it's over
     local t = lead.objTask
     return t ~= nil and t.kind == "hold"
 end
