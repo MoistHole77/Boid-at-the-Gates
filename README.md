@@ -32,7 +32,9 @@ Pure Lua. No Java, no ZombieBuddy.
 | Building defence: men at windows never leave them; spares fill windows toward the enemy | Built, awaiting in-game test |
 | Sergeants choose their stance (dig in when outnumbered / shot up / by a building with the enemy coming / stalled; move up with the numbers or when it's gone quiet) | Working (0.19) |
 | Troop movements: a squad marches by road in a tactical column (staggered files, sergeant in the centre), halts on contact, forms up again after | Working (0.20) |
-| Patrolling stance: ranger file, tactical column (by road), wedge (cross-country); men fall in as the point man passes; halted, everyone crouches and aims outboard | Built, awaiting in-game test |
+| Patrolling stance: ranger file, tactical column, wedge; men fall in as the point man passes; halted, everyone crouches and aims outboard; ADS pace and scanning | Working (0.21) |
+| Sergeant chooses the formation from the ground (most men in woods -> file, road -> column, off the road -> wedge); long patrols planned in legs | Built, awaiting in-game test |
+| Objectives: take (patrol in, rally, base of fire + flank, clear, consolidate) and hold; who holds it | Built, awaiting in-game test |
 | Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
@@ -70,7 +72,8 @@ Testing tools are in the right-click menu under **Living Front (debug)**, includ
 | `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders, the defensive perimeter |
 | `LF_Stance.lua` | Unit stances (offensive / defensive) and their settings |
 | `LF_Building.lua` | Building layouts: inside squares, windows and doors by wall |
-| `LF_March.lua` | Patrolling: road routes, formations (ranger file, tactical column, wedge), halts |
+| `LF_March.lua` | Patrolling: road routes in legs, formations (ranger file, tactical column, wedge) chosen from the ground, halts |
+| `LF_Objective.lua` | Objectives: take / hold tasks run as a sequence of the drills above; who holds it; labels |
 | `LF_Watch.lua` | Keeps the real player visible (and logs his render state) |
 | `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
 | `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |

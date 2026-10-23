@@ -1620,6 +1620,17 @@ local function sergeantClear(squad, sq, cid)
         local b = LF.Building.idAt(c.x, c.y, c.z)
         if b then counts[b] = (counts[b] or 0) + 1; where[b] = c end
     end
+    -- On an objective: its building, once the defence is thin (or nobody has been seen in it).
+    if LF.Objective then
+        local L, why = LF.Objective.clearTarget(squad, counts, CFG.clearAt)
+        if L then
+            sq.lastClear = LF.tick
+            local goes = LF.Tactics.orderClear(squad, team, L, why)
+            if goes then LF.Tactics.shout(cid, goes.name .. ", clear the objective! Everyone else, cover them!") end
+            return
+        end
+        if squad.objTask then return end           -- not some other building
+    end
     for b, n in pairs(counts) do
         if n == total and n <= CFG.clearAt then
             local c = where[b]
@@ -1678,6 +1689,7 @@ end
 
 local function considerStance(squad, sq, cid, cmd)
     if not LF.Tactics.autoStance then return false end
+    if LF.Objective and LF.Objective.busy(squad) then return false end   -- the task decides
     local mem = stanceMem[squad.id]
     if not mem then mem = { since = -100000 }; stanceMem[squad.id] = mem end
     local st = LF.Stance.get(squad)
@@ -1796,6 +1808,8 @@ local function updateSquad(squad)
     end
 
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
+    -- Assaulting an objective with nobody in sight: the objective's windows are the target.
+    if not c and LF.Objective then c = LF.Objective.fallbackContact(squad) end
     if not c then
         if sq.intent then
             setIntent(squad, sq, cid, nil, "no contact")
@@ -1876,7 +1890,11 @@ local function updateSquad(squad)
         and not otherSideFlanking(squad.faction) then
         local reason = nil
         local steady = fitN == 0 or pinnedN / fitN < CFG.flankPinned
-        if steady and enemies > 0 and sq.supShare >= CFG.flankSuperiority then
+        local t = squad.objTask
+        if t and t.kind == "take" and t.phase == "assault" and not sq.objFlank then
+            sq.objFlank = true
+            reason = "assaulting the objective: alpha teams round the flank, bravo teams the base of fire"
+        elseif steady and enemies > 0 and sq.supShare >= CFG.flankSuperiority then
             reason = "fire superiority: " .. supp .. "/" .. enemies .. " enemy suppressed"
         else
             local ok, enemyBest = stalemate(squad, sq, cmd:getX(), cmd:getY())

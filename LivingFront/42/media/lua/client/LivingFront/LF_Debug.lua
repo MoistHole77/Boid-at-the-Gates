@@ -1,8 +1,8 @@
 -- Living Front: debug menu (right-click in the world).
 --
 -- Kept small on purpose: the basic per-type tools (spawn / move / kill / delete) plus only the
--- commands for the test at hand. Current test: the patrolling stance (ranger file, tactical
--- column, wedge; halts); also the building tests and clearing.
+-- commands for the test at hand. Current test: objectives (a Soviet team holds a building, a
+-- German squad 100+ tiles away takes it: patrol in, rally, assault, clear, consolidate).
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -17,6 +17,7 @@ require "LivingFront/LF_Tactics"
 require "LivingFront/LF_Building"
 require "LivingFront/LF_Stance"
 require "LivingFront/LF_March"
+require "LivingFront/LF_Objective"
 require "LivingFront/LF_Weapons"
 
 LF.Debug = LF.Debug or {}
@@ -78,6 +79,7 @@ local function deleteAll()
     LF.Suppress.forgetAll()
     LF.Tactics.forgetAll()
     LF.March.forgetAll()
+    LF.Objective.clear()
     LF.Weapons.forgetAll()
     LF.log("deleted all records")
     LF.say("Living Front: all NPCs deleted")
@@ -284,6 +286,39 @@ local function clearOrder(x, y, z)
     end
 end
 
+-- Objective test, step 1: click inside a building. It becomes the objective and a Soviet fire
+-- team holds it (they start inside).
+local function objectiveHold(x, y, z)
+    local L = LF.Building.at(x, y, z)
+    if not L then LF.say("Click inside a building for this"); return end
+    local obj = LF.Objective.create(x, y, z, "The objective")
+    local team = LF.Units.createSquad("SOV", x + 0.5, y + 0.5, z, 1, 0, true)
+    local spots = {}
+    for _, q in ipairs(L.inside) do if (q.x + q.y) % 2 == 0 then spots[#spots + 1] = q end end
+    table.sort(spots, function(a, b) return LF.dist(a.x, a.y, x, y) < LF.dist(b.x, b.y, x, y) end)
+    for k, rid in ipairs(LF.Units.members(team.id)) do
+        local r, q = LF.Records.get(rid), spots[k]
+        if r and q then r.x, r.y, r.homeX, r.homeY = q.x + 0.5, q.y + 0.5, q.x + 0.5, q.y + 0.5 end
+    end
+    LF.Objective.hold(team, obj)
+    LF.Tactics.noteStanceSet(team)
+    LF.say("Objective set: a Soviet team holds this building. Now go 100+ tiles away and use step 2.")
+end
+
+-- Objective test, step 2: a German squad spawns here and is ordered to take the latest objective.
+local function objectiveTake(x, y, z)
+    local obj, id = nil, 0
+    for oid, o in pairs(LF.Objective.all()) do if oid > id then obj, id = o, oid end end
+    if not obj then LF.say("Set an objective first (step 1)"); return end
+    local d = LF.dist(x, y, obj.x, obj.y)
+    local fx, fy = obj.x - x, obj.y - y
+    local squad = LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, fx, fy, false)
+    squad.pendingTake = obj.id
+    LF.log("DEBUG objective test: " .. squad.name .. " spawned " .. math.floor(d) .. " tiles from " .. obj.name)
+    LF.say("German squad will take the objective (" .. math.floor(d) .. " tiles away)"
+        .. (d < 100 and " - closer than 100 tiles!" or ""))
+end
+
 -- Send the nearest (not defending) unit on patrol to the clicked spot in a formation.
 local function marchNearest(x, y, z, form)
     local best, bestD = nil, math.huge
@@ -299,7 +334,7 @@ local function marchNearest(x, y, z, form)
     end
     if not best then LF.say("No unit nearby (a defending unit won't march: set it offensive first)"); return end
     local ok, why = LF.March.order(best, x, y, z, form)
-    LF.say(ok and (best.name .. " patrols here in " .. LF.March.FORMATIONS[form]) or ("Can't move: " .. tostring(why)))
+    LF.say(ok and (best.name .. " patrols here" .. (LF.March.FORMATIONS[form] and (" in " .. LF.March.FORMATIONS[form]) or " (sergeant's choice of formation)")) or ("Can't move: " .. tostring(why)))
 end
 
 local function setStanceNearest(x, y, z, stance)
@@ -327,28 +362,24 @@ local function onMenu(playerNum, context, worldObjects, test)
     context:addSubMenu(option, sub)
 
     -- Current test.
+    sub:addOption("Objective test 1/2: Soviet team holds this building", nil, function() objectiveHold(x, y, z) end)
+    sub:addOption("Objective test 2/2: German squad here takes the objective (go 100+ tiles away first)", nil, function() objectiveTake(x, y, z) end)
     sub:addOption("Test: spawn a German squad here (to patrol)", nil, function()
         LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, false)
         LF.say("German squad spawned - right-click somewhere and choose Patrol nearest unit here")
     end)
-    sub:addOption("Test: spawn a German fire team here (to patrol)", nil, function()
-        LF.Units.createSquad("GER", x + 0.5, y + 0.5, z, 1, 0, true)
-        LF.say("German fire team spawned")
-    end)
     local po = sub:addOption("Patrol nearest unit here")
     local pm = ISContextMenu:getNew(sub)
     sub:addSubMenu(po, pm)
-    pm:addOption("Ranger file (by road)", nil, function() marchNearest(x, y, z, "file") end)
-    pm:addOption("Tactical column (by road)", nil, function() marchNearest(x, y, z, "column") end)
-    pm:addOption("Wedge (cross-country)", nil, function() marchNearest(x, y, z, "wedge") end)
-    sub:addOption("Test: squad vs squad (17 vs 17)", nil, function() battle(x, y, z, false, 18) end)
-    sub:addOption("Test: squad holds this building - Soviets attack", nil, function() buildingTest(x, y, z, false) end)
+    pm:addOption("Sergeant's choice (by the ground)", nil, function() marchNearest(x, y, z, "auto") end)
+    pm:addOption("Ranger file", nil, function() marchNearest(x, y, z, "file") end)
+    pm:addOption("Tactical column", nil, function() marchNearest(x, y, z, "column") end)
+    pm:addOption("Wedge", nil, function() marchNearest(x, y, z, "wedge") end)
     sub:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
         LF.Tactics.autoStance = not LF.Tactics.autoStance
         LF.log("DEBUG automatic stance " .. (LF.Tactics.autoStance and "on" or "off"))
         LF.say("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON" or "OFF"))
     end)
-    sub:addOption("Order nearest attacking unit's Alpha 1 to clear this building", nil, function() clearOrder(x, y, z) end)
     local so = sub:addOption("Set stance of nearest unit")
     local stanceMenu = ISContextMenu:getNew(sub)
     sub:addSubMenu(so, stanceMenu)

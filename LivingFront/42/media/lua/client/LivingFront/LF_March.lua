@@ -330,20 +330,28 @@ local function placeOf(M, rid, lead)
 end
 
 -- Plan the route (road for a file or column, straight for a wedge) from (sx, sy) to (x, y).
-local function planRoute(sx, sy, x, y, z, byRoad)
+-- ---- routes in legs ---------------------------------------------------------------------------
+
+local LEG = 50            -- a route is planned at most this far ahead (the world is only loaded near you)
+
+local function loaded(x, y, z) return getCell():getGridSquare(math.floor(x), math.floor(y), z) ~= nil end
+
+-- One leg of a route from (sx, sy) to (x, y): along the road if a road route exists that isn't
+-- much longer than going straight, otherwise straight across country. Returns the points, how,
+-- and whether it is by road.
+local function planRoute(sx, sy, x, y, z)
     local pts = { { x = sx, y = sy } }
-    local how = byRoad and "straight (no road)" or "straight (cross-country)"
-    if byRoad then
-        local rsx, rsy = nearestRoad(sx, sy, z)
-        local rgx, rgy = nearestRoad(x, y, z)
-        if rsx and rgx then
-            local route = roadRoute(rsx, rsy, rgx, rgy, z)
-            if route then
-                for i = 1, #route, CFG.nodeEvery do pts[#pts + 1] = { x = route[i].x + 0.5, y = route[i].y + 0.5 } end
-                local last = route[#route]
-                pts[#pts + 1] = { x = last.x + 0.5, y = last.y + 0.5 }
-                how = "by road (" .. #route .. " squares)"
-            end
+    local how, onRoad = "cross-country", false
+    local straight = LF.dist(sx, sy, x, y)
+    local rsx, rsy = nearestRoad(sx, sy, z)
+    local rgx, rgy = nearestRoad(x, y, z)
+    if rsx and rgx then
+        local route = roadRoute(rsx, rsy, rgx, rgy, z)
+        if route and #route <= straight * 1.6 + 20 then
+            for i = 1, #route, CFG.nodeEvery do pts[#pts + 1] = { x = route[i].x + 0.5, y = route[i].y + 0.5 } end
+            local last = route[#route]
+            pts[#pts + 1] = { x = last.x + 0.5, y = last.y + 0.5 }
+            how, onRoad = "by road (" .. #route .. " squares)", true
         end
     end
     pts[#pts + 1] = { x = x + 0.5, y = y + 0.5 }
@@ -351,16 +359,76 @@ local function planRoute(sx, sy, x, y, z, byRoad)
     for i = 2, #pts do
         if LF.dist(clean[#clean].x, clean[#clean].y, pts[i].x, pts[i].y) > 0.5 then clean[#clean + 1] = pts[i] end
     end
-    return clean, how
+    return clean, how, onRoad
 end
 
-local WORDS = { file = "Ranger file", column = "Tactical column", wedge = "Wedge" }
+-- Where this leg ends on the way from (sx, sy) to the final destination (fx, fy): the destination
+-- itself if it is close and loaded, otherwise a loaded point up to LEG tiles toward it (a road
+-- square near there if there is one). Returns x, y, final.
+local function legTarget(sx, sy, fx, fy, z)
+    local d = LF.dist(sx, sy, fx, fy)
+    if d <= LEG and loaded(fx, fy, z) then return fx, fy, true end
+    for k = math.min(LEG, d - 5), 10, -5 do
+        local lx, ly = sx + (fx - sx) / d * k, sy + (fy - sy) / d * k
+        if loaded(lx, ly, z) then
+            local rx, ry = nearestRoad(lx, ly, z)
+            if rx and LF.dist(rx, ry, lx, ly) < 12 and LF.dist(rx, ry, fx, fy) < d - 5 then return rx, ry, false end
+            return math.floor(lx), math.floor(ly), false
+        end
+    end
+    return math.floor(sx + (fx - sx) / d * 10), math.floor(sy + (fy - sy) / d * 10), false
+end
 
--- Order a unit to patrol to (x, y) in a formation ("file", "column" or "wedge"). It goes into the
--- patrolling stance. The point man sets off; the others fall in as their places reach them.
--- Returns true, or false and why.
-function LF.March.order(squad, x, y, z, form)
-    form = LF.March.FORMATIONS[form] and form or "column"
+-- ---- the sergeant's choice of formation -------------------------------------------------------
+--
+-- He goes by where most of his men are and what lies ahead on the route:
+--   most men (half or more) in woods, tall bushes or a narrow gap  -> ranger file
+--   on or along a road                                              -> tactical column
+--   the squad off the road with no road ahead                       -> wedge
+-- One man pushing through a hedge, or stepping off the road, doesn't change anything (he just
+-- catches up). A change has to hold ~3 s, and comes at most every ~10 s.
+
+local function isThick(sq)
+    if not sq then return false end
+    if sq:HasTree() then return true end
+    local objs = sq:getObjects()
+    for i = 0, objs:size() - 1 do
+        local spr = objs:get(i):getSprite()
+        local n = spr and spr:getName()
+        if n and (n:find("vegetation_foliage", 1, true) or n:find("f_bushes", 1, true)) then return true end
+    end
+    return false
+end
+
+local function blocked(x, y, z)
+    local q = getCell():getGridSquare(x, y, z)
+    return not q or not q:isFree(false)
+end
+
+-- "road", "thick" (trees, bushes, a narrow passage) or "open".
+local function terrainAt(x, y, z)
+    local bx, by = math.floor(x), math.floor(y)
+    local sq = getCell():getGridSquare(bx, by, z)
+    if isRoad(sq) then return "road" end
+    if isThick(sq) then return "thick" end
+    if (blocked(bx - 1, by, z) and blocked(bx + 1, by, z)) or (blocked(bx, by - 1, z) and blocked(bx, by + 1, z)) then
+        return "thick"
+    end
+    return "open"
+end
+LF.March.terrainAt = terrainAt
+
+local WORDS = { file = "Ranger file", column = "Tactical column", wedge = "Wedge" }
+local SWITCH_WORDS = { file = "Ranger file - single file through here!", column = "Tactical column - on the road!",
+                       wedge = "Wedge - spread out!" }
+
+-- Order a unit to patrol to (x, y). form: "file", "column" or "wedge" to hold one formation, or
+-- nil / "auto" for the sergeant to choose as the ground changes. It goes into the patrolling
+-- stance. The point man sets off; the others fall in as their places reach them. A destination
+-- beyond the loaded world is reached in legs (each re-planned from where the point man is).
+-- opts.continuing: the next leg of a patrol already under way. Returns true, or false and why.
+function LF.March.order(squad, x, y, z, form, opts)
+    local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end
     local order = columnOrder(squad)
@@ -371,10 +439,15 @@ function LF.March.order(squad, x, y, z, form)
     end
     if not point then return false, "nobody here to lead" end
     z = math.floor(z or 0)
-    local pts, how = planRoute(point:getX(), point:getY(), x, y, z, form ~= "wedge")
+    local lx, ly, final = legTarget(point:getX(), point:getY(), x, y, z)
+    local pts, how, onRoad = planRoute(point:getX(), point:getY(), lx, ly, z)
     if #pts < 2 then return false, "already there" end
-    if LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(squad, "patrolling") end
-    local M = { pts = pts, z = z, form = form, dest = { x = x + 0.5, y = y + 0.5 }, x = x, y = y }
+    if not (opts and opts.continuing) and LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(squad, "patrolling") end
+    if auto then
+        form = (opts and opts.form) or (onRoad and "column" or "wedge")
+    end
+    local M = { pts = pts, z = z, form = form, auto = auto, x = x, y = y, final = final,
+                dest = { x = lx + 0.5, y = ly + 0.5 } }
     M.len = measure(pts)
     M.total = M.len[#pts]
     M.order = order
@@ -391,12 +464,59 @@ function LF.March.order(squad, x, y, z, form)
     end
     M.head = 0
     M.joined[order[1]] = true
-    M.started = LF.tick
+    M.started = (opts and opts.started) or LF.tick
+    M.formAt = LF.tick
     marches[squad.id] = M
-    LF.log("PATROL " .. squad.name .. " to " .. math.floor(x) .. "," .. math.floor(y) .. " in " .. LF.March.FORMATIONS[form]
-        .. ", " .. string.format("%.0f", M.total) .. " tiles " .. how .. ", " .. #order .. " men")
-    if LF.Tactics and LF.Tactics.shout then LF.Tactics.shout(cid, WORDS[form] .. " - on the point man! Move out!") end
+    LF.log("PATROL " .. squad.name .. (opts and opts.continuing and " next leg" or "") .. " to "
+        .. math.floor(x) .. "," .. math.floor(y) .. (final and "" or (" (leg to " .. lx .. "," .. ly .. ")"))
+        .. " in " .. LF.March.FORMATIONS[form] .. (auto and " (sergeant's choice)" or "") .. ", "
+        .. string.format("%.0f", M.total) .. " tiles " .. how .. ", " .. #order .. " men")
+    if LF.Tactics and LF.Tactics.shout and not (opts and opts.continuing) then
+        LF.Tactics.shout(cid, WORDS[form] .. " - on the point man! Move out!")
+    end
     return true
+end
+
+-- The sergeant looks at the ground (every ~1 s) and changes formation if most of his men need it.
+local function chooseFormation(squad, cid, M)
+    if not M.auto or LF.tick - (M.formCheck or 0) < 60 then return end
+    M.formCheck = LF.tick
+    local n, road, thick = 0, 0, 0
+    for _, rid in ipairs(M.order) do
+        local b = LF.Bodies.get(rid)
+        local r = LF.Records.get(rid)
+        if b and r and r.alive then
+            n = n + 1
+            local t = terrainAt(b:getX(), b:getY(), M.z)
+            if t == "road" then road = road + 1 elseif t == "thick" then thick = thick + 1 end
+        end
+    end
+    if n == 0 then return end
+    -- The route ahead of the point man.
+    local ra, rn = 0, 0
+    for k = 0, 20, 4 do
+        local x, y = pointAt(M, math.min(M.total, M.head + k))
+        rn = rn + 1
+        if terrainAt(x, y, M.z) == "road" then ra = ra + 1 end
+    end
+    local roadAhead = ra / rn
+    local want = M.form
+    if thick / n >= 0.5 then
+        want = "file"
+    elseif roadAhead >= 0.4 and (road / n >= 0.5 or roadAhead >= 0.6) then
+        want = "column"
+    elseif road / n < 0.3 and roadAhead < 0.3 then
+        want = "wedge"
+    end
+    if want ~= M.wantForm then M.wantForm, M.wantSince = want, LF.tick end
+    if want == M.form or LF.tick - M.wantSince < 180 or LF.tick - (M.formAt or 0) < 600 then return end
+    M.form, M.formAt = want, LF.tick
+    layOut(squad, M)
+    if want == "column" and not M.edges then roadEdges(M) end
+    LF.log("PATROL " .. squad.name .. " changes to " .. LF.March.FORMATIONS[want] .. " (" .. thick .. "/" .. n
+        .. " men in woods or close country, " .. road .. "/" .. n .. " on the road, "
+        .. math.floor(roadAhead * 100) .. "% of the way ahead is road)")
+    LF.Tactics.shout(cid, SWITCH_WORDS[want])
 end
 
 -- The brain asks where a patrolling man goes: "file", x, y, z, facePoint, gait - or nil.
@@ -449,11 +569,13 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         end
         -- Quiet again: set off again from where the men are, on the point man.
         LF.log("PATROL " .. squad.name .. ": quiet again - moving on")
-        local ok = LF.March.order(squad, M.x, M.y, M.z, M.form)
+        local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
+            { continuing = true, form = M.form, started = M.started })
         if not ok then marches[squad.id] = nil end
         return ok
     end
     if M.arrived then return true end
+    chooseFormation(squad, cid, M)
     -- Men fall in as their places reach them. The point man is the base: the head moves on while
     -- he keeps up with it. Anyone who has dropped well behind his place walks at the normal pace
     -- (not the patrol pace) until he is back in it; nobody waits for him.
@@ -502,6 +624,13 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         end
         M.headMovedAt = M.headMovedAt or LF.tick
         return true
+    end
+    if not M.final then
+        -- End of a leg: on to the next, from where the point man is.
+        local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
+            { continuing = true, form = M.form, started = M.started })
+        if not ok then marches[squad.id] = nil end
+        return ok
     end
     if done or LF.tick - (M.endAt or LF.tick) > 1800 then
         M.arrived = true

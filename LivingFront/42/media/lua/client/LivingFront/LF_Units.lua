@@ -206,6 +206,7 @@ function LF.Units.report()
                 end
             end
             LF.log("UNIT " .. squad.name .. " (#" .. squad.id .. ") " .. (squad.stance or "offensive") .. " stance, "
+                .. (squad.objTask and ("objective task " .. tostring(squad.objTask.kind) .. "/" .. tostring(squad.objTask.phase) .. ", ") or "")
                 .. alive .. "/" .. total .. " alive, leader "
                 .. (lead and (LF.Units.title(lead) .. (lead.alive and "" or " (dead)")) or "none"))
             for _, line in ipairs(lines) do LF.log(line) end
