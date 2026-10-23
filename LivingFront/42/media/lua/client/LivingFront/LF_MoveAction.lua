@@ -55,11 +55,29 @@ LF.Move.patrolScale = 1.0
 LF.Move.scanScale = 1.0
 LF.Move.sideScale = 1.0
 LF.Move.shuffleScale = 1.0
+-- 0.33: low ready between scans. Not scanning, a patrolling man walks the game's own rifle walk
+-- (rifle carried low - the walkrifle node), which blends its slow rifle walk (Bob_WalkSlow_Rifle)
+-- into the normal one by the animation variable WalkSpeed (0 slow .. 1 normal). Set from the
+-- action's update, like the running flag, so the animation pass sees it. LF.Move.lowBlend is
+-- nudged until that walk goes at the ADS pace - the feet match because the game's own blend is
+-- doing it, not a sped-up clip. If WalkSpeed turns out to do nothing for NPCs (the blend runs to
+-- its end and the pace doesn't follow), LF.Move.lowReady goes false and the patrol walks ADS
+-- again (logged).
+LF.Move.lowBlend = LF.Move.lowBlend or 0.6
 -- mul: this man's own pace correction (LF.March.paceMul) on top of the shared step speeds.
 local function setVars(character, patrol, scan, mul)
     mul = 1                                  -- (never scaled: see above)
-    if patrol and not scan then scan = "fwd" end      -- patrol walk = the ADS walk forward
-    local shuffle = patrol and LF.Move.shuffle ~= false
+    local low = patrol and not scan and LF.Move.lowReady ~= false
+    if patrol and not scan and not low then scan = "fwd" end   -- fallback: the ADS walk forward
+    if low then
+        character:setVariable("WalkSpeed", LF.Move.lowBlend)
+        character:getModData().LF_walkBlend = true
+        patrol = false                       -- the game's own rifle walk plays, not ours
+    elseif character:getModData().LF_walkBlend then
+        character:setVariable("WalkSpeed", 1.0)      -- (back to the full walk for anything else)
+        character:getModData().LF_walkBlend = nil
+    end
+    local shuffle = false
     character:setVariable("LFPatrol", patrol)
     -- (An extra condition on every patrol walk node, so they outrank the game's own walks -
     -- including its walk through trees and bushes, which otherwise ties with them and wins.)
@@ -243,19 +261,22 @@ local function saveScales()
     if not data then return end
     data.moveScales = data.moveScales or {}
     data.moveScalesV = 5
-    for _, k in ipairs({ "shuffleScale", "patrolScale", "sideScale", "PATROL_PACE" }) do data.moveScales[k] = LF.Move[k] end
+    for _, k in ipairs({ "lowBlend", "PATROL_PACE" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     local s = data and data.moveScalesV == 5 and data.moveScales
     if s and type(s.PATROL_PACE) == "number" then LF.Move.PATROL_PACE = s.PATROL_PACE end
+    if s and type(s.lowBlend) == "number" then LF.Move.lowBlend = s.lowBlend end
 end)
 
 function LF_MoveAction.patrolStep(self)
     local c = self.character
     local scanning = self.scan and self.scanUntil and LF.tick < self.scanUntil
-    local scan = scanning and self.scan or "fwd"
+    local scan = scanning and self.scan or nil
     if scan == "back" then scan = "fwd" end
+    local low = scan == nil and LF.Move.lowReady ~= false
+    if scan == nil and not low then scan = "fwd" end
     local mul = self.paceMul or 1
     setVars(c, true, scan, mul)
 
@@ -296,6 +317,40 @@ function LF_MoveAction.patrolStep(self)
             self.calMs, self.calLen, self.calMul = ms, 0, mul
             return
         end
+        if low then
+            -- The low-ready walk: nudge the blend toward the ADS pace (median of recent readings).
+            LF.Move.lowReadings = LF.Move.lowReadings or {}
+            local list = LF.Move.lowReadings
+            list[#list + 1] = base
+            if #list > CAL_KEEP then table.remove(list, 1) end
+            if #list >= 5 then
+                local sorted = {}
+                for i = 1, #list do sorted[i] = list[i] end
+                table.sort(sorted)
+                local median = sorted[math.floor((#sorted + 1) / 2)]
+                LF.Move.lowMedian = median
+                local err = (LF.Move.PATROL_PACE - median) / LF.Move.PATROL_PACE
+                local step = math.max(-0.05, math.min(0.05, 0.6 * err))
+                local nb = math.max(0, math.min(1, LF.Move.lowBlend + step))
+                -- Stuck at an end of the blend and still well off: WalkSpeed does nothing here.
+                if (nb <= 0 or nb >= 1) and math.abs(err) > 0.15 then
+                    LF.Move.lowStuck = (LF.Move.lowStuck or 0) + 1
+                    if LF.Move.lowStuck >= 12 then
+                        LF.Move.lowReady = false
+                        LF.log(string.format("MOVE low-ready walk can't be brought to the ADS pace (%.2f vs %.2f tiles/s at blend %.2f) - patrolling at ADS instead",
+                            median, LF.Move.PATROL_PACE, nb))
+                    end
+                else
+                    LF.Move.lowStuck = 0
+                end
+                LF.Move.lowBlend = nb
+            end
+            LF.Move.lastPace = base
+            LF.Move.samples = (LF.Move.samples or 0) + 1
+            if LF.Move.samples % 50 == 0 then saveScales() end
+            self.calMs, self.calLen, self.calMul = ms, 0, mul
+            return
+        end
         if scan == "fwd" then
             -- The ADS walk itself: this IS the patrol pace (the median of the last few readings).
             LF.Move.adsReadings = LF.Move.adsReadings or {}
@@ -306,7 +361,8 @@ function LF_MoveAction.patrolStep(self)
                 local sorted = {}
                 for i = 1, #list do sorted[i] = list[i] end
                 table.sort(sorted)
-                LF.Move.PATROL_PACE = math.max(0.6, math.min(1.3, sorted[math.floor((#sorted + 1) / 2)]))
+                LF.Move.PATROL_PACE = math.max(0.6, math.min(1.8, sorted[math.floor((#sorted + 1) / 2)]))
+                LF.Move.adsMedian = sorted[math.floor((#sorted + 1) / 2)]
             end
             self.calMs, self.calLen, self.calMul = ms, 0, mul
             return
@@ -345,9 +401,11 @@ local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol step %.2f tiles/s (ADS pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
+        LF.log(string.format("PACE last step %.2f tiles/s; ADS pace %.2f (forward-scan median %s); low-ready walk median %s at blend %.2f%s",
             LF.Move.lastPace, LF.Move.PATROL_PACE,
-            LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale, LF.Move.sideScale))
+            LF.Move.adsMedian and string.format("%.2f", LF.Move.adsMedian) or "-",
+            LF.Move.lowMedian and string.format("%.2f", LF.Move.lowMedian) or "-",
+            LF.Move.lowBlend, LF.Move.lowReady == false and " (off - walking ADS)" or ""))
         LF.Move.lastPace = nil
     end
 end)

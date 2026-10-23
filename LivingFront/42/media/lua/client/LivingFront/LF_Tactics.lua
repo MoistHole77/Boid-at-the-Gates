@@ -83,7 +83,9 @@ local CFG = {
     clearStackClose = 480,  -- after ~8 s, a man within 2.5 tiles of his stack spot counts as stacked
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
     clearTimeout = 9000,    -- give up on a clearing after ~2.5 min
-    clearRooms = 6,         -- clear at most this many rooms one after another
+    clearRooms = 6,
+    clearPartnerWait = 900, -- a team stacked on one door waits up to ~15 s for the team at the other
+    backDoorMin = 6,        -- a back door: at least this far from the front one         -- clear at most this many rooms one after another
     standDownTicks = 2700,  -- ~45 s with nothing to do: the unit stands by
     -- The sergeant choosing his stance
     digInOdds = 1.5,        -- dig in when the known enemy is this many times our fit men
@@ -1664,7 +1666,7 @@ local function planRoom(squad, team, L, file, started, rooms, anchor)
 end
 
 -- Plan the clearing of building L by a team. Returns the plan or nil.
-local function planClear(squad, team, t, L)
+local function planClear(squad, team, t, L, forceDoor)
     local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
     local cell = getCell()
     local z = L.z
@@ -1684,7 +1686,7 @@ local function planClear(squad, team, t, L)
     local door, doorD = nil, math.huge
     local doors = 0
     for _, o in ipairs(L.openings) do
-        if o.kind == "door" then
+        if o.kind == "door" and (not forceDoor or o == forceDoor) then
             doors = doors + 1
             local out = cell:getGridSquare(o.x + o.dx, o.y + o.dy, z)
             if out then
@@ -1708,7 +1710,10 @@ local function planClear(squad, team, t, L)
         local b = LF.Bodies.get(rid)
         if b and math.floor(b:getZ()) == z and LF.Building.isInside(L, b:getX(), b:getY()) then inside = inside + 1 end
     end
-    if inside * 2 >= #file then return planRoom(squad, team, L, file, LF.tick, {}) end
+    if inside * 2 >= #file then
+        if forceDoor then return nil, "already inside" end
+        return planRoom(squad, team, L, file, LF.tick, {})
+    end
     local ox, oy = door.x + door.dx, door.y + door.dy
     -- Stack against the wall beside the door, on the side nearer the team.
     local lx, ly = -door.dy, door.dx
@@ -1866,7 +1871,7 @@ local function updateClear(team, t, squad)
         for i, rid in ipairs(C.file) do
             if LF.Records.get(rid) and fit(LF.Records.get(rid)) and not at(rid, C.stack[i].x, C.stack[i].y) then all = false end
         end
-        if not all and LF.tick - C.phaseAt > CFG.clearStackTimeout then
+        if not all and LF.tick - C.phaseAt > (C.stackTimeout or CFG.clearStackTimeout) then
             -- Taking too long: go with the men who are on the stack; the rest stay out and cover.
             local file, stack = {}, {}
             for i, rid in ipairs(C.file) do
@@ -1890,6 +1895,21 @@ local function updateClear(team, t, squad)
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stacked! Ready...") end
         end
     elseif C.phase == "breach" then
+        -- Two doors at once: whichever team is stacked first waits (up to ~15 s) for the other,
+        -- then both go in together.
+        if C.partner then
+            local pt = teams[C.partner]
+            local pc = pt and pt.clear
+            if pc and pc.phase == "stack" and LF.tick - (C.waitFrom or LF.tick) < CFG.clearPartnerWait then
+                C.waitFrom = C.waitFrom or LF.tick
+                if not C.saidWait then
+                    C.saidWait = true
+                    LF.log("CLEAR " .. team.name .. ": stacked - waiting for " .. (LF.Units.get(C.partner) or {}).name .. " at the other door")
+                end
+                C.phaseAt = LF.tick - 60 + 1     -- (ready to go the moment they are)
+                return true
+            end
+        end
         -- A defender known close to the door: a grenade in on him first (from whichever leader
         -- has a clear throw), then the door.
         if LF.tick - C.phaseAt >= 60 and not C.covered and LF.Grenade then
@@ -2033,7 +2053,59 @@ function LF.Tactics.orderClear(squad, team, L, why)
     if team.leader and LF.Bodies.get(team.leader) then
         LF.Tactics.shout(team.leader, C.room and "Next room - go!" or "Stack up on the door!")
     end
+    if not C.room then LF.guard("back door", LF.Tactics.backDoor, squad, team, C, L) end
     return team
+end
+
+-- A second team round the back: if the building has another door to the outside well away from
+-- the one the first team is stacking on (another wall preferred), and the squad has a team to
+-- spare after that (one is always left to cover), that team goes round and clears in from it.
+-- The two stacks go in together; rooms one team has cleared, the other doesn't clear again.
+function LF.Tactics.backDoor(squad, team, C, L)
+    local front = C.door
+    local fx, fy = front.x + front.dx, front.y + front.dy
+    local best, bestS = nil, -math.huge
+    for _, o in ipairs(L.openings) do
+        if o.kind == "door" and o ~= front then
+            local d = LF.dist(fx, fy, o.x + o.dx, o.y + o.dy)
+            if d >= CFG.backDoorMin then
+                local sc = d + (o.wall ~= front.wall and 10 or 0)
+                if sc > bestS then best, bestS = o, sc end
+            end
+        end
+    end
+    if not best then
+        LF.log("CLEAR " .. squad.name .. ": no back door - one team clears")
+        return nil
+    end
+    -- Teams free to go: not the one already going, not clearing, enough fit men. Alpha 2 first
+    -- (Bravo is the base of fire); at least one team stays out to cover.
+    local free = {}
+    for _, tid in ipairs(squad.teams) do
+        local tm, tt = LF.Units.get(tid), teams[tid]
+        if tm and tt and tid ~= team.id and not tt.clear then free[#free + 1] = tm end
+    end
+    if #free < 2 then
+        LF.log("CLEAR " .. squad.name .. ": a back door, but no team to spare for it (one stays out to cover)")
+        return nil
+    end
+    table.sort(free, function(a, b) return (a.element == "A" and 0 or 1) < (b.element == "A" and 0 or 1) end)
+    for _, tm in ipairs(free) do
+        local tt = teams[tm.id]
+        local C2 = planClear(squad, tm, tt, L, best)
+        if C2 then
+            local rooms = {}
+            C.rooms, C2.rooms = rooms, rooms
+            C.partner, C2.partner = tm.id, team.id
+            C2.stackTimeout = CFG.clearStackTimeout * 2       -- it has further to go
+            tt.clear, tt.order, tt.moving, tt.shifting = C2, "CLEAR", nil, nil
+            LF.log("CLEAR " .. tm.name .. " of " .. squad.name .. " goes round the back: the door at " .. best.x .. "," .. best.y)
+            if tm.leader and LF.Bodies.get(tm.leader) then LF.Tactics.shout(tm.leader, "Round the back! Stack on the back door!") end
+            return tm
+        end
+    end
+    LF.log("CLEAR " .. squad.name .. ": a back door at " .. best.x .. "," .. best.y .. ", but no team can stack on it")
+    return nil
 end
 
 -- The sergeant: is the enemy holed up in a building, down to a few men he knows of? Send

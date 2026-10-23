@@ -124,8 +124,51 @@ local function clearSquare(sq, counts)
     end
 end
 
+-- Every wound on every body part, one call at a time (one that doesn't exist in this build
+-- can't stop the rest).
+local function healParts(p)
+    local bd = p:getBodyDamage()
+    local parts = bd:getBodyParts()
+    for i = 0, parts:size() - 1 do
+        local bp = parts:get(i)
+        for _, f in ipairs({
+            function() bp:RestoreToFullHealth() end,
+            function() bp:setBleeding(false) end, function() bp:setBleedingTime(0) end,
+            function() bp:setHaveBullet(false, 0) end, function() bp:setHaveGlass(false) end,
+            function() bp:setDeepWounded(false) end, function() bp:setDeepWoundTime(0) end,
+            function() bp:setFractureTime(0) end, function() bp:setSplint(false, 0) end,
+            function() bp:setCut(false) end, function() bp:setCutTime(0) end,
+            function() bp:setScratched(false, false) end, function() bp:setScratchTime(0) end,
+            function() bp:SetBitten(false) end, function() bp:setBurnTime(0) end,
+            function() bp:setBandaged(false, 0) end, function() bp:setStitched(false) end,
+            function() bp:setWoundInfectionLevel(0) end, function() bp:SetInfected(false) end,
+            function() bp:setAdditionalPain(0) end, function() bp:SetHealth(100) end,
+        }) do pcall(f) end
+    end
+    pcall(function() bd:setOverallBodyHealth(100) end)
+    pcall(function() bd:setInfected(false) end)
+    pcall(function() bd:setInfectionLevel(0) end)
+    pcall(function() p:setHealth(1) end)
+    -- Up off the ground if a blast or a hit had him down.
+    pcall(function() p:setKnockedDown(false) end)
+    pcall(function() p:setOnFloor(false) end)
+    pcall(function() p:setBumpDone(true) end)
+end
+
 local function healPlayer(p)
     p:getBodyDamage():RestoreToFullHealth()
+    LF.guard("heal wounds", healParts, p)
+    -- Once more next tick (the game recalculates health from the parts each frame).
+    local n = 0
+    local function again()
+        n = n + 1
+        if n < 2 then return end
+        Events.OnTick.Remove(again)
+        LF.guard("heal wounds", healParts, p)
+        local ok, h = pcall(function() return p:getBodyDamage():getOverallBodyHealth() end)
+        LF.log("RESET WORLD player health now " .. (ok and math.floor(h) or "?"))
+    end
+    Events.OnTick.Add(again)
     local stats = p:getStats()
     for _, name in ipairs(CLEAR_STATS) do
         if CharacterStat[name] then stats:set(CharacterStat[name], 0) end

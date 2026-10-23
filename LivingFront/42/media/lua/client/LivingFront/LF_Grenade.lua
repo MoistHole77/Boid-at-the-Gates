@@ -156,10 +156,12 @@ local function explode(g)
     local cell = getCell()
     local sq = cell:getGridSquare(math.floor(g.x), math.floor(g.y), g.z)
     if sq then
-        if not pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", sq, 0, 60, 1.0, false) end) then
-            pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", false, sq, 0, 60, 1.0, false) end)
+        if not g.engineBang then      -- (the game's own explosion has already made the bang)
+            if not pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", sq, 0, 60, 1.0, false) end) then
+                pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", false, sq, 0, 60, 1.0, false) end)
+            end
         end
-        pcall(function() addSound(nil, sq:getX(), sq:getY(), g.z, 60, 60) end)
+        pcall(function() addSound(nil, sq:getX(), sq:getY(), g.z, 60, 60) end)   -- (zombies hear it)
         local ok, light = pcall(function() return cell:addLamppost(sq:getX(), sq:getY(), g.z, 1.0, 0.75, 0.4, 8) end)
         if ok and light then lights[#lights + 1] = { light = light, off = LF.tick + 12 } end
     end
@@ -170,14 +172,17 @@ local function explode(g)
     end
     local p = getPlayer()
     if p and not p:isDead() then LF.guard("grenade blast", hurt, g, p) end
-    LF.log(string.format("GRENADE goes off at %d,%d", math.floor(g.x), math.floor(g.y)))
+    LF.log(string.format("GRENADE goes off at %d,%d%s", math.floor(g.x), math.floor(g.y),
+        g.engine and (g.engineBang and " (where the game's throw physics took it)" or " (the game's throw never landed - at the aimed point)") or ""))
 end
 
 Events.OnTick.Add(function()
     if pendingCount > 0 then
         for i = #pending, 1, -1 do
             local g = pending[i]
-            if LF.tick >= g.at then
+            -- (One thrown with the game's physics goes off when the game says it has - see
+            -- OnThrowableExplode below - or, if that never comes, a little after its fuse.)
+            if LF.tick >= g.at + (g.engine and 120 or 0) then
                 table.remove(pending, i)
                 pendingCount = pendingCount - 1
                 LF.guard("grenade", explode, g)
@@ -192,6 +197,57 @@ Events.OnTick.Add(function()
     end
 end)
 Events.OnInitGlobalModData.Add(function() pending, pendingCount, lights = {}, 0, {} end)
+
+-- The game's own explosion of one of our throws: it goes off there - where the game's physics
+-- took it (arc, bounces off walls, the roll after it lands).
+if Events.OnThrowableExplode then
+    Events.OnThrowableExplode.Add(function(trap, sq)
+        if pendingCount == 0 or not sq then return end
+        local who = nil
+        pcall(function() who = trap:getAttacker() end)
+        local wid = who and who:getModData().LF_id
+        local pick, pi = nil, nil
+        for i, g in ipairs(pending) do
+            if g.engine and not g.engineBang and (wid == nil or g.by == wid) then
+                if not pick or g.at < pick.at then pick, pi = g, i end
+            end
+        end
+        if not pick then return end
+        table.remove(pending, pi)
+        pendingCount = pendingCount - 1
+        pick.x, pick.y, pick.z = sq:getX() + 0.5, sq:getY() + 0.5, sq:getZ()
+        pick.engineBang = true
+        LF.guard("grenade", explode, pick)
+    end)
+end
+
+-- Throw it with the game's own throwable physics: a pipe bomb flies from his hand toward the
+-- target square (the game's arc and spread), and goes off after the fuse wherever it ends up. Our
+-- copy of the pipe bomb has no blast of its own (power and range 0): the game's explosion only
+-- gives the bang, the noise and the event; the hurting is ours (below), so cover, crouching and
+-- the wound tiers work as before. Returns true if the game took the throw.
+local function engineThrow(c, tx, ty, tz)
+    if LF.Grenade.engine == false then return false end
+    local ok, err = pcall(function()
+        local w = instanceItem("Base.PipeBomb")
+        w:setExplosionPower(0)
+        w:setExplosionRange(0)
+        w:setFireRange(0)
+        w:setSmokeRange(0)
+        w:setExplosionTimer(0)
+        w:setTriggerExplosionTimer(math.max(1, math.floor((CFG.fuseTicks - CFG.releaseTicks) / 2)))  -- (30 fps frames)
+        w:setMaxRange(CFG.maxRange + 2)
+        local sq = getCell():getGridSquare(math.floor(tx), math.floor(ty), tz)
+        if not sq then error("no square") end
+        c:setAttackTargetSquare(sq)
+        c:Throw(w)
+    end)
+    if not ok and LF.Grenade.engine == nil then
+        LF.Grenade.engine = false
+        LF.log("GRENADE the game's throw isn't available for NPCs (" .. tostring(err) .. ") - using our own")
+    end
+    return ok
+end
 
 -- It's in the air: men who see it land near them may dive clear.
 local function warn(g)
@@ -241,8 +297,11 @@ function LF_ThrowAction:release()
     local r = ZombRand(100) / 100 * spread
     local lx, ly = self.tx + math.cos(a) * r, self.ty + math.sin(a) * r
     lx, ly = travel(c:getX(), c:getY(), lx, ly, self.tz)
+    -- The game's physics takes it from here if it can (it aims at the target square itself and
+    -- adds its own spread); else it lands where we reckon.
+    local viaEngine = engineThrow(c, self.tx, self.ty, self.tz)
     local g = { x = lx, y = ly, z = self.tz, at = LF.tick + CFG.fuseTicks - CFG.releaseTicks,
-                by = rec and rec.id, faction = rec and rec.faction }
+                by = rec and rec.id, faction = rec and rec.faction, engine = viaEngine }
     pending[#pending + 1] = g
     pendingCount = pendingCount + 1
     if LF.Tactics and rec then LF.Tactics.shout(rec.id, "Grenade!") end
