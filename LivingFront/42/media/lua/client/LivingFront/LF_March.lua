@@ -434,6 +434,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     -- A new task (not the next leg, a resumption, or a team walking home): standing-by fire
     -- teams nearby join the unit first (LF_Join).
     if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad, "patrol") end
+    if not (opts and opts.continuing) then squad.pendingHold = nil end    -- a new order replaces a pending one
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end

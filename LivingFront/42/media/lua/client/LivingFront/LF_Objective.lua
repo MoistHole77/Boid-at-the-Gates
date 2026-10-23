@@ -212,6 +212,15 @@ end
 -- The patrol carrying a "take" task has arrived (LF_March calls this the moment the point man
 -- reaches the rally point): straight into the assault. True if the task took over.
 function LF.Objective.onArrived(squad)
+    -- Sent to hold an objective from afar: there now - take up the defence.
+    if squad.pendingHold then
+        local obj = LF.Objective.get(squad.pendingHold)
+        squad.pendingHold = nil
+        if obj then
+            LF.Objective.hold(squad, obj)
+            return true
+        end
+    end
     local t = squad.objTask
     if not (t and t.kind == "take" and t.phase == "approach") then return false end
     local obj = LF.Objective.get(t.obj)

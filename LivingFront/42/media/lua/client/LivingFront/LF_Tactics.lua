@@ -1157,6 +1157,19 @@ local function dealBuilding(squad, sq, front)
             if p then take(rid, p); break end
         end
     end
+    -- Anyone still without a post: a square of his own inside (nearest the middle first, each man
+    -- a different one) - not all on the middle square, crowding each other out of the building.
+    local inner = {}
+    for _, q in ipairs(L.inside) do inner[#inner + 1] = q end
+    table.sort(inner, function(a, b) return LF.dist(a.x, a.y, L.cx, L.cy) < LF.dist(b.x, b.y, L.cx, L.cy) end)
+    local k = 1
+    for _, rid in ipairs(spares) do
+        if not posts[rid] then
+            while inner[k] and taken[inner[k].x .. "," .. inner[k].y] do k = k + 1 end
+            local q = inner[k]
+            if q then take(rid, { x = q.x, y = q.y, wall = walls[1], stand = false, kind = "reserve", any = true }) end
+        end
+    end
     -- The sergeant: the middle.
     if squad.leader and able(squad.leader) then
         local best, bd = nil, math.huge

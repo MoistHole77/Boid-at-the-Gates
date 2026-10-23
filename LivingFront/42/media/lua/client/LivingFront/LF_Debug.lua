@@ -286,8 +286,24 @@ local function objectiveAt(x, y, z)
     return LF.Objective.create(x, y, z, "Objective " .. string.char(65 + n % 26))
 end
 
-local function holdOf(u, x, y, z)
-    local obj = objectiveAt(x, y, z)
+local function holdObj(u, obj)
+    -- Far away: patrol there first, then hold it.
+    local ux, uy = unitPos(u)
+    if ux and LF.dist(ux, uy, obj.x, obj.y) > 25 then
+        local ok, why = LF.March.order(u, math.floor(obj.x), math.floor(obj.y), obj.z, "auto")
+        if ok then
+            u.pendingHold = obj.id
+            LF.say(u.name .. " patrols to " .. obj.name .. " to hold it")
+        else
+            LF.say("Can't move: " .. tostring(why))
+        end
+        return true
+    end
+    return false
+end
+
+local function holdOf(u, x, y, z, given)
+    local obj = given or objectiveAt(x, y, z)
     -- A friendly unit already holds it: help that unit hold it (one objective, one defence).
     for _, other in pairs(LF.Units.all()) do
         local t = other.objTask
@@ -304,13 +320,14 @@ local function holdOf(u, x, y, z)
             break
         end
     end
+    if holdObj(u, obj) then return end          -- far away: it patrols there first
     LF.Objective.hold(u, obj)
     LF.Tactics.noteStanceSet(u)
     LF.say(u.name .. " holds " .. obj.name)
 end
 
-local function takeOf(u, x, y, z)
-    local obj = objectiveAt(x, y, z)
+local function takeOf(u, x, y, z, given)
+    local obj = given or objectiveAt(x, y, z)
     local ok, why = LF.Objective.take(u, obj)
     LF.say(ok and (u.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
 end
@@ -387,6 +404,24 @@ local function onMenu(playerNum, context, worldObjects, test)
                 um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
                 um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
                 if building then um:addOption("Clear this building (Alpha 1)", nil, function() clearOf(u, x, y, z) end) end
+                -- Any objective, wherever it is (no need to be near it).
+                local objs = {}
+                for _, o in pairs(LF.Objective.all()) do objs[#objs + 1] = o end
+                table.sort(objs, function(a, b) return a.id < b.id end)
+                if #objs > 0 then
+                    local ux, uy = unitPos(u)
+                    local function label(o)
+                        local holder = o.holder and (", held by the " .. (o.holder == "GER" and "Germans" or o.holder == "SOV" and "Soviets" or o.holder)) or ""
+                        return o.name .. " (" .. math.floor(LF.dist(ux or o.x, uy or o.y, o.x, o.y)) .. " tiles" .. holder .. ")"
+                    end
+                    local am = sub(um, "Attack an objective")
+                    local hm = sub(um, "Hold an objective")
+                    for _, o in ipairs(objs) do
+                        local obj = o
+                        am:addOption(label(obj), nil, function() takeOf(u, x, y, z, obj) end)
+                        hm:addOption(label(obj), nil, function() holdOf(u, x, y, z, obj) end)
+                    end
+                end
                 local cid = LF.Units.commander(u)
                 if cid then um:addOption("Inspect its leader", nil, function() LF.Inspect.open(cid) end) end
             end

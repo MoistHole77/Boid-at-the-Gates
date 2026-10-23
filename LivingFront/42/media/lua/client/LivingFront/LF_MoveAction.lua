@@ -66,6 +66,12 @@ end
 local SCAN_TURN = { fwd = 0, left = -90, right = 90, back = 180 }
 
 local function applyGait(character, gait)
+    -- Crawling: never running (the crawl node only plays at a walk).
+    if character:getVariableBoolean("LFCrawl") then
+        character:setSprinting(false)
+        character:setRunning(false)
+        return
+    end
     if gait == "patrol" then
         character:setSprinting(false)
         character:setRunning(false)
@@ -145,56 +151,64 @@ function LF_MoveAction:update()
 end
 
 -- ---- jams -----------------------------------------------------------------------------------------
--- Two soldiers walking into each other push against each other forever (the engine keeps them
--- apart). A man who has made no headway for ~1 s with another man right against him is let
--- through for ~1.5 s (ghost mode: the engine doesn't push a ghost apart from others), then he is
--- solid again.
+-- Two soldiers walking into each other push against each other (the engine keeps solid characters
+-- apart) - shuffling, but getting nowhere. A man who has got no closer to where he is going for
+-- ~1 s, with another man right against him, is let through - and so is the other man: the engine
+-- only stops pushing a pair apart if both are passable (ghost mode). After ~1.5 s both are solid
+-- again. (0.28.0 only made the one man passable, and only noticed a man standing dead still.)
 local JAM_TICKS = 60
 local GHOST_TICKS = 90
+local ghosts = {}           -- body -> tick when he is solid again
 
 local function setGhost(c, on) pcall(function() c:setGhostMode(on) end) end
+
+local function ghost(c)
+    setGhost(c, true)
+    ghosts[c] = LF.tick + GHOST_TICKS
+end
+
+Events.OnTick.Add(function()
+    if next(ghosts) == nil then return end
+    for c, untilTick in pairs(ghosts) do
+        if LF.tick >= untilTick or c:isDead() then
+            setGhost(c, false)
+            ghosts[c] = nil
+        end
+    end
+end)
 
 local function someoneAgainst(c)
     local x, y, z = c:getX(), c:getY(), c:getZ()
     for _, b in pairs(LF.Bodies.all()) do
-        if b ~= c and math.abs(b:getZ() - z) < 0.5 and LF.distSq(b:getX(), b:getY(), x, y) < 1.2 then return b end
+        if b ~= c and math.abs(b:getZ() - z) < 0.5 and LF.distSq(b:getX(), b:getY(), x, y) < 1.44 then return b end
     end
-    local p = getPlayer()
-    if p and p ~= c and math.abs(p:getZ() - z) < 0.5 and LF.distSq(p:getX(), p:getY(), x, y) < 1.2 then return p end
     return nil
 end
 
 function LF_MoveAction.jamCheck(self)
-    local c = self.character
-    if self.ghostUntil and LF.tick >= self.ghostUntil then
-        setGhost(c, false)
-        self.ghostUntil = nil
-    end
     if LF.tick % 10 ~= 0 then return end
-    local x, y = c:getX(), c:getY()
-    if not self.jamX or LF.dist(x, y, self.jamX, self.jamY) > 0.3 then
-        self.jamX, self.jamY, self.jamT = x, y, LF.tick
+    local c = self.character
+    local tx, ty = self.location:getX() + 0.5, self.location:getY() + 0.5
+    local d = LF.dist(c:getX(), c:getY(), tx, ty)
+    if d < 1.0 then return end
+    if not self.jamBest or d < self.jamBest - 0.4 then
+        self.jamBest, self.jamT = d, LF.tick            -- making headway
         return
     end
-    if self.ghostUntil or LF.tick - self.jamT < JAM_TICKS then return end
-    local other = someoneAgainst(c)
+    if LF.tick - self.jamT < JAM_TICKS or ghosts[c] then return end
     self.jamT = LF.tick
+    local other = someoneAgainst(c)
     if not other then return end
-    setGhost(c, true)
-    self.ghostUntil = LF.tick + GHOST_TICKS
+    ghost(c)
+    ghost(other)
     LF.Move.jams = (LF.Move.jams or 0) + 1
     if LF.Move.jams <= 10 or LF.Move.jams % 50 == 0 then
-        LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " jammed against "
-            .. tostring(other:getModData().LF_id or "the player") .. " - slips past (" .. LF.Move.jams .. ")")
+        LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " jammed against #" .. tostring(other:getModData().LF_id)
+            .. " - both slip past (" .. LF.Move.jams .. ")")
     end
 end
 
-local function unghost(self)
-    if self.ghostUntil then
-        setGhost(self.character, false)
-        self.ghostUntil = nil
-    end
-end
+local function unghost(self) end   -- (ghosts end on their own timer)
 
 -- Patrol walk: the animation variables, the scan facing, and the pace calibration.
 --
@@ -321,6 +335,7 @@ function LF_MoveAction:retarget(x, y, z)
     local ok = pcall(function() pfb:pathToLocation(math.floor(x), math.floor(y), math.floor(z)) end)
     if not ok then return false end
     self.location = sq
+    self.jamBest = nil
     return true
 end
 

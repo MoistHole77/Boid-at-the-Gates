@@ -203,6 +203,66 @@ local function wound(target, partName, profile)
     target:getBodyDamage():ReduceGeneralHealth((IMPACT[partName] or 15) * profile.impact)
 end
 
+-- ---- knocked off his feet ----------------------------------------------------------------------
+-- A hit can stagger a man, or put him down - the same stagger, fall and getting-up clips as the
+-- player's (the game's "bump"). The chance depends on where he's hit.
+local KNOCK = {     -- part -> { fall %, stagger % }
+    UpperLeg_L = { 55, 30 }, UpperLeg_R = { 55, 30 }, LowerLeg_L = { 55, 30 }, LowerLeg_R = { 55, 30 },
+    Torso_Lower = { 25, 35 }, Torso_Upper = { 25, 35 }, Head = { 40, 0 },
+    UpperArm_L = { 0, 30 }, UpperArm_R = { 0, 30 },
+}
+
+local function knock(target, shooter, fall)
+    -- From the front, he goes over backwards; from behind, forwards.
+    local fx, fy = target:getForwardDirection():getX(), target:getForwardDirection():getY()
+    local front = (shooter:getX() - target:getX()) * fx + (shooter:getY() - target:getY()) * fy > 0
+    ISTimedActionQueue.clear(target)
+    if LF.Posture and LF.Posture.crouched(target) then LF.Posture.set(target, false) end
+    target:setBumpType("stagger")
+    target:setBumpDone(false)
+    target:setVariable("BumpDone", false)
+    target:setBumpFall(fall)
+    target:setVariable("BumpFall", fall)
+    if fall then
+        local t = front and "pushedFront" or "pushedBehind"
+        target:setBumpFallType(t)
+        target:setVariable("BumpFallType", t)
+    end
+end
+
+-- Staggering, or down on the ground (and getting up): he can't do anything else just now.
+function LF.Combat.knockedDown(body)
+    local ok, v = pcall(function() return body:isBumped() or body:isOnFloor() or body:isKnockedDown() end)
+    return ok and v or false
+end
+
+-- ---- crawling ---------------------------------------------------------------------------------
+-- A man whose legs are badly hurt crawls (LF_Crawl / LF_ProneIdle animation nodes) instead of
+-- limping: a leg below 30% of its health, or 55% with much of his health gone.
+local LEGS = { "UpperLeg_L", "UpperLeg_R", "LowerLeg_L", "LowerLeg_R", "Foot_L", "Foot_R" }
+function LF.Combat.legsOut(body)
+    local bd = body:getBodyDamage()
+    local worst = 100
+    for _, name in ipairs(LEGS) do
+        local h = bd:getBodyPart(BodyPartType[name]):getHealth()
+        if h < worst then worst = h end
+    end
+    return worst < 30 or (worst <= 55 and LF.Combat.health(body) < 60)
+end
+
+-- Set (or clear) his crawling. Returns whether he crawls.
+function LF.Combat.updateCrawl(body)
+    local ok, out = pcall(LF.Combat.legsOut, body)
+    local crawl = ok and out or false
+    for _, v in ipairs({ "LFCrawl", "LFCrawlA", "LFCrawlB", "LFCrawlC", "LFCrawlD" }) do body:setVariable(v, crawl) end
+    body:setVariable("LFCrawlSpeed", 1.0)
+    if crawl then
+        body:setRunning(false)
+        body:setSprinting(false)
+    end
+    return crawl
+end
+
 local function flinch(target)
     ISTimedActionQueue.clear(target)
     ISTimedActionQueue.add(LF_FlinchAction:new(target))
@@ -249,7 +309,16 @@ function LF.Combat.resolveShot(shooter, target, gun)
         local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
         local partName = LF.pick(parts or BODY_PARTS)
         LF.guard("wound", wound, target, partName, profile)
-        LF.guard("flinch", flinch, target)
+        -- Knocked over, staggered - or just a flinch.
+        local k = KNOCK[partName] or { 0, 0 }
+        local roll = ZombRand(100)
+        if roll < k[1] then
+            LF.guard("knock down", knock, target, shooter, true)
+        elseif roll < k[1] + k[2] then
+            LF.guard("stagger", knock, target, shooter, false)
+        else
+            LF.guard("flinch", flinch, target)
+        end
         result = "HIT " .. partName
     end
     LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)

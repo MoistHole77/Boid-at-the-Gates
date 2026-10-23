@@ -159,21 +159,29 @@ function LF.Brain.walkNear(body, x, y, z, spread, gait, awayX, awayY)
     if LF.Idle and LF.Idle.standUp(body) then return false end
     local cell = getCell()
     local myId = idOfBody(body)
-    local fallback = nil
+    local bx, by, bz = body:getX(), body:getY(), math.floor(body:getZ())
+    -- Best: free, nobody else's, and no fence or wall between him and it (so he walks, not hops).
+    -- Then: free and nobody else's (over a fence if he must). Last: just free.
+    local fallback, overFence = nil, nil
     for i = 1, 10 do
         local r = i <= 6 and spread or spread + 1             -- a little wider if it's crowded
         local sq = cell:getGridSquare(math.floor(x + ZombRand(-r, r + 1)),
                                       math.floor(y + ZombRand(-r, r + 1)), math.floor(z))
         if sq and sq:isFree(false) then
             if not claimedByOther(claimKey(sq:getX(), sq:getY(), sq:getZ()), myId, false) then
-                ISTimedActionQueue.clear(body)
-                ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
-                claim(body, sq, false)
-                return true
+                local clear = math.floor(z) ~= bz or LF.Cover.crossings(bx, by, sq:getX(), sq:getY(), bz, 1) == 0
+                if clear then
+                    ISTimedActionQueue.clear(body)
+                    ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
+                    claim(body, sq, false)
+                    return true
+                end
+                overFence = overFence or sq
             end
             fallback = fallback or sq
         end
     end
+    fallback = overFence or fallback
     if fallback then
         ISTimedActionQueue.clear(body)
         ISTimedActionQueue.add(moveAction(body, fallback, gait, awayX, awayY))
@@ -719,6 +727,9 @@ local function decide(id, body, rec, m)
     if pick then threat, threatId, dist = pick.body, pick.id, pick.dist end
     if pick and fighter and dist <= CFG.fireRange then m.lastSight = LF.tick end
     local hp = LF.Combat.health(body)
+    -- Legs too badly hurt to walk: he counts as badly wounded - he crawls away (or, in a
+    -- defence, stays down where he is).
+    if m.crawl and fighter then hp = math.min(hp, CFG.fleeHealth - 1) end
 
     -- The slot this soldier is leashed to (none for the squad leader, who sets the pace).
     local ax, ay, az = nil, nil, nil
@@ -1080,12 +1091,16 @@ local function stepNpc(id, body, rec)
         else
             m.zeroSince = nil
         end
+        -- Staggering, down on the ground or getting up: nothing else until he's on his feet.
+        if LF.Combat.knockedDown(body) then return end
+        m.crawl = LF.Combat.updateCrawl(body)
         LF.Brain.decide(id, body, rec, m)
         -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
         -- he is in position.
         local moving = m.state == "bound" or m.state == "file" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))
         LF.Suppress.setMoving(id, moving)
     end
+    if LF.Combat.knockedDown(body) then return end
     LF.Brain.act(id, body, rec, m)
 end
 
