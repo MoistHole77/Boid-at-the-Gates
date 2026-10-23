@@ -550,7 +550,7 @@ local function carryScan(body, m)
 end
 
 local FILE_WORDS = { aim = "going in", march = "on patrol", point = "on point", wait = "waiting to fall in",
-                     catchup = "catching up",
+                     catchup = "catching up", route = "on the march",
                      halt = "halted - down, aiming outboard" }
 
 local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId, dist, scanDir)
@@ -584,8 +584,8 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     if holdingAim(body, true) then ISTimedActionQueue.clear(body) end -- his place has moved: get up
     local key = tx .. "," .. ty .. "," .. gait
     local walkGait = (gait == "march" or gait == "point") and "patrol"
-        or ((gait == "halt" or gait == "catchup") and "walk" or gait)
-    local moving = gait == "march" or gait == "point" or gait == "catchup"
+        or ((gait == "halt" or gait == "catchup" or gait == "route") and "walk" or gait)
+    local moving = gait == "march" or gait == "point" or gait == "catchup" or gait == "route"
     if (gait == "march" or gait == "point") and scanDir and LF.tick >= (m.nextScan or 0) then
         -- Now and then: keep walking but bring the rifle up and scan his own outboard side (the
         -- way he would face at a halt) for a second or two.

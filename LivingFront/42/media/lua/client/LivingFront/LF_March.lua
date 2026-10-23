@@ -447,7 +447,7 @@ function LF.March.order(squad, x, y, z, form, opts)
         form = (opts and opts.form) or (onRoad and "column" or "wedge")
     end
     local M = { pts = pts, z = z, form = form, auto = auto, x = x, y = y, final = final,
-                dest = { x = lx + 0.5, y = ly + 0.5 } }
+                dest = { x = lx + 0.5, y = ly + 0.5 }, fastUntil = opts and opts.fastUntil }
     M.len = measure(pts)
     M.total = M.len[#pts]
     M.order = order
@@ -543,6 +543,7 @@ function LF.March.place(rec)
     local _, _, dx, dy = pointAt(M, math.min(M.head, M.total) + M.off[rec.id].f)
     f.x, f.y = x + dx * 6, y + dy * 6
     local gait = rec.id == M.order[1] and "point" or "march"
+    if M.fast then gait = "route" end
     if M.lag and M.lag[rec.id] then gait = "catchup" end
     return "file", x, y, M.z, f, gait, M.off[rec.id].scan
 end
@@ -570,11 +571,23 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         -- Quiet again: set off again from where the men are, on the point man.
         LF.log("PATROL " .. squad.name .. ": quiet again - moving on")
         local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
-            { continuing = true, form = M.form, started = M.started })
+            { continuing = true, form = M.form, started = M.started, fastUntil = M.fastUntil })
         if not ok then marches[squad.id] = nil end
         return ok
     end
     if M.arrived then return true end
+    -- Far from where it's going (opts.fastUntil): a plain walk to cover the ground; the slow
+    -- tactical pace, scanning, once within range of it.
+    local fu = M.fastUntil
+    if fu then
+        local pb = LF.Bodies.get(M.order[1])
+        local fast = pb ~= nil and LF.dist(pb:getX(), pb:getY(), fu.x, fu.y) > fu.r
+        if M.fast and not fast then
+            LF.log("PATROL " .. squad.name .. ": within " .. fu.r .. " tiles - tactical pace")
+            LF.Tactics.shout(cid, "Close now - slow down, eyes open!")
+        end
+        M.fast = fast
+    end
     chooseFormation(squad, cid, M)
     -- Men fall in as their places reach them. The point man is the base: the head moves on while
     -- he keeps up with it. Anyone who has dropped well behind his place walks at the normal pace
@@ -628,7 +641,7 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
     if not M.final then
         -- End of a leg: on to the next, from where the point man is.
         local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
-            { continuing = true, form = M.form, started = M.started })
+            { continuing = true, form = M.form, started = M.started, fastUntil = M.fastUntil })
         if not ok then marches[squad.id] = nil end
         return ok
     end

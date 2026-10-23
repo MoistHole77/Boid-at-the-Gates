@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <animNode>
 	<m_Name>LF_PatrolShuffle</m_Name>
-	<m_AnimName>Bob_WalkAimRifle</m_AnimName>
+	<m_AnimName>Bob_WalkSlow</m_AnimName>
 	<m_Looped>true</m_Looped>
 	<m_BlendTime>0.25</m_BlendTime>
 	<m_SpeedScale>LFShuffleSpeed</m_SpeedScale>
