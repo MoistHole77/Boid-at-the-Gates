@@ -2,6 +2,7 @@
 <animNode>
 	<m_Name>LF_SitEat</m_Name>
 	<m_AnimName>Bob_IdleSittingEating_Box</m_AnimName>
+	<m_DeferredBoneName></m_DeferredBoneName>
 	<m_Looped>true</m_Looped>
 	<m_BlendTime>0.40</m_BlendTime>
 	<m_BlendOutTime>0.40</m_BlendOutTime>

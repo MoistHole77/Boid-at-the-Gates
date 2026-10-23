@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_SitWork</m_Name>
+	<m_AnimName>Bob_SitGround_Making</m_AnimName>
+	<m_DeferredBoneName></m_DeferredBoneName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.40</m_BlendTime>
+	<m_BlendOutTime>0.40</m_BlendOutTime>
+	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
+	<m_Conditions x_name="lf-lf_sitwork-0001">
+		<m_Name>PerformingAction</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>LF_SitWork</m_Value>
+	</m_Conditions>
+</animNode>

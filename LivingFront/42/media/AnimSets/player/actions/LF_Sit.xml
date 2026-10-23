@@ -2,9 +2,11 @@
 <animNode>
 	<m_Name>LF_Sit</m_Name>
 	<m_AnimName>Bob_SitGround_Idle_Rifle</m_AnimName>
+	<m_DeferredBoneName></m_DeferredBoneName>
 	<m_Looped>true</m_Looped>
 	<m_BlendTime>0.40</m_BlendTime>
 	<m_BlendOutTime>0.40</m_BlendOutTime>
+	<m_SpeedScale>0.50</m_SpeedScale>
 	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
 	<m_Conditions x_name="lf-lf_sit-0001">
 		<m_Name>PerformingAction</m_Name>

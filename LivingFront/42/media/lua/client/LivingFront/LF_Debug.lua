@@ -3,11 +3,12 @@
 --   Inspect <soldier>     - when you right-click on or right next to a soldier (top of the menu)
 --   Living Front >
 --     Spawn here          - a soldier, a fire team (4) or a squad (17), German or Soviet; a civilian
---     Orders for <unit>   - the unit nearest the click: stance, patrol here, clear this building
---     Objective here      - make the clicked place an objective and have the nearest unit hold or
---                           take it; clear objectives
+--     Give orders to      - any unit in the game (by side, nearest the click first): stance, patrol
+--                           here, take / hold this place as an objective, clear this building,
+--                           inspect its leader
 --     Sergeants choose their stance (on/off)
---     Tools               - move / kill / delete the nearest of a type, unit report, delete all,
+--     Tools               - move / kill / delete the nearest of a type, clear objectives, unit
+--                           report, delete all,
 --                           reset world
 
 require "LivingFront/LF_Core"
@@ -183,70 +184,76 @@ local function resetWorld(playerNum)
     LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
 end
 
--- The unit of the living soldier nearest (x, y).
-local function nearestUnit(x, y)
-    local best, bestD = nil, math.huge
-    for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        if rec and rec.squad and not body:isDead() then
-            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
-            if d < bestD then best, bestD = LF.Units.get(rec.squad), d end
+-- ---- choosing a unit ----------------------------------------------------------------------------
+
+-- Where a unit is: its commander, else any living member (body, else record).
+local function unitPos(u)
+    local cid = LF.Units.commander(u)
+    local b = cid and LF.Bodies.get(cid)
+    if b and not b:isDead() then return b:getX(), b:getY(), b:getZ() end
+    for _, rid in ipairs(LF.Units.members(u.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.alive then
+            local rb = LF.Bodies.get(rid)
+            if rb then return rb:getX(), rb:getY(), rb:getZ() end
+            return r.x, r.y, r.z
         end
     end
-    return best
+    return nil
 end
 
--- Order the nearest (offensive) unit's Alpha 1 to clear the clicked building.
-local function clearOrder(x, y, z)
-    local L = LF.Building.at(x, y, z)
-    if not L then LF.say("Click on a building for this order"); return end
-    local best, bestD = nil, math.huge
-    for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        if rec and rec.squad and not body:isDead() and not LF.Building.isInside(L, body:getX(), body:getY()) then
-            local u = LF.Units.get(rec.squad)
-            if u and LF.Stance.get(u).maneuvers then
-                local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
-                if d < bestD then best, bestD = u, d end
+local function alive(u)
+    local n, total = 0, 0
+    for _, rid in ipairs(LF.Units.members(u.id)) do
+        local r = LF.Records.get(rid)
+        if r then
+            total = total + 1
+            if r.alive then n = n + 1 end
+        end
+    end
+    return n, total
+end
+
+-- Every unit in the game that can take orders, by faction, nearest the click first.
+local function unitList(x, y)
+    local by = {}
+    for _, u in pairs(LF.Units.all()) do
+        if u.kind == "squad" and not u.joined then
+            local n, total = alive(u)
+            local ux, uy = unitPos(u)
+            if n > 0 and ux then
+                by[u.faction] = by[u.faction] or {}
+                local list = by[u.faction]
+                list[#list + 1] = { u = u, n = n, total = total, d = LF.dist(ux, uy, x + 0.5, y + 0.5) }
             end
         end
     end
-    if not best then LF.say("No attacking unit nearby"); return end
-    local team = LF.Units.get(best.teams[1])
-    local goes = team and LF.Tactics.orderClear(best, team, L, "debug order")
-    if goes then
-        LF.say(best.name .. ": " .. goes.name .. " clears the building")
-    else
-        LF.say("Couldn't plan it - see the log (CLEAR ...)")
-    end
+    for _, list in pairs(by) do table.sort(list, function(a, b) return a.d < b.d end) end
+    return by
 end
 
--- Send the nearest (not defending) unit on patrol to the clicked spot in a formation.
-local function marchNearest(x, y, z, form)
-    local best, bestD = nil, math.huge
-    for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        if rec and rec.squad and not body:isDead() then
-            local u = LF.Units.get(rec.squad)
-            if u and LF.Stance.get(u).maneuvers then
-                local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
-                if d < bestD then best, bestD = u, d end
-            end
-        end
-    end
-    if not best then LF.say("No unit nearby (a defending unit won't march: set it offensive first)"); return end
-    local ok, why = LF.March.order(best, x, y, z, form)
-    LF.say(ok and (best.name .. " patrols here" .. (LF.March.FORMATIONS[form] and (" in " .. LF.March.FORMATIONS[form]) or " (sergeant's choice of formation)")) or ("Can't move: " .. tostring(why)))
-end
+-- ---- orders to a chosen unit ------------------------------------------------------------------
 
-local function setStanceNearest(x, y, z, stance)
-    local squad = nearestUnit(x, y)
-    if not squad then LF.say("No unit nearby"); return end
+local function setStanceOf(u, x, y, z, stance)
     -- Defensive, clicked on a building: hold that building.
     local hold = stance == "defensive" and LF.Building.idAt(x, y, z) and { x = x, y = y, z = z } or nil
-    LF.Tactics.setStance(squad, stance, hold)
-    LF.Tactics.noteStanceSet(squad)
-    LF.say(squad.name .. ": " .. stance .. " stance")
+    LF.Tactics.setStance(u, stance, hold)
+    LF.Tactics.noteStanceSet(u)
+    LF.say(u.name .. ": " .. stance .. (hold and " - holding the building" or ""))
+end
+
+local function patrolOf(u, x, y, z, form)
+    local ok, why = LF.March.order(u, x, y, z, form)
+    LF.say(ok and (u.name .. " patrols there" .. (LF.March.FORMATIONS[form] and (" in " .. LF.March.FORMATIONS[form]) or " (sergeant's choice of formation)"))
+        or ("Can't move: " .. tostring(why)))
+end
+
+local function clearOf(u, x, y, z)
+    local L = LF.Building.at(x, y, z)
+    if not L then LF.say("Click on a building for this order"); return end
+    local team = LF.Units.get(u.teams[1])
+    local goes = team and LF.Tactics.orderClear(u, team, L, "debug order")
+    LF.say(goes and (u.name .. ": " .. goes.name .. " clears the building") or "Couldn't plan it - see the log (CLEAR ...)")
 end
 
 -- Spawn a unit at the clicked spot, facing away from the player.
@@ -269,30 +276,17 @@ local function objectiveAt(x, y, z)
     return LF.Objective.create(x, y, z, "Objective " .. string.char(65 + n % 26))
 end
 
-local function holdHere(x, y, z)
-    local squad = nearestUnit(x, y)
-    if not squad then LF.say("No unit nearby"); return end
+local function holdOf(u, x, y, z)
     local obj = objectiveAt(x, y, z)
-    LF.Objective.hold(squad, obj)
-    LF.Tactics.noteStanceSet(squad)
-    LF.say(squad.name .. " holds " .. obj.name)
+    LF.Objective.hold(u, obj)
+    LF.Tactics.noteStanceSet(u)
+    LF.say(u.name .. " holds " .. obj.name)
 end
 
-local function takeHere(x, y, z)
+local function takeOf(u, x, y, z)
     local obj = objectiveAt(x, y, z)
-    -- The nearest unit that isn't already holding this objective.
-    local best, bestD = nil, math.huge
-    for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        local u = rec and rec.squad and LF.Units.get(rec.squad)
-        if u and not body:isDead() and not (u.objTask and u.objTask.kind == "hold" and u.objTask.obj == obj.id) then
-            local d = LF.distSq(body:getX(), body:getY(), x + 0.5, y + 0.5)
-            if d < bestD then best, bestD = u, d end
-        end
-    end
-    if not best then LF.say("No unit to send"); return end
-    local ok, why = LF.Objective.take(best, obj)
-    LF.say(ok and (best.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
+    local ok, why = LF.Objective.take(u, obj)
+    LF.say(ok and (u.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
 end
 
 local function clearObjectives()
@@ -339,30 +333,40 @@ local function onMenu(playerNum, context, worldObjects, test)
     end
     spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 
-    -- Orders for the nearest unit.
-    local unit = nearestUnit(x, y)
-    if unit then
-        local orders = sub(main, "Orders for " .. unit.name)
-        local st = sub(orders, "Stance (now " .. LF.Stance.get(unit).name .. ")")
-        st:addOption("Stand by (rest here)", nil, function() setStanceNearest(x, y, z, "standby") end)
-        st:addOption("Offensive", nil, function() setStanceNearest(x, y, z, "offensive") end)
-        st:addOption(LF.Building.idAt(x, y, z) and "Defensive - hold this building" or "Defensive - all-round defence here",
-            nil, function() setStanceNearest(x, y, z, "defensive") end)
-        local pm = sub(orders, "Patrol here")
-        pm:addOption("Sergeant's choice of formation", nil, function() marchNearest(x, y, z, "auto") end)
-        pm:addOption("Ranger file", nil, function() marchNearest(x, y, z, "file") end)
-        pm:addOption("Tactical column", nil, function() marchNearest(x, y, z, "column") end)
-        pm:addOption("Wedge", nil, function() marchNearest(x, y, z, "wedge") end)
-        if LF.Building.idAt(x, y, z) then
-            orders:addOption("Clear this building (Alpha 1)", nil, function() clearOrder(x, y, z) end)
+    -- Orders: pick any unit in the game (nearest the click first), then what it does here.
+    local building = LF.Building.idAt(x, y, z) ~= nil
+    local orders = sub(main, "Give orders to")
+    local lists = unitList(x, y)
+    local any = false
+    for _, f in ipairs({ { "GER", "German units" }, { "SOV", "Soviet units" }, { "CIV", "Civilian units" } }) do
+        local list = lists[f[1]]
+        if list and #list > 0 then
+            any = true
+            local fm = sub(orders, f[2])
+            for _, e in ipairs(list) do
+                local u = e.u
+                local st = LF.Stance.get(u).name
+                local task = u.objTask and (" - " .. u.objTask.kind) or ""
+                local um = sub(fm, string.format("%s  (%d/%d, %s%s, %d tiles)", u.name, e.n, e.total, st, task, math.floor(e.d)))
+                local sm = sub(um, "Stance (now " .. st .. ")")
+                sm:addOption("Stand by (rest where it is)", nil, function() setStanceOf(u, x, y, z, "standby") end)
+                sm:addOption("Offensive", nil, function() setStanceOf(u, x, y, z, "offensive") end)
+                sm:addOption(building and "Defensive - hold this building" or "Defensive - all-round, where it is",
+                    nil, function() setStanceOf(u, x, y, z, "defensive") end)
+                local pm = sub(um, "Patrol here")
+                pm:addOption("Sergeant's choice of formation", nil, function() patrolOf(u, x, y, z, "auto") end)
+                pm:addOption("Ranger file", nil, function() patrolOf(u, x, y, z, "file") end)
+                pm:addOption("Tactical column", nil, function() patrolOf(u, x, y, z, "column") end)
+                pm:addOption("Wedge", nil, function() patrolOf(u, x, y, z, "wedge") end)
+                um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
+                um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
+                if building then um:addOption("Clear this building (Alpha 1)", nil, function() clearOf(u, x, y, z) end) end
+                local cid = LF.Units.commander(u)
+                if cid then um:addOption("Inspect its leader", nil, function() LF.Inspect.open(cid) end) end
+            end
         end
     end
-
-    -- Objectives.
-    local om = sub(main, LF.Building.idAt(x, y, z) and "Objective: this building" or "Objective: this spot")
-    om:addOption("Nearest unit holds it", nil, function() holdHere(x, y, z) end)
-    om:addOption("Nearest unit takes it", nil, function() takeHere(x, y, z) end)
-    om:addOption("Clear all objectives", nil, clearObjectives)
+    if not any then orders:addOption("(no units yet - spawn some)") end
 
     main:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
         LF.Tactics.autoStance = not LF.Tactics.autoStance
@@ -383,6 +387,7 @@ local function onMenu(playerNum, context, worldObjects, test)
             typeMenu:addOption(t.label, nil, function() fn(key) end)
         end
     end
+    tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
