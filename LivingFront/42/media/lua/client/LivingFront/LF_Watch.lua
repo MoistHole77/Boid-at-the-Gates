@@ -1,4 +1,4 @@
--- Living Front: watching the real player.
+-- Living Front: watching the real player - keeping him visible.
 --
 -- 1. Keep him visible. After bumping into an NPC the player can turn invisible. Our NPC bodies
 --    are IsoPlayers on player index 0 - the same index as the real player - and the engine fades
@@ -6,7 +6,6 @@
 --    real player out. The engine only draws the player if he is in the cell's object list, on
 --    screen, on a square and not faded out. This logs whenever that changes (PLAYER render ...)
 --    and puts him back if he has been faded out or dropped from the object list.
--- 2. Measure his walking pace while aiming (LF.Move.adsPace): patrols walk at that pace.
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Records"
@@ -21,26 +20,6 @@ local function describe(p, inList)
     return string.format("inList=%s square=%s onScreen=%s alpha=%.2f targetAlpha=%.2f culled=%s invisible=%s ghost=%s",
         tostring(inList), tostring(p:getCurrentSquare() ~= nil), tostring(p:isOnScreen()), p:getAlpha(0),
         p:getTargetAlpha(0), tostring(p:isSceneCulled()), tostring(p:isInvisible()), tostring(p:isGhostMode()))
-end
-
--- Pace measurement: aiming and walking steadily for a second -> one sample.
-local paceX, paceY, paceT = nil, nil, 0
-
-local function measurePace(p)
-    local moving = p:isAiming() and not p:isRunning() and not p:isSprinting() and not p:isSneaking()
-    if not moving then paceX = nil; return end
-    if not paceX then paceX, paceY, paceT = p:getX(), p:getY(), 0; return end
-    paceT = paceT + 1
-    if paceT < 60 then return end
-    local speed = LF.dist(paceX, paceY, p:getX(), p:getY()) * 60 / paceT
-    paceX, paceY, paceT = p:getX(), p:getY(), 0
-    if speed < 0.2 or speed > 3 then return end      -- standing still (or not a walk)
-    local old = LF.Move.adsPace
-    LF.Move.adsPace = old and (old * 0.7 + speed * 0.3) or speed
-    LF.Records.data().adsPace = LF.Move.adsPace          -- remembered with the save
-    if not old or math.abs(LF.Move.adsPace - old) / old > 0.05 then
-        LF.log(string.format("PACE your walking pace while aiming: %.2f tiles/s (patrols will match it)", LF.Move.adsPace))
-    end
 end
 
 local function watch()
@@ -67,18 +46,9 @@ local function watch()
             if fixes <= 20 or fixes % 100 == 0 then LF.log("PLAYER render fix #" .. fixes .. " (was: " .. text .. ")") end
         end
     end
-    measurePace(p)
 end
 
 Events.OnTick.Add(function() LF.guard("player watch", watch) end)
-Events.OnGameStart.Add(function()
-    local v = LF.Records.data().adsPace
-    if v then
-        LF.Move.adsPace = v
-        LF.log(string.format("PACE your aiming pace from the save: %.2f tiles/s", v))
-    end
-end)
-
 local function keepShown(p)
     if not p:isInvisible() and not p:isGhostMode() and (p:getAlpha(0) < 0.99 or p:getTargetAlpha(0) < 0.99) then
         p:setAlpha(0, 1)

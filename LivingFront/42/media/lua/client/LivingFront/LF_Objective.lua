@@ -111,9 +111,7 @@ function LF.Objective.take(squad, obj)
     squad.objTask = { obj = obj.id, kind = "take", phase = "approach", since = LF.tick,
                       rally = { x = math.floor(rx), y = math.floor(ry) } }
     squad.facingX, squad.facingY = -dx / d, -dy / d
-    -- A plain walk to cover the ground; the slow tactical pace within 60 tiles of the objective.
-    local ok, why = LF.March.order(squad, math.floor(rx), math.floor(ry), obj.z, "auto",
-        { fastUntil = { x = obj.x, y = obj.y, r = 60 } })
+    local ok, why = LF.March.order(squad, math.floor(rx), math.floor(ry), obj.z, "auto")
     if not ok then squad.objTask = nil; return false, why end
     LF.log("OBJECTIVE " .. squad.name .. " ordered to take " .. obj.name .. ": rally point " .. math.floor(rx) .. ","
         .. math.floor(ry) .. ", " .. math.floor(d) .. " tiles away")

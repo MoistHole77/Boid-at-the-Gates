@@ -34,9 +34,9 @@ local function setAim(character, on) character:setIsAiming(on) end
 -- (action.scan = "fwd" | "left" | "right" | "back") keeps him walking with the rifle up, turned
 -- out to that side: an aimed walk to the front, an aimed strafe to the sides, an aimed walk
 -- backward to the rear.
--- The speeds are calibrated in play: the player's own walking pace while aiming is measured
--- (LF_Watch -> LF.Move.adsPace) and the scales are nudged until patrolling men walk at that pace.
-LF.Move.DEFAULT_ADS = 0.9               -- tiles per second, until the player's has been measured
+-- The patrol pace is fixed: LF.Move.PATROL_PACE tiles per second, always, for every man in the
+-- patrolling stance. The animation scales are nudged in play until they walk at exactly that.
+LF.Move.PATROL_PACE = 0.5
 -- Legs: the game's slow walk (Bob_WalkSlow - short steps made for a slow pace, so the feet match
 -- the ground better than a slowed-down normal walk), rifle carried as usual. (An upper-body
 -- "rifle at the ready" overlay was tried in 0.21.4: it put the rifles over their heads.)
@@ -162,7 +162,7 @@ function LF_MoveAction.patrolStep(self)
     if not self.calX then self.calX, self.calY, self.calScan = px, py, scan end
     if self.calT >= CAL_TICKS then
         local speed = LF.dist(self.calX, self.calY, px, py) * 60 / self.calT
-        local target = LF.Move.adsPace or LF.Move.DEFAULT_ADS
+        local target = LF.Move.PATROL_PACE
         if self.calScan == scan and speed > 0.15 then
             local f = math.max(0.7, math.min(1.3, 1 + 0.4 * (target / speed - 1)))
             if scan then
@@ -190,8 +190,8 @@ local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol %.2f tiles/s (target %.2f%s) - scales shuffle %.2f, walk %.2f, scan %.2f",
-            LF.Move.lastPace, LF.Move.adsPace or LF.Move.DEFAULT_ADS, LF.Move.adsPace and ", your aiming pace" or ", default",
+        LF.log(string.format("PACE patrol %.2f tiles/s (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f",
+            LF.Move.lastPace, LF.Move.PATROL_PACE,
             LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale))
         LF.Move.lastPace = nil
     end
