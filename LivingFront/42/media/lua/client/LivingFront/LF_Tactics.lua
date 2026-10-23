@@ -107,6 +107,7 @@ local CFG = {
 LF.Tactics.CFG = CFG
 
 local squads = {}   -- squad id -> { intent, contact (point), broken }
+function LF.Tactics.state(squad) return squad and squads[squad.id] end
 local teams = {}    -- team id -> { order, heard, moving, pos = { A = {x,y}, B = {x,y} }, phaseStart }
 local shouts = {}   -- record id -> { text, untilTick }
 
@@ -1665,7 +1666,19 @@ local function planClear(squad, team, t, L)
     local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
     local cell = getCell()
     local z = L.z
-    -- The nearest door (a clear doorstep preferred, but any door to the outside will do).
+    -- The door: near the team, a clear doorstep, and away from the windows the enemy is known to
+    -- be at (a stack under a manned window is shot down before the door is open).
+    local known = {}
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        if math.floor(c.z or 0) == z then known[#known + 1] = c end
+    end
+    local function exposure(x, y)
+        local n = 0
+        for _, c in ipairs(known) do
+            if LF.dist(x + 0.5, y + 0.5, c.x, c.y) <= 4 then n = n + 1 end
+        end
+        return n
+    end
     local door, doorD = nil, math.huge
     local doors = 0
     for _, o in ipairs(L.openings) do
@@ -1675,6 +1688,7 @@ local function planClear(squad, team, t, L)
             if out then
                 local d = LF.dist(cx, cy, o.x + o.dx + 0.5, o.y + o.dy + 0.5)
                 if not out:isFree(false) then d = d + 20 end
+                d = d + 8 * exposure(o.x + o.dx, o.y + o.dy)
                 if d < doorD then door, doorD = o, d end
             end
         end
@@ -1722,10 +1736,26 @@ local function planClear(squad, team, t, L)
         end
         return spots
     end
+    -- Which side of the door: the one with room for the whole file, and the fewer men stood in
+    -- front of a window or near a known enemy.
+    local winOut = {}
+    for _, o in ipairs(L.openings) do
+        if o.kind == "window" then winOut[clearKey(o.x + o.dx, o.y + o.dy)] = true end
+    end
+    local function risk(spots)
+        local n = 0
+        for _, sp in ipairs(spots) do
+            if winOut[clearKey(sp.x, sp.y)] then n = n + 1 end
+            n = n + exposure(sp.x, sp.y)
+        end
+        return n
+    end
     local stack = nil
     if doorstep then
         local a, b = chain(near), chain(-near)
-        stack = (#b > #a) and b or a
+        local fa, fb = math.min(#a, #file), math.min(#b, #file)
+        if fa ~= fb then stack = fb > fa and b or a
+        else stack = risk(b) < risk(a) and b or a end
     end
     if not stack or #stack < #file then
         if not stack or #stack < 2 then return nil, "no room to stack up outside the door" end
@@ -1858,6 +1888,17 @@ local function updateClear(team, t, squad)
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stacked! Ready...") end
         end
     elseif C.phase == "breach" then
+        -- A defender known close to the door: a grenade in on him first (from whichever leader
+        -- has a clear throw), then the door.
+        if LF.tick - C.phaseAt >= 60 and not C.covered and LF.Grenade then
+            C.covered = true
+            local wait = LF.guard("grenade covering the door", LF.Grenade.coverDoor, squad, C)
+            if wait then
+                C.phase, C.phaseAt, C.nadeWait = "cover", LF.tick, wait
+                if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Wait for it...") end
+                return true
+            end
+        end
         if LF.tick - C.phaseAt >= 90 then
             local cell = getCell()
             local inSq = cell:getGridSquare(C.door.x, C.door.y, C.L.z)
@@ -1877,6 +1918,10 @@ local function updateClear(team, t, squad)
             end
             if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Go! Go!") end
             C.phase, C.next, C.manAt = "go", 1, LF.tick
+        end
+    elseif C.phase == "cover" then
+        if LF.tick - C.phaseAt >= (C.nadeWait or 260) then
+            C.phase, C.phaseAt = "breach", LF.tick - 90          -- straight on to the door
         end
     elseif C.phase == "grenade" then
         if LF.tick - C.phaseAt >= (C.nadeWait or 260) then

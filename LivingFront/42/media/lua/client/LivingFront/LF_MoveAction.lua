@@ -34,9 +34,12 @@ local function setAim(character, on) character:setIsAiming(on) end
 -- (action.scan = "fwd" | "left" | "right" | "back") keeps him walking with the rifle up, turned
 -- out to that side: an aimed walk to the front, an aimed strafe to the sides, an aimed walk
 -- backward to the rear.
--- The patrol pace is fixed: LF.Move.PATROL_PACE tiles per second, always, for every man in the
--- patrolling stance. The animation scales are nudged in play until they walk at exactly that.
-LF.Move.PATROL_PACE = 0.5
+-- The patrol pace is the ADS walk: the game's aimed walk forward (Bob_WalkAimRifle) played at its
+-- own speed, never scaled. LF.Move.PATROL_PACE is how fast that is (tiles/s), measured in play
+-- from the men's forward scans; the other patrol steps (the rifle-down walk, the aimed strafe)
+-- are nudged until they walk at that pace too. (Up to 0.30 the pace was a fixed 0.5 tiles/s - the
+-- rifle-down walk couldn't go that slow, bottomed out at 40% speed and looked slower than ADS.)
+LF.Move.PATROL_PACE = LF.Move.PATROL_PACE or 0.9
 -- Legs: the game's slow walk (Bob_WalkSlow - short steps made for a slow pace, so the feet match
 -- the ground better than a slowed-down normal walk), rifle carried as usual. (An upper-body
 -- "rifle at the ready" overlay was tried in 0.21.4: it put the rifles over their heads.)
@@ -44,9 +47,9 @@ LF.Move.PATROL_PACE = 0.5
 --   shuffle (the slow walk), patrol (plain walk), scan (aimed walk forward / backward) and
 --   side (aimed strafe, scanning out to a side). Kept in the save once settled.
 LF.Move.patrolScale = LF.Move.patrolScale or 0.7
-LF.Move.scanScale = LF.Move.scanScale or 0.9
+LF.Move.scanScale = 1.0                  -- the ADS walk itself: always its own speed
 LF.Move.sideScale = LF.Move.sideScale or 1.0
-LF.Move.shuffleScale = LF.Move.shuffleScale or 1.0
+LF.Move.shuffleScale = LF.Move.shuffleScale or 1.2
 -- mul: this man's own pace correction (LF.March.paceMul) on top of the shared step speeds.
 local function setVars(character, patrol, scan, mul)
     mul = mul or 1
@@ -233,12 +236,12 @@ local function saveScales()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     if not data then return end
     data.moveScales = data.moveScales or {}
-    data.moveScalesV = 4
-    for _, k in ipairs({ "shuffleScale", "patrolScale", "scanScale", "sideScale" }) do data.moveScales[k] = LF.Move[k] end
+    data.moveScalesV = 5
+    for _, k in ipairs({ "shuffleScale", "patrolScale", "sideScale", "PATROL_PACE" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
-    local s = data and data.moveScalesV == 4 and data.moveScales
+    local s = data and data.moveScalesV == 5 and data.moveScales
     if s then
         for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
     end
@@ -288,6 +291,21 @@ function LF_MoveAction.patrolStep(self)
             self.calMs, self.calLen, self.calMul = ms, 0, mul
             return
         end
+        if scan == "fwd" then
+            -- The ADS walk itself: this IS the patrol pace (the median of the last few readings).
+            LF.Move.adsReadings = LF.Move.adsReadings or {}
+            local list = LF.Move.adsReadings
+            list[#list + 1] = base
+            if #list > CAL_KEEP then table.remove(list, 1) end
+            if #list >= 3 then
+                local sorted = {}
+                for i = 1, #list do sorted[i] = list[i] end
+                table.sort(sorted)
+                LF.Move.PATROL_PACE = math.max(0.6, math.min(1.3, sorted[math.floor((#sorted + 1) / 2)]))
+            end
+            self.calMs, self.calLen, self.calMul = ms, 0, mul
+            return
+        end
         -- Steer by the median of the last few clean readings (one odd reading can't swing it),
         -- a few percent at a time.
         LF.Move.recent = LF.Move.recent or {}
@@ -295,7 +313,7 @@ function LF_MoveAction.patrolStep(self)
         LF.Move.recent[key] = list
         list[#list + 1] = base
         if #list > CAL_KEEP then table.remove(list, 1) end
-        if #list >= 5 then
+        if #list >= 5 and key ~= "scanScale" then      -- (the aimed walks are never scaled)
             local sorted = {}
             for i = 1, #list do sorted[i] = list[i] end
             table.sort(sorted)
@@ -322,7 +340,7 @@ local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol step %.2f tiles/s before pace corrections (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
+        LF.log(string.format("PACE patrol step %.2f tiles/s (ADS pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
             LF.Move.lastPace, LF.Move.PATROL_PACE,
             LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale, LF.Move.sideScale))
         LF.Move.lastPace = nil

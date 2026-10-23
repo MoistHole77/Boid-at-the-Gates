@@ -7,7 +7,7 @@
 -- as it comes up to him. The point man is the base: the formation moves at his pace and doesn't
 -- wait for anyone; a man who has dropped behind walks at the normal pace until he is back in his
 -- place. A tactical column walks one file along each edge of the road (each man 0-0.5 tiles in).
--- Patrol pace is fixed at 0.5 tiles/s (LF.Move.PATROL_PACE), always, and now and then a man
+-- Patrol pace is the aimed (ADS) walk at its own speed (LF.Move.PATROL_PACE), always, and now and then a man
 -- brings his rifle up and scans his outboard side without stopping.
 -- Contact: the patrol halts and the unit fights as usual (LF_Tactics, offensive rules). Once it
 -- has been quiet for ~10 s it sets off again on the point man.
@@ -614,8 +614,12 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
                 M.joined[rid] = true
             end
             if M.joined[rid] and rid ~= M.order[1] then
-                local x, y = placeOf(M, rid)
-                local d = LF.dist(b:getX(), b:getY(), x, y)
+                -- Only a man BEHIND his place catches up (measured along the route). A man ahead
+                -- of it - or off to the side of it - walks at the patrol pace and lets it come
+                -- to him. (0.30 measured straight-line distance, so a man a few tiles ahead was
+                -- "lagging" and walked at the full walk, further ahead, for good.)
+                local want = math.min(M.head, M.total) + M.off[rid].f
+                local d = want - project(M, b:getX(), b:getY())
                 if d > CFG.waitBehind then
                     if not M.lag[rid] then M.lag[rid] = true end
                 elseif d <= CFG.caughtUp then

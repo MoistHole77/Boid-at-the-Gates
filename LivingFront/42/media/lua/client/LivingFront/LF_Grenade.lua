@@ -43,6 +43,8 @@ local CFG = {
     stallTicks = 2700,          -- ~45 s without progress
     holdOutTicks = 1800,        -- last defenders holding out ~30 s
     bunch = 3.5,                -- enemies this close together count as a bunch
+    -- Taking a building (attacking an enemy who is inside one): the leaders are readier to throw.
+    building = { cooldown = 900, perFight = 4, stallTicks = 900 },   -- ~15 s between, 4 a fight, after ~15 s
     lethal = 1.5, wound = 3.5, light = 6, suppress = 10,
     dodgeRadius = 4, dodgeChance = 50,
 }
@@ -291,6 +293,20 @@ local function clearOfFriends(faction, x, y)
     return true
 end
 
+-- No friend of `faction` near enough to (x, y) AND out in the open to it (a man round the corner
+-- of a wall from the blast is safe)?
+local function safeForFriends(faction, x, y, z)
+    for id, body in pairs(LF.Bodies.all()) do
+        local r = LF.Records.get(id)
+        if r and r.faction == faction and not body:isDead() and math.abs(body:getZ() - z) < 0.5
+            and LF.distSq(body:getX(), body:getY(), x, y) < CFG.friendlyClear * CFG.friendlyClear
+            and exposed({ x = x, y = y, z = z }, body) then
+            return false
+        end
+    end
+    return true
+end
+
 -- Throw now (the action replaces whatever he was doing).
 function LF.Grenade.throw(body, tx, ty, tz, why)
     ISTimedActionQueue.clear(body)
@@ -312,8 +328,9 @@ end
 
 -- Each tactics update for a unit in a fight (sq: its runtime state). Returns true if it threw.
 function LF.Grenade.consider(squad, sq)
-    if LF.tick - (sq.lastGrenade or -100000) < CFG.unitCooldown then return false end
-    if (sq.grenadesThisFight or 0) >= CFG.perFight then return false end
+    local B = CFG.building
+    if LF.tick - (sq.lastGrenade or -100000) < B.cooldown then return false end
+    if (sq.grenadesThisFight or 0) >= B.perFight then return false end
     -- Anyone with a grenade at all?
     local any = false
     for _, rid in ipairs(leadersOf(squad)) do
@@ -338,10 +355,22 @@ function LF.Grenade.consider(squad, sq)
     local losing = total > 0 and (fitN / total < 0.67 or #contacts >= fitN)
     local fightAge = LF.tick - sq.nadeSince
     local attacking = LF.Stance.get(squad).maneuvers == true
-    local stalled = attacking and fightAge >= CFG.stallTicks      -- (a defence only throws when losing)
+    -- Taking a building: attacking, and the enemy known to be inside one. Grenades are what
+    -- shift men from behind walls, so the leaders use them sooner and more often (still at most
+    -- two each).
+    local inBuilding = 0
+    for _, c in ipairs(contacts) do
+        if LF.Building.idAt(c.x, c.y, c.z or 0) then inBuilding = inBuilding + 1 end
+    end
+    local takingBuilding = attacking and inBuilding > 0
+    if not takingBuilding then
+        if LF.tick - (sq.lastGrenade or -100000) < CFG.unitCooldown then return false end
+        if (sq.grenadesThisFight or 0) >= CFG.perFight then return false end
+    end
+    local stalled = attacking and fightAge >= (takingBuilding and B.stallTicks or CFG.stallTicks)   -- (a defence only throws when losing)
     local t = squad.objTask
     local holdingOut = attacking and t and t.kind == "take" and t.phase == "assault" and #contacts <= 3
-        and fightAge >= CFG.holdOutTicks
+        and fightAge >= (takingBuilding and B.stallTicks or CFG.holdOutTicks)
     if not (losing or stalled or holdingOut) then return false end
     -- The target: the biggest bunch; or (stalled / holding out) one holed up in a building.
     local best, bestN, bestScore = nil, 0, -1
@@ -356,7 +385,7 @@ function LF.Grenade.consider(squad, sq)
     end
     if not best then return false end
     local inside = LF.Building and LF.Building.idAt(best.x, best.y, best.z or 0) ~= nil
-    local worth = bestN >= 2 or ((stalled or holdingOut) and inside)
+    local worth = bestN >= 2 or ((stalled or holdingOut or takingBuilding) and inside)
     if not worth then return false end
     local tz = math.floor(best.z or 0)
     if not clearOfFriends(squad.faction, best.x, best.y) then return false end
@@ -364,7 +393,8 @@ function LF.Grenade.consider(squad, sq)
     for _, rid in ipairs(leadersOf(squad)) do
         local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
         if r and r.alive and b and not r.wounded and canThrow(r, b, best.x, best.y, tz) then
-            local why = losing and "turning the tide" or (holdingOut and "finishing the last defenders" or "breaking the stall")
+            local why = losing and "turning the tide" or (holdingOut and "finishing the last defenders"
+                or (takingBuilding and inside and "shifting them out of the building" or "breaking the stall"))
             LF.Grenade.throw(b, best.x, best.y, tz, why .. ", " .. bestN .. " enemy there")
             sq.lastGrenade = LF.tick
             sq.grenadesThisFight = (sq.grenadesThisFight or 0) + 1
@@ -384,14 +414,49 @@ function LF.Grenade.intoRoom(squad, team, C)
     for _, c in ipairs(LF.Squad.contactPoints(squad.id, 900, 24)) do
         if LF.Building.isInside(C.L, c.x, c.y) then
             local d = LF.dist(c.x, c.y, C.door.x, C.door.y)
-            if d >= 2.5 and d <= 8 and d < bd then best, bd = c, d end
+            if d >= 2 and d <= 8 and d < bd then best, bd = c, d end
         end
     end
     if not best then return nil end
     -- Close range is fine here (he ducks back beside the door), but it must go through the door.
     local tz = C.L.z
     local lx, ly = travel(b:getX(), b:getY(), best.x, best.y, tz)
-    if LF.dist(lx, ly, best.x, best.y) > 2 or LF.dist(b:getX(), b:getY(), best.x, best.y) < 2.5 then return nil end
+    if LF.dist(lx, ly, best.x, best.y) > 2 or LF.dist(b:getX(), b:getY(), best.x, best.y) < 2 then return nil end
     LF.Grenade.throw(b, best.x, best.y, tz, "into the room before going in")
     return CFG.fuseTicks + 40
+end
+
+-- Before a stack goes in: an enemy known inside near the door (at a window over the stack, say)
+-- gets a grenade from whichever leader of the squad has a clear throw at him - in through his
+-- window - so the men at the door aren't shot down going in. Returns the ticks to wait, or nil.
+function LF.Grenade.coverDoor(squad, C)
+    local sq = LF.Tactics and LF.Tactics.state and LF.Tactics.state(squad)
+    local tz = C.L.z
+    local ox, oy = C.door.x + (C.door.dx or 0), C.door.y + (C.door.dy or 0)
+    local targets = {}
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, 900, 24)) do
+        if math.floor(c.z or 0) == tz and LF.Building.isInside(C.L, c.x, c.y)
+            and LF.dist(c.x, c.y, ox + 0.5, oy + 0.5) <= 7 then
+            targets[#targets + 1] = c
+        end
+    end
+    if #targets == 0 then return nil end
+    table.sort(targets, function(a, b2)
+        return LF.dist(a.x, a.y, ox, oy) < LF.dist(b2.x, b2.y, ox, oy)
+    end)
+    for _, c in ipairs(targets) do
+        for _, rid in ipairs(leadersOf(squad)) do
+            local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
+            if r and r.alive and b and not r.wounded and canThrow(r, b, c.x, c.y, tz)
+                and safeForFriends(squad.faction, c.x, c.y, tz) then
+                LF.Grenade.throw(b, c.x, c.y, tz, "covering the door before the stack goes in")
+                if sq then
+                    sq.lastGrenade = LF.tick
+                    sq.grenadesThisFight = (sq.grenadesThisFight or 0) + 1
+                end
+                return CFG.fuseTicks + 40
+            end
+        end
+    end
+    return nil
 end

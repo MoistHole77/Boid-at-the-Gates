@@ -100,6 +100,86 @@ function LF.Building.at(x, y, z)
         end
     end
     if #L.inside == 0 then return nil end
+    -- The house is the part you can walk around in on this floor. Two things are cut away:
+    --   * a stair room - a room that is mostly stairs (a basement access built onto the house: a
+    --     landing inside its own outside door, then the flight down). B42 adds these to houses;
+    --     their landing has a floor and no stairs, so the stairwell test alone kept it, and its
+    --     door counted as a way in - that is where the "basement" defender stood, and the door
+    --     the attackers stacked on.
+    --   * anything not joined to the main body of the house through a doorway or open floor.
+    local roomStairs, roomSize = {}, {}
+    for ix = sx - SCAN, sx + SCAN do
+        for iy = sy - SCAN, sy + SCAN do
+            local sq = cell:getGridSquare(ix, iy, z)
+            if sq and bid(sq) == id and stairwell(sq) then
+                local r = sq:getRoom()
+                if r then roomStairs[r] = (roomStairs[r] or 0) + 1 end
+            end
+        end
+    end
+    for _, s in ipairs(L.inside) do
+        local r = L.insideSet[key(s.x, s.y)]:getRoom()
+        if r then roomSize[r] = (roomSize[r] or 0) + 1 end
+    end
+    local function passable(a, b)
+        if a:isDoorTo(b) then return true end
+        if a:isWindowTo(b) or a:isWallTo(b) then return false end
+        return true
+    end
+    -- Flood each piece of the floor (furniture squares included, so a cupboard in a hallway
+    -- doesn't cut a room off); keep the piece with the most free squares.
+    local function floorSq(x, y)
+        local q = cell:getGridSquare(x, y, z)
+        if not (q and bid(q) == id) or stairwell(q) then return nil end
+        local r = q:getRoom()
+        if r and roomStairs[r] and roomStairs[r] >= (roomSize[r] or 0) then return nil end
+        return q
+    end
+    local seen, pieces = {}, {}
+    for _, s in ipairs(L.inside) do
+        local k0 = key(s.x, s.y)
+        if not seen[k0] and floorSq(s.x, s.y) then
+            local list, open = {}, { { x = s.x, y = s.y, q = L.insideSet[k0] } }
+            seen[k0] = true
+            while #open > 0 do
+                local c = table.remove(open)
+                if L.insideSet[key(c.x, c.y)] then list[#list + 1] = { x = c.x, y = c.y } end
+                for _, d in ipairs(WALL_DIR) do
+                    local nx, ny = c.x + d[1], c.y + d[2]
+                    local nk = key(nx, ny)
+                    if not seen[nk] and math.abs(nx - sx) <= SCAN and math.abs(ny - sy) <= SCAN then
+                        local nq = floorSq(nx, ny)
+                        if nq and passable(c.q, nq) then
+                            seen[nk] = true
+                            open[#open + 1] = { x = nx, y = ny, q = nq }
+                        end
+                    end
+                end
+            end
+            pieces[#pieces + 1] = list
+        end
+    end
+    local main = nil
+    for _, list in ipairs(pieces) do if not main or #list > #main then main = list end end
+    if not main then return nil end
+    local cut = #L.inside - #main
+    if cut > 0 then
+        L.inside, L.insideSet, tx, ty = {}, {}, 0, 0
+        for _, q in ipairs(main) do
+            L.inside[#L.inside + 1] = q
+            L.insideSet[key(q.x, q.y)] = cell:getGridSquare(q.x, q.y, z)
+            tx, ty = tx + q.x, ty + q.y
+        end
+        LF.log("BUILDING #" .. tostring(id) .. " floor " .. z .. ": " .. cut
+            .. " square(s) left out - stair rooms (a way down to the basement) or not joined to the house")
+        local keep = {}
+        for _, o in ipairs(blockedWin) do
+            for _, d in ipairs(WALL_DIR) do
+                if L.insideSet[key(o.x + d[1], o.y + d[2])] then keep[#keep + 1] = o; break end
+            end
+        end
+        blockedWin = keep
+    end
     L.cx, L.cy = tx / #L.inside + 0.5, ty / #L.inside + 0.5
     for _, s in ipairs(L.inside) do
         local sq = L.insideSet[key(s.x, s.y)]
