@@ -1,0 +1,192 @@
+-- Living Front: the inspect window - right-click a soldier, "Inspect ...": his name, rank, unit
+-- and job, what he is doing, his earned traits and his service record. It stays open and updates
+-- live (one window per soldier).
+
+require "ISUI/ISCollapsableWindow"
+require "LivingFront/LF_Core"
+require "LivingFront/LF_Records"
+require "LivingFront/LF_Units"
+require "LivingFront/LF_Service"
+require "LivingFront/LF_Stance"
+require "LivingFront/LF_Bodies"
+require "LivingFront/LF_Combat"
+require "LivingFront/LF_Suppress"
+
+LF.Inspect = LF.Inspect or {}
+
+local RANK_NAME = { SGT = "Sergeant", CPL = "Corporal", PVT = "Private" }
+local STATE_WORDS = {
+    idle = "standing by", guard = "on guard", alert = "alert, covering", engage = "firing",
+    bound = "moving under fire", file = "on the move", hide = "taking cover (wounded)", down = "down, wounded",
+    flee = "falling back", cover = "in cover",
+}
+
+LF_InspectWindow = ISCollapsableWindow:derive("LF_InspectWindow")
+
+local open = {}          -- record id -> window
+
+local W, H = 400, 360
+local PAD = 12
+
+function LF_InspectWindow:new(x, y, recId)
+    local o = ISCollapsableWindow.new(self, x, y, W, H)
+    o.recId = recId
+    o.resizable = false
+    o.title = "Soldier"
+    return o
+end
+
+function LF_InspectWindow:close()
+    open[self.recId] = nil
+    self:setVisible(false)
+    self:removeFromUIManager()
+end
+
+-- Wrap text to the window width.
+local function wrap(text, font, width)
+    local tm = getTextManager()
+    local lines, line = {}, ""
+    for word in string.gmatch(text, "%S+") do
+        local try = line == "" and word or (line .. " " .. word)
+        if tm:MeasureStringX(font, try) > width and line ~= "" then
+            lines[#lines + 1] = line
+            line = word
+        else
+            line = try
+        end
+    end
+    if line ~= "" then lines[#lines + 1] = line end
+    return lines
+end
+
+local function roleOf(rec)
+    if rec.faction == "CIV" and not rec.squad then return "Civilian" end
+    local squad = rec.squad and LF.Units.get(rec.squad)
+    local team = rec.team and LF.Units.get(rec.team)
+    if not squad then return "No unit (on his own)" end
+    if squad.leader == rec.id then return "Squad leader, " .. squad.name end
+    if team and team.leader == rec.id then return "Team leader, " .. team.name .. " (" .. squad.name .. ")" end
+    if team then return "Rifleman, " .. team.name .. " (" .. squad.name .. ")" end
+    return squad.name
+end
+
+local function taskOf(squad)
+    local t = squad and squad.objTask
+    if not t then return nil end
+    local obj = LF.Objective and LF.Objective.get(t.obj)
+    local name = obj and obj.name or "an objective"
+    if t.kind == "hold" then return "holding " .. name end
+    return "taking " .. name .. " (" .. tostring(t.phase) .. ")"
+end
+
+function LF_InspectWindow:prerender()
+    ISCollapsableWindow.prerender(self)
+end
+
+function LF_InspectWindow:render()
+    ISCollapsableWindow.render(self)
+    if self.isCollapsed then return end
+    local rec = LF.Records.get(self.recId)
+    local font, big = UIFont.Small, UIFont.Medium
+    local fh = getTextManager():getFontHeight(font)
+    local y = self:titleBarHeight() + PAD
+    local width = self.width - PAD * 2
+    local function text(s, r, g, b, f)
+        f = f or font
+        for _, l in ipairs(wrap(s, f, width)) do
+            self:drawText(l, PAD, y, r or 0.9, g or 0.9, b or 0.9, 1, f)
+            y = y + getTextManager():getFontHeight(f)
+        end
+    end
+    local function gap(n) y = y + (n or 6) end
+    if not rec then
+        text("This soldier's record is gone.", 0.8, 0.5, 0.5)
+        return
+    end
+    local faction = LF.Factions[rec.faction]
+    self.title = LF.Units.title(rec)
+    text(LF.Records.fullName(rec), 1, 1, 0.85, big)
+    text((RANK_NAME[rec.rank] or "") .. (rec.rank and " - " or "") .. (faction and faction.name or rec.faction), 0.75, 0.8, 0.9)
+    text(roleOf(rec), 0.75, 0.8, 0.9)
+    gap()
+
+    -- Now.
+    local body = LF.Bodies.get(rec.id)
+    local squad = rec.squad and LF.Units.get(rec.squad)
+    if not rec.alive then
+        text("Killed in action.", 0.9, 0.4, 0.4)
+    elseif not body then
+        text("Not nearby (away from you, not loaded).", 0.7, 0.7, 0.7)
+    else
+        local state, detail = nil, nil
+        if LF.Brain and LF.Brain.stateOf then state, detail = LF.Brain.stateOf(rec.id) end
+        local hp = math.floor(LF.Combat.health(body))
+        local supp = math.floor(LF.Suppress.value(body))
+        local doing = STATE_WORDS[state or ""] or state or "-"
+        text("Now: " .. doing .. (detail and (" - " .. detail) or ""))
+        text("Health " .. hp .. "%   Suppression " .. supp .. (LF.Suppress.isPinned(body) and " (pinned)"
+            or (LF.Suppress.isSuppressed(body) and " (suppressed)" or "")),
+            hp < 50 and 0.95 or 0.9, hp < 50 and 0.55 or 0.9, hp < 50 and 0.5 or 0.9)
+        if squad then
+            local task = taskOf(squad)
+            text("Unit stance: " .. LF.Stance.get(squad).name .. (task and ("   Task: " .. task) or ""))
+        end
+    end
+    gap()
+
+    -- Traits.
+    local s = LF.Service.of(rec)
+    text("Traits", 1, 0.85, 0.5)
+    local traits = LF.Service.traits(rec)
+    if #traits == 0 then
+        text("Steady - nothing out of the ordinary yet.", 0.8, 0.8, 0.8)
+    else
+        for _, k in ipairs(traits) do
+            local t = LF.Service.TRAITS[k]
+            if t then
+                local col = k == "shaken" and { 0.95, 0.6, 0.5 } or (k == "veteran" and { 0.6, 0.9, 0.6 } or { 0.8, 0.8, 0.8 })
+                text(t.name .. ": " .. t.text, col[1], col[2], col[3])
+            end
+        end
+    end
+    gap()
+
+    -- Service record.
+    text("Service record", 1, 0.85, 0.5)
+    text("Battles " .. s.battles .. "   Kills " .. s.kills .. "   Times hit " .. s.wounds)
+    text("Comrades lost " .. s.lost .. "   Unit broke " .. s.broke .. "   Objectives taken " .. s.taken)
+    text("Strain " .. s.stress .. " / " .. LF.Service.CFG.stressCap
+        .. "  (shaken at " .. LF.Service.CFG.shakenStress .. ")", 0.7, 0.7, 0.7)
+    -- Grow to fit.
+    local want = y + PAD
+    if math.abs(want - self.height) > 2 then self:setHeight(want) end
+    local _ = fh
+end
+
+function LF.Inspect.open(recId)
+    if open[recId] then
+        open[recId]:bringToTop()
+        return
+    end
+    local mx, my = getMouseX(), getMouseY()
+    local x = math.min(mx + 20, getCore():getScreenWidth() - W - 10)
+    local y = math.min(math.max(10, my - 60), getCore():getScreenHeight() - H - 10)
+    local w = LF_InspectWindow:new(x, y, recId)
+    w:initialise()
+    w:addToUIManager()
+    open[recId] = w
+end
+
+-- Soldiers standing on or right next to (x, y), nearest first (at most four).
+function LF.Inspect.near(x, y, z)
+    local found = {}
+    for id, body in pairs(LF.Bodies.all()) do
+        if math.floor(body:getZ()) == z then
+            local d = LF.dist(body:getX(), body:getY(), x + 0.5, y + 0.5)
+            if d <= 1.8 then found[#found + 1] = { id = id, d = d } end
+        end
+    end
+    table.sort(found, function(a, b) return a.d < b.d end)
+    while #found > 4 do table.remove(found) end
+    return found
+end

@@ -261,6 +261,7 @@ local function updateTake(squad, obj)
             LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
             say(squad, "It's ours! Take the windows!")
             LF.log("OBJECTIVE " .. obj.name .. " taken by the " .. (FACTION[squad.faction] or squad.faction))
+            if LF.Service then LF.guard("service objective", LF.Service.objectiveTaken, squad) end
         end
     end
 end

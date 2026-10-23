@@ -2021,6 +2021,7 @@ local function updateSquad(squad)
     local intent = sq.intent
     local why
     if total > 0 and fitN / total < CFG.fallbackFit then
+        if not sq.broken and LF.Service then LF.guard("service broke", LF.Service.unitBroke, squad) end
         sq.broken = true
         if front < CFG.fallbackClear then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
         else intent, why = "HOLD", "fallen back out of range" end

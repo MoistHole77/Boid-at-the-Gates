@@ -161,6 +161,7 @@ local KEEP_POSITION = { engage = true, alert = true, guard = true }
 
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
+    m.detail = detail
     LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
         .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
     -- Losing and regaining sight (engage <-> alert <-> guard) keeps the soldier's position and rhythm;
@@ -1017,6 +1018,13 @@ local function onTick()
         end
     end
     LF.Perf.stop("brain", t0)
+end
+
+-- What a soldier is doing right now: state, detail (for the inspect window). nil if unknown.
+function LF.Brain.stateOf(id)
+    local m = minds[id]
+    if not m then return nil end
+    return m.state, m.detail
 end
 
 function LF.Brain.toggle()

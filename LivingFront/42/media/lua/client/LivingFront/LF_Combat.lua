@@ -168,6 +168,7 @@ local splashCtx = {}
 local function splashOne(e, _dsq, ctx)
     if e.body ~= ctx.skip and LF.isHostile(ctx.faction, e.rec.faction) then
         LF.Suppress.add(e.body, ctx.amount)
+        if LF.Service then LF.Service.action(e.rec.id) end      -- being shot at: he's in action
         ctx.n = ctx.n + 1
     end
 end
@@ -201,6 +202,9 @@ function LF.Combat.resolveShot(shooter, target, gun)
     end
     LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)
     splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH * profile.suppress, target)
+    if LF.Service then
+        LF.guard("service shot", LF.Service.shot, shooter:getModData().LF_id, target:getModData().LF_id, result ~= "MISS")
+    end
     if LF.Config.logShots then
         LF.log("SHOT #" .. tostring(shooter:getModData().LF_id) .. " " .. profile.name .. " -> #" .. tostring(target:getModData().LF_id)
             .. " dist=" .. fmt(dist) .. " chance=" .. fmt(chance) .. " " .. result
@@ -250,6 +254,7 @@ function LF.Combat.resolveAreaShot(shooter, point, gun)
     recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
     if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end   -- prune old shots
     local n = splash(shooter, point:getX(), point:getY(), AREA_RADIUS, SUPPRESS_AREA * profile.suppress, nil)
+    if LF.Service then LF.Service.action(shooter:getModData().LF_id) end
     if LF.Config.logAreaFire then
         LF.log("AREA #" .. tostring(shooter:getModData().LF_id) .. " -> " .. math.floor(point:getX()) .. ","
             .. math.floor(point:getY()) .. " suppressing " .. n)

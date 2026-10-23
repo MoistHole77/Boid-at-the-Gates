@@ -26,10 +26,15 @@ local immune = {}       -- record id -> true while moving under orders
 
 local function idOf(body) return body:getModData().LF_id end
 
+-- Earned traits (LF_Service): a veteran shakes suppression off faster and is pinned later; a
+-- shaken man is pinned sooner.
+local function recoverMul(id) return LF.Service and LF.Service.recoverMul(id) or 1 end
+local function pinnedAt(id) return CFG.pinned + (LF.Service and LF.Service.pinShift(id) or 0) end
+
 local function valueOf(id)
     local l = levels[id]
     if not l then return 0 end
-    local v = l.v - (LF.tick - l.tick) * CFG.decayPerSecond / 60
+    local v = l.v - (LF.tick - l.tick) * CFG.decayPerSecond * recoverMul(id) / 60
     if v <= 0 then levels[id] = nil; return 0 end
     return v
 end
@@ -49,22 +54,27 @@ function LF.Suppress.add(body, amount)
     local id = idOf(body)
     if not id or immune[id] then return end
     local was = valueOf(id)
+    if LF.Service then amount = amount * LF.Service.suppressMul(id) end
     local v = math.min(CFG.max, was + amount)
     local l = levels[id]
     if not l then l = {}; levels[id] = l end
     l.v, l.tick = v, LF.tick
-    if was < CFG.pinned and v >= CFG.pinned then
+    local pin = pinnedAt(id)
+    if was < pin and v >= pin then
         LF.log("PINNED #" .. id .. " suppression " .. math.floor(v))
     end
 end
 
-function LF.Suppress.isPinned(body) return LF.Suppress.value(body) >= CFG.pinned end
+function LF.Suppress.isPinned(body)
+    local id = idOf(body)
+    return id ~= nil and LF.Suppress.value(body) >= pinnedAt(id)
+end
 function LF.Suppress.isSuppressed(body) return LF.Suppress.value(body) >= CFG.suppressed end
 
 -- Multiplier on the time between this soldier's shots.
 function LF.Suppress.cadence(body)
     local v = LF.Suppress.value(body)
-    if v >= CFG.pinned then return 3 end
+    if LF.Suppress.isPinned(body) then return 3 end
     if v >= CFG.suppressed then return 1.6 end
     return 1
 end
@@ -72,7 +82,7 @@ end
 -- Multiplier on this soldier's hit chance.
 function LF.Suppress.accuracy(body)
     local v = LF.Suppress.value(body)
-    if v >= CFG.pinned then return 0.4 end
+    if LF.Suppress.isPinned(body) then return 0.4 end
     if v >= CFG.suppressed then return 0.7 end
     return 1
 end
