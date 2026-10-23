@@ -136,10 +136,63 @@ function LF_MoveAction:update()
     end
     ISWalkToTimedAction.update(self)
     if self.gait == "patrol" then LF.guard("patrol walk", self.patrolStep, self) end
+    LF.guard("jam check", self.jamCheck, self)
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
     -- stops retrying the same unreachable spot.
     if self.result == BehaviorResult.Failed and LF.Move and LF.Move.onFailed then
         LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
+    end
+end
+
+-- ---- jams -----------------------------------------------------------------------------------------
+-- Two soldiers walking into each other push against each other forever (the engine keeps them
+-- apart). A man who has made no headway for ~1 s with another man right against him is let
+-- through for ~1.5 s (ghost mode: the engine doesn't push a ghost apart from others), then he is
+-- solid again.
+local JAM_TICKS = 60
+local GHOST_TICKS = 90
+
+local function setGhost(c, on) pcall(function() c:setGhostMode(on) end) end
+
+local function someoneAgainst(c)
+    local x, y, z = c:getX(), c:getY(), c:getZ()
+    for _, b in pairs(LF.Bodies.all()) do
+        if b ~= c and math.abs(b:getZ() - z) < 0.5 and LF.distSq(b:getX(), b:getY(), x, y) < 1.2 then return b end
+    end
+    local p = getPlayer()
+    if p and p ~= c and math.abs(p:getZ() - z) < 0.5 and LF.distSq(p:getX(), p:getY(), x, y) < 1.2 then return p end
+    return nil
+end
+
+function LF_MoveAction.jamCheck(self)
+    local c = self.character
+    if self.ghostUntil and LF.tick >= self.ghostUntil then
+        setGhost(c, false)
+        self.ghostUntil = nil
+    end
+    if LF.tick % 10 ~= 0 then return end
+    local x, y = c:getX(), c:getY()
+    if not self.jamX or LF.dist(x, y, self.jamX, self.jamY) > 0.3 then
+        self.jamX, self.jamY, self.jamT = x, y, LF.tick
+        return
+    end
+    if self.ghostUntil or LF.tick - self.jamT < JAM_TICKS then return end
+    local other = someoneAgainst(c)
+    self.jamT = LF.tick
+    if not other then return end
+    setGhost(c, true)
+    self.ghostUntil = LF.tick + GHOST_TICKS
+    LF.Move.jams = (LF.Move.jams or 0) + 1
+    if LF.Move.jams <= 10 or LF.Move.jams % 50 == 0 then
+        LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " jammed against "
+            .. tostring(other:getModData().LF_id or "the player") .. " - slips past (" .. LF.Move.jams .. ")")
+    end
+end
+
+local function unghost(self)
+    if self.ghostUntil then
+        setGhost(self.character, false)
+        self.ghostUntil = nil
     end
 end
 
@@ -151,7 +204,8 @@ end
 -- few percent toward the patrol pace; a bad one is thrown away. So the scales settle instead of
 -- swinging between their limits, and once settled the pace barely moves.
 local CAL_GAIN = 0.25        -- share of the error corrected per sample
-local CAL_STEP = 0.06        -- ... but never more than this (6%) per sample
+local CAL_STEP = 0.03        -- ... but never more than this (3%) per sample
+local CAL_KEEP = 9           -- readings kept (per kind of step) for the median
 local function scaleKey(scan)
     if scan == "left" or scan == "right" then return "sideScale" end
     if scan then return "scanScale" end
@@ -161,12 +215,12 @@ local function saveScales()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     if not data then return end
     data.moveScales = data.moveScales or {}
-    data.moveScalesV = 3
+    data.moveScalesV = 4
     for _, k in ipairs({ "shuffleScale", "patrolScale", "scanScale", "sideScale" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
-    local s = data and data.moveScalesV == 3 and data.moveScales
+    local s = data and data.moveScalesV == 4 and data.moveScales
     if s then
         for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
     end
@@ -216,9 +270,22 @@ function LF_MoveAction.patrolStep(self)
             self.calMs, self.calLen, self.calMul = ms, 0, mul
             return
         end
-        local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / base - 1)
-        f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
-        LF.Move[key] = math.max(0.4, math.min(2.0, LF.Move[key] * f))
+        -- Steer by the median of the last few clean readings (one odd reading can't swing it),
+        -- a few percent at a time.
+        LF.Move.recent = LF.Move.recent or {}
+        local list = LF.Move.recent[key] or {}
+        LF.Move.recent[key] = list
+        list[#list + 1] = base
+        if #list > CAL_KEEP then table.remove(list, 1) end
+        if #list >= 5 then
+            local sorted = {}
+            for i = 1, #list do sorted[i] = list[i] end
+            table.sort(sorted)
+            local median = sorted[math.floor((#sorted + 1) / 2)]
+            local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / median - 1)
+            f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
+            LF.Move[key] = math.max(0.4, math.min(2.0, LF.Move[key] * f))
+        end
         LF.Move.lastPace = base
         LF.Move.samples = (LF.Move.samples or 0) + 1
         if LF.Move.samples % 50 == 0 then saveScales() end
@@ -267,6 +334,7 @@ local function logSpeed(self, how)
 end
 
 function LF_MoveAction:stop()
+    unghost(self)
     logSpeed(self, "stopped")
     if self.overlay then self:setActionAnim(""); self.overlay = nil end
     clearGait(self.character)
@@ -274,6 +342,7 @@ function LF_MoveAction:stop()
 end
 
 function LF_MoveAction:perform()
+    unghost(self)
     logSpeed(self, "arrived")
     if self.overlay then self:setActionAnim(""); self.overlay = nil end
     clearGait(self.character)

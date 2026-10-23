@@ -114,6 +114,31 @@ function LF.Join.gather(lead, purpose)
     return n
 end
 
+-- Ordered to help: fire team u joins unit lead now, wherever it is (it walks over as part of
+-- lead). Returns true if it joined; false (and why) if it can't - a full squad, a unit that is
+-- itself attached or has others attached, or no free slot.
+function LF.Join.attach(lead, u, purpose)
+    if u.id == lead.id or u.faction ~= lead.faction then return false, "not the same side" end
+    if not u.teamOnly or #u.teams ~= 1 then return false, "only a fire team can join another unit" end
+    if u.joined or u.attached then return false, u.name .. " is already part of another unit" end
+    local used = {}
+    for _, tid in ipairs(lead.teams) do
+        local t = LF.Units.get(tid)
+        if t then used[lead.teamOnly and 1 or t.slot] = true end
+    end
+    local slot = nil
+    for _, sl in ipairs(CFG.slotOrder) do if not used[sl] then slot = sl; break end end
+    if not slot then return false, lead.name .. " has no room for another team" end
+    if LF.March then LF.March.cancel(u.id) end
+    u.objTask = nil
+    local ub = commanderBody(u)
+    local home = ub and { x = ub:getX(), y = ub:getY(), z = ub:getZ(), fx = u.facingX, fy = u.facingY } or nil
+    if not merge(lead, u, slot, home) then return false, "its team is gone" end
+    if not lead.attachedFor then lead.attachedFor = purpose or "defend" end
+    LF.log("JOIN " .. u.name .. " ordered to join " .. lead.name .. " as " .. LF.Units.TEAM_SLOTS[slot].name)
+    return true
+end
+
 -- The task is over: the joined teams go back to their own units, walk back to where they were,
 -- and stand by there.
 function LF.Join.release(lead, why)

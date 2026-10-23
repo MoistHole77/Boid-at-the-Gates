@@ -559,6 +559,10 @@ end
 -- patrol averages exactly the patrol pace. A man who has fallen well behind is walking normally
 -- to catch up (gait "catchup") and isn't steered.
 function LF.March.paceMul(rec, body)
+    -- Patrol pace is one speed: every man walks at it (the point man never faster), and a man who
+    -- has dropped behind walks normally until he's back in place (gait "catchup"). No speeding up
+    -- or slowing down in between. (Kept as a function so it can be switched back on.)
+    if not LF.March.steerPace then return 1 end
     local M = rec.squad and marches[rec.squad]
     if not M or M.halted or M.arrived or not M.off[rec.id] or not M.joined[rec.id] then return 1 end
     local s = project(M, body:getX(), body:getY())

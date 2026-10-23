@@ -1096,13 +1096,37 @@ local function dealBuilding(squad, sq, front)
             end
         end
     end
+    -- The men, by the wall their group holds.
+    local byWall = {}
     for _, g in ipairs(groups) do
         local w = walls[g.slot] or walls[1]
+        byWall[w] = byWall[w] or {}
+        for _, rid in ipairs(g.men) do table.insert(byWall[w], rid) end
+    end
+    local function donor()          -- the wall with the most men still without a post
+        local bw, bn = nil, 0
+        for w, men in pairs(byWall) do if #men > bn then bw, bn = w, #men end end
+        return bw
+    end
+    -- First, a man at a window on every wall that has one (the front first): from that wall's own
+    -- group, or else from the group with the most men left - two teams still cover four walls.
+    for _, w in ipairs(walls) do
+        local win = nil
+        for _, p in ipairs(wallPosts(L, w)) do
+            if p.kind == "window" and not taken[p.x .. "," .. p.y] then win = p; break end
+        end
+        if win then
+            local src = (byWall[w] and #byWall[w] > 0) and w or donor()
+            if src then take(table.remove(byWall[src], 1), win) end
+        end
+    end
+    -- Then the rest of each group on its own wall: windows, doors, the back line. (A blank wall:
+    -- one man watches it.)
+    for _, w in ipairs(walls) do
         local list = wallPosts(L, w)
         local blank = L.wallOpenings[w] == 0
-        local room = blank and 1 or #g.men      -- a blank wall: one man watches it
-        for k, rid in ipairs(g.men) do
-            local p = k <= room and free(list) or nil
+        for k, rid in ipairs(byWall[w] or {}) do
+            local p = (not blank or k == 1) and free(list) or nil
             if p and blank then p.kind = "watch" end
             if p then take(rid, p) else spares[#spares + 1] = rid end
         end

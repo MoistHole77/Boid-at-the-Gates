@@ -27,6 +27,7 @@ require "LivingFront/LF_March"
 require "LivingFront/LF_Objective"
 require "LivingFront/LF_Weapons"
 require "LivingFront/LF_Inspect"
+require "LivingFront/LF_Join"
 
 LF.Debug = LF.Debug or {}
 
@@ -266,11 +267,20 @@ local function spawnUnit(faction, x, y, z, size, playerNum)
     LF.say("Spawned " .. unit.name .. (size == "team" and " (4)" or " (17)"))
 end
 
--- The objective at (x, y), or a new one there.
+-- The objective at (x, y), or a new one there. A building that is already an objective stays that
+-- objective; a click in the open within 15 tiles of an objective means that objective (its yard,
+-- the street in front of it) - not a new one beside it.
 local function objectiveAt(x, y, z)
+    local bid = LF.Building.idAt(x, y, z)
+    local near, nd = nil, 15
     for _, o in pairs(LF.Objective.all()) do
-        if LF.Objective.at(o, x + 0.5, y + 0.5, z) then return o end
+        if bid and o.building == bid then return o end
+        if not bid then
+            local d = LF.dist(o.x, o.y, x + 0.5, y + 0.5)
+            if d <= nd then near, nd = o, d end
+        end
     end
+    if near then return near end
     local n = 0
     for _ in pairs(LF.Objective.all()) do n = n + 1 end
     return LF.Objective.create(x, y, z, "Objective " .. string.char(65 + n % 26))
@@ -278,6 +288,22 @@ end
 
 local function holdOf(u, x, y, z)
     local obj = objectiveAt(x, y, z)
+    -- A friendly unit already holds it: help that unit hold it (one objective, one defence).
+    for _, other in pairs(LF.Units.all()) do
+        local t = other.objTask
+        if other ~= u and other.kind == "squad" and not other.joined and other.faction == u.faction
+            and t and t.kind == "hold" and t.obj == obj.id then
+            local ok, why = LF.Join.attach(other, u, "defend")
+            if ok then
+                -- Re-deal the defence with the new team in it.
+                LF.Tactics.setStance(other, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
+                LF.say(u.name .. " joins " .. other.name .. " to hold " .. obj.name)
+                return
+            end
+            LF.say(u.name .. " can't join " .. other.name .. " (" .. tostring(why) .. ") - holding " .. obj.name .. " alongside it")
+            break
+        end
+    end
     LF.Objective.hold(u, obj)
     LF.Tactics.noteStanceSet(u)
     LF.say(u.name .. " holds " .. obj.name)

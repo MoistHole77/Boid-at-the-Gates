@@ -120,32 +120,78 @@ local function moveAction(body, sq, gait, awayX, awayY)
     return LF_MoveAction:new(body, sq, gait, awayX, awayY)
 end
 
--- Walk (or run) to a free square near (x, y). Tries a few spots. Returns true if a move was queued.
+-- ---- claimed squares -----------------------------------------------------------------------------
+-- Each soldier claims the square he is heading for (or standing on). Exact spots - a window, a
+-- place in the stack, his place in a file, a cover position - are "hard" claims: he gets it, and
+-- a man loitering there makes way. Loose spots (keeping near his slot, a bound, falling back) are
+-- "soft": a man picking one avoids every square someone else has claimed, so two men don't head
+-- for the same square and end up running into each other.
+local claims = {}           -- record id -> { k = "x,y,z", hard = bool }
+
+local function claimKey(x, y, z) return math.floor(x) .. "," .. math.floor(y) .. "," .. math.floor(z) end
+
+local function idOfBody(body) return body:getModData().LF_id end
+
+local function claimedByOther(k, myId, hardOnly)
+    for id, c in pairs(claims) do
+        if id ~= myId and c.k == k and (c.hard or not hardOnly) then
+            if LF.Bodies.get(id) then return id end
+            claims[id] = nil                        -- (he's gone)
+        end
+    end
+    return nil
+end
+
+local function claim(body, sq, hard)
+    local id = idOfBody(body)
+    if id then claims[id] = { k = claimKey(sq:getX(), sq:getY(), sq:getZ()), hard = hard } end
+end
+function LF.Brain.unclaim(id) claims[id] = nil end
+
+-- Is (x, y, z) someone else's exact spot? (A man standing there should make way.)
+function LF.Brain.hardClaimed(x, y, z, myId) return claimedByOther(claimKey(x, y, z), myId, true) ~= nil end
+
+-- Walk (or run) to a free square near (x, y) that nobody else has claimed. Tries a few spots.
+-- Returns true if a move was queued.
 -- awayX, awayY: this is a retreat from that point (abandoned if the route heads toward it).
 function LF.Brain.walkNear(body, x, y, z, spread, gait, awayX, awayY)
     -- Sitting: get up first (the walk is asked for again next time).
     if LF.Idle and LF.Idle.standUp(body) then return false end
     local cell = getCell()
-    for _ = 1, 6 do
-        local sq = cell:getGridSquare(math.floor(x + ZombRand(-spread, spread + 1)),
-                                      math.floor(y + ZombRand(-spread, spread + 1)), math.floor(z))
+    local myId = idOfBody(body)
+    local fallback = nil
+    for i = 1, 10 do
+        local r = i <= 6 and spread or spread + 1             -- a little wider if it's crowded
+        local sq = cell:getGridSquare(math.floor(x + ZombRand(-r, r + 1)),
+                                      math.floor(y + ZombRand(-r, r + 1)), math.floor(z))
         if sq and sq:isFree(false) then
-            ISTimedActionQueue.clear(body)
-            ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
-            return true
+            if not claimedByOther(claimKey(sq:getX(), sq:getY(), sq:getZ()), myId, false) then
+                ISTimedActionQueue.clear(body)
+                ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
+                claim(body, sq, false)
+                return true
+            end
+            fallback = fallback or sq
         end
+    end
+    if fallback then
+        ISTimedActionQueue.clear(body)
+        ISTimedActionQueue.add(moveAction(body, fallback, gait, awayX, awayY))
+        claim(body, fallback, false)
+        return true
     end
     return false
 end
 local walkNear = LF.Brain.walkNear
 
--- Walk (or run) to an exact square.
+-- Walk (or run) to an exact square (his own spot: a hard claim).
 function LF.Brain.walkTo(body, x, y, z, gait, awayX, awayY)
     if LF.Idle and LF.Idle.standUp(body) then return false end
     local sq = getCell():getGridSquare(x, y, z)
     if not sq then return false end
     ISTimedActionQueue.clear(body)
     ISTimedActionQueue.add(moveAction(body, sq, gait, awayX, awayY))
+    claim(body, sq, true)
     return true
 end
 local walkTo = LF.Brain.walkTo
@@ -353,6 +399,12 @@ end
 local function followSlot(m, body, rec, sx, sy, sz)
     if not sx then return false end
     local d = LF.dist(body:getX(), body:getY(), sx, sy)
+    -- Standing on another man's spot (his window, his place in the stack): make way.
+    if not isMoving(body) and LF.tick - m.lastPath > 60
+        and LF.Brain.hardClaimed(body:getX(), body:getY(), body:getZ(), rec.id) then
+        if walkNear(body, sx, sy, sz, 2, "walk") then m.lastPath = LF.tick end
+        return false
+    end
     if d <= CFG.followDistance or stuckNear(m, sx, sy) then return true end
     if body:isPerformingAnAction() and not isMoving(body) then return false end   -- busy (shooting, flinching)
     if LF.tick - m.lastPath < CFG.followReissueTicks then return false end
@@ -1053,6 +1105,7 @@ local function onTick()
                 LF.Posture.forget(id)
                 LF.Suppress.forget(id)
                 LF.Weapons.forget(id)
+                claims[id] = nil
                 minds[id] = nil
             end
         end
