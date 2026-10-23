@@ -243,6 +243,10 @@ function LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
     local r = CFG.searchRadius
     local myThreatDistSq = LF.distSq(bx, by, tx, ty)
     local myRear = rx and LF.dist(bx, by, rx, ry)
+    -- Never hide in the building the enemy is in.
+    local tsq = cell:getGridSquare(math.floor(tx), math.floor(ty), math.floor(threat:getZ()))
+    local tb = tsq and tsq:getBuilding()
+    local enemyBuilding = tb and tb:getID() or nil
     local n = 0
     for x = bx - r, bx + r do
         for y = by - r, by + r do
@@ -250,7 +254,8 @@ function LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
                 and (not rx or LF.dist(x, y, rx, ry) <= myRear + 1)
                 and not crowded(x, y, bz, id) then
                 local sq = cell:getGridSquare(x, y, bz)
-                if sq and standable(sq, body) then
+                local sb = sq and enemyBuilding and sq:getBuilding()
+                if sq and standable(sq, body) and not (sb and sb:getID() == enemyBuilding) then
                     n = n + 1
                     local c = hideCands[n]
                     if not c then c = {}; hideCands[n] = c end

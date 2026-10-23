@@ -126,6 +126,9 @@ function LF.Squad.slot(rec)
     local ax, ay, az = LF.Squad.anchor(rec.squad)
     if not ax then return nil end
     local fwd, lat = LF.Units.slotOffset(rec)
+    -- Standing by: gathered in closer round the leader.
+    local spread = LF.Stance and LF.Stance.get(squad).spread
+    if spread then fwd, lat = fwd * spread, lat * spread end
     local fx, fy = squad.facingX or 1, squad.facingY or 0
     return ax + fx * fwd - fy * lat, ay + fy * fwd + fx * lat, az
 end

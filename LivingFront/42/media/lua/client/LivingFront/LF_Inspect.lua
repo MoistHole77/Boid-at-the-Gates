@@ -18,7 +18,7 @@ local RANK_NAME = { SGT = "Sergeant", CPL = "Corporal", PVT = "Private" }
 local STATE_WORDS = {
     idle = "standing by", guard = "on guard", alert = "alert, covering", engage = "firing",
     bound = "moving under fire", file = "on the move", hide = "taking cover (wounded)", down = "down, wounded",
-    flee = "falling back", cover = "in cover",
+    flee = "wounded, getting to safety", cover = "in cover",
 }
 
 LF_InspectWindow = ISCollapsableWindow:derive("LF_InspectWindow")
@@ -57,6 +57,14 @@ local function wrap(text, font, width)
     end
     if line ~= "" then lines[#lines + 1] = line end
     return lines
+end
+
+-- The unit a team that joined another unit came from ("with GER team 2 from GER team 3").
+local function joinedFrom(rec)
+    for _, u in pairs(LF.Units.all()) do
+        if u.joined and u.joinTeam == rec.team then return u.name end
+    end
+    return nil
 end
 
 local function roleOf(rec)
@@ -108,6 +116,8 @@ function LF_InspectWindow:render()
     text(LF.Records.fullName(rec), 1, 1, 0.85, big)
     text((RANK_NAME[rec.rank] or "") .. (rec.rank and " - " or "") .. (faction and faction.name or rec.faction), 0.75, 0.8, 0.9)
     text(roleOf(rec), 0.75, 0.8, 0.9)
+    local from = rec.team and joinedFrom(rec)
+    if from then text("Attached for this task (from " .. from .. ")", 0.75, 0.8, 0.9) end
     gap()
 
     -- Now.

@@ -431,6 +431,9 @@ local SWITCH_WORDS = { file = "Ranger file - single file through here!", column 
 -- beyond the loaded world is reached in legs (each re-planned from where the point man is).
 -- opts.continuing: the next leg of a patrol already under way. Returns true, or false and why.
 function LF.March.order(squad, x, y, z, form, opts)
+    -- A new task (not the next leg, a resumption, or a team walking home): standing-by fire
+    -- teams nearby join the unit first (LF_Join).
+    if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad) end
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end

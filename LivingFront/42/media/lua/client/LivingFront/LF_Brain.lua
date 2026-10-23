@@ -45,6 +45,8 @@ local CFG = {
     sightRange = 30,        -- tiles
     fireRange = 20,         -- fighters close in to this range before shooting
     fleeHealth = 35,        -- fighters flee below this overall health when threatened
+    corneredRange = 6,      -- ... but fight back from where they are when the enemy is this close
+    woundedLeftBehind = 15, -- a wounded man hiding this far from his unit's rear goes back to it
     civFleeRange = 20,      -- unarmed civilians flee from hostiles within this range
     gunfireRange = 25,      -- unarmed civilians flee gunfire within this range
     fleeDistance = 12,      -- how far a fleeing NPC tries to get
@@ -676,6 +678,16 @@ local function decide(id, body, rec, m)
         m.targetId = (pick and dist <= CFG.fireRange) and threatId or nil
         return
     end
+    -- Badly wounded with the enemy right on top of him: no getting away - he fights back from
+    -- where he is (like a man down in a defence).
+    if fighter and threat and hp < CFG.fleeHealth and dist <= CFG.corneredRange then
+        if m.state ~= "down" then
+            setState(id, body, rec, m, "down", "wounded and cornered, enemy at " .. math.floor(dist) .. " tiles")
+            if isMoving(body) then ISTimedActionQueue.clear(body) end
+        end
+        m.targetId = threatId
+        return
+    end
     if threat and ((not fighter and dist < CFG.civFleeRange) or (fighter and hp < CFG.fleeHealth)) then
         setState(id, body, rec, m, "flee", "threat #" .. threatId .. " at " .. math.floor(dist) .. " tiles, health " .. math.floor(hp))
         m.targetId = threatId
@@ -708,9 +720,19 @@ local function decide(id, body, rec, m)
             return
         end
     end
-    if fighter and hp < CFG.fleeHealth and m.state == "flee" then
+    if fighter and hp < CFG.fleeHealth and (m.state == "flee" or m.state == "down") and LF.Stance.of(rec).woundedWithdraw then
         -- Badly hurt and already hiding: stay down out of sight instead of rejoining the fight
-        -- the moment the enemy drops out of view.
+        -- the moment the enemy drops out of view - unless his unit has moved off without him:
+        -- then he leaves his hiding place and makes his way back to it.
+        if m.state == "down" then setState(id, body, rec, m, "flee", "wounded, back to cover") end
+        if m.hide and inSquad then
+            local rx, ry = LF.Squad.rear(rec, CFG.rearDistance)
+            if rx and LF.dist(m.hide.x, m.hide.y, rx, ry) > CFG.woundedLeftBehind then
+                LF.log("BRAIN #" .. id .. " " .. title(rec) .. " leaves his hiding place - his unit has moved on")
+                leavePosition(id, body, m)
+                m.hide, m.atRear = nil, nil
+            end
+        end
         if not (m.hide and isAt(body, m.hide)) and inSquad then
             local rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance)
             if rx and not m.hide then
@@ -855,7 +877,16 @@ local function decide(id, body, rec, m)
     setState(id, body, rec, m, "idle")
     m.targetId = nil
     if inSquad then
-        if ax then followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
+        local placed = true
+        if ax then placed = followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
+        -- Standing by: on his spot, he passes the time (sits, smokes, checks his rifle...).
+        if placed and fighter and LF.Idle and LF.Stance.of(rec).idle and not isMoving(body) then
+            local words = LF.Idle.maybeStart(body, m, LF.Combat.arm(body), function(b)
+                local mm = minds[id]
+                return mm ~= nil and mm.state == "idle" and LF.Stance.of(rec).idle == true
+            end)
+            if words then m.detail = words elseif not body:isPerformingAnAction() then m.detail = nil end
+        end
         return
     end
     if not body:isPerformingAnAction() and ZombRand(100) < CFG.wanderChance then

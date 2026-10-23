@@ -58,7 +58,7 @@ function LF.Units.pruneDead()
     local data = units()
     local removed = 0
     for id, squad in pairs(data.units) do
-        if squad.kind == "squad" then
+        if squad.kind == "squad" and not squad.joined then     -- (a team away with another unit isn't gone)
             local anyAlive = false
             for _, rid in ipairs(LF.Units.members(id)) do
                 local r = LF.Records.get(rid)
@@ -132,7 +132,7 @@ end
 -- Who commands this unit: the squad leader, or for a lone fire team, its corporal.
 function LF.Units.commander(squad)
     if squad.leader then return squad.leader end
-    if squad.teamOnly then
+    if squad.teamOnly or squad.cmdFromTeam then
         local team = LF.Units.get(squad.teams[1])
         return team and team.leader
     end
@@ -149,7 +149,7 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
     local rx, ry = -fy, fx          -- right of forward on the map grid (y points south)
     local function at(fwd, lat) return x + fx * fwd + rx * lat, y + fy * fwd + ry * lat end
 
-    local squad = newUnit({ kind = "squad", faction = faction, teams = {}, teamOnly = teamOnly or nil,
+    local squad = newUnit({ kind = "squad", faction = faction, teams = {}, teamOnly = teamOnly or nil, stance = "standby",
         name = faction .. (teamOnly and " team " or " squad ") .. nextSquadNumber(faction), facingX = fx, facingY = fy })
 
     local sgt = nil
@@ -219,6 +219,12 @@ end
 
 -- Every record id in a squad: its current leader first, then the team members (dead included;
 -- check rec.alive).
+-- Forget the cached member list of a unit (after teams move between units).
+function LF.Units.dirty(squadId) memberCache[squadId] = nil end
+
+-- The formation slots a squad's teams can take (Alpha 1, Alpha 2, Bravo 1, Bravo 2).
+LF.Units.TEAM_SLOTS = TEAM_SLOTS
+
 function LF.Units.members(squadId)
     local list = memberCache[squadId]
     if list then return list end

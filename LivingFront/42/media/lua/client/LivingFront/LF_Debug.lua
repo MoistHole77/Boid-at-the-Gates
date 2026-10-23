@@ -344,6 +344,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     if unit then
         local orders = sub(main, "Orders for " .. unit.name)
         local st = sub(orders, "Stance (now " .. LF.Stance.get(unit).name .. ")")
+        st:addOption("Stand by (rest here)", nil, function() setStanceNearest(x, y, z, "standby") end)
         st:addOption("Offensive", nil, function() setStanceNearest(x, y, z, "offensive") end)
         st:addOption(LF.Building.idAt(x, y, z) and "Defensive - hold this building" or "Defensive - all-round defence here",
             nil, function() setStanceNearest(x, y, z, "defensive") end)

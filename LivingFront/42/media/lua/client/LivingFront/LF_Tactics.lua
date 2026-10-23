@@ -82,7 +82,9 @@ local CFG = {
     clearStackTimeout = 1200, -- after ~20 s, go in with whoever is stacked (2+ men) or call it off
     clearStackClose = 480,  -- after ~8 s, a man within 2.5 tiles of his stack spot counts as stacked
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
-    clearTimeout = 7200,    -- give up on a clearing after ~2 min
+    clearTimeout = 9000,    -- give up on a clearing after ~2.5 min
+    clearRooms = 6,         -- clear at most this many rooms one after another
+    standDownTicks = 2700,  -- ~45 s with nothing to do: the unit stands by
     -- The sergeant choosing his stance
     digInOdds = 1.5,        -- dig in when the known enemy is this many times our fit men
     lossShare = 0.34,       -- ... or this share of the unit is down and the enemy isn't giving
@@ -1385,6 +1387,12 @@ end
 
 -- Change a unit's stance (offensive / defensive). The unit starts afresh: a defensive unit forms
 -- its perimeter where its commander stands.
+-- Forget a unit's runtime tactics (its teams changed: one joined or left).
+function LF.Tactics.forgetUnit(squad)
+    squads[squad.id] = nil
+    for _, tid in ipairs(squad.teams) do teams[tid] = nil end
+end
+
 function LF.Tactics.setStance(squad, stance, holdAt)
     if stance ~= "patrolling" then LF.March.cancel(squad.id) end
     squad.stance = stance
@@ -1394,7 +1402,7 @@ function LF.Tactics.setStance(squad, stance, holdAt)
     LF.log("STANCE " .. squad.name .. " -> " .. stance)
     -- (A defensive unit's commander calls it when the perimeter goes up.)
     local cid = LF.Units.commander(squad)
-    if stance ~= "defensive" and cid and LF.Bodies.get(cid) then LF.Tactics.shout(cid, "On me!") end
+    if stance ~= "defensive" and stance ~= "standby" and cid and LF.Bodies.get(cid) then LF.Tactics.shout(cid, "On me!") end
 end
 
 -- ---- corporal on his own ----------------------------------------------------------------------
@@ -1505,6 +1513,91 @@ end
 
 local function clearKey(x, y) return x .. "," .. y end
 
+-- ---- room by room ----------------------------------------------------------------------------
+--
+-- Once a team is inside, it clears on from room to room instead of going back out to another
+-- door: the next room is the one the enemy was last seen in (or, with nobody seen, the nearest
+-- room it hasn't cleared yet). The men go through one at a time, as at the door; the others hold
+-- where they are until it's their turn.
+
+local function roomKeyAt(L, x, y)
+    local sq = getCell():getGridSquare(math.floor(x), math.floor(y), L.z)
+    local r = sq and sq:getRoom()
+    return r and tostring(r) or nil
+end
+
+local function planRoom(squad, team, L, file, started, rooms)
+    local live = {}
+    local cx, cy = 0, 0
+    for _, rid in ipairs(file) do
+        local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
+        if r and fit(r) and b then
+            live[#live + 1] = rid
+            cx, cy = cx + b:getX(), cy + b:getY()
+        end
+    end
+    if #live == 0 then return nil, "nobody left to go on" end
+    cx, cy = cx / #live, cy / #live
+    rooms = rooms or {}
+    local here = roomKeyAt(L, cx, cy)
+    if here then rooms[here] = true end
+    -- Squares of each room not yet cleared.
+    local byRoom = {}
+    for _, q in ipairs(L.inside) do
+        local k = roomKeyAt(L, q.x, q.y)
+        if k and not rooms[k] then
+            byRoom[k] = byRoom[k] or {}
+            byRoom[k][#byRoom[k] + 1] = q
+        end
+    end
+    -- The room the enemy was last seen in, nearest first; else the nearest room left.
+    local target, bestD = nil, math.huge
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        if math.floor(c.z or 0) == L.z and LF.Building.isInside(L, c.x, c.y) then
+            local k = roomKeyAt(L, c.x, c.y)
+            local d = LF.dist(cx, cy, c.x, c.y)
+            if k and byRoom[k] and d < bestD then target, bestD = k, d end
+        end
+    end
+    if not target then
+        for k, sqs in pairs(byRoom) do
+            for _, q in ipairs(sqs) do
+                local d = LF.dist(cx, cy, q.x + 0.5, q.y + 0.5)
+                if d < bestD then target, bestD = k, d end
+            end
+        end
+    end
+    if not target then return nil, "every room cleared" end
+    local sqs = byRoom[target]
+    -- Where they go into it: its square nearest the team.
+    local entry, ed = sqs[1], math.huge
+    for _, q in ipairs(sqs) do
+        local d = LF.dist(cx, cy, q.x + 0.5, q.y + 0.5)
+        if d < ed then entry, ed = q, d end
+    end
+    -- Each man's spot in the room, spread out, away from the way in.
+    local targets, used = {}, {}
+    for _, rid in ipairs(live) do
+        local best, bestS = nil, -math.huge
+        for _, q in ipairs(sqs) do
+            local dd = LF.dist(q.x, q.y, entry.x, entry.y)
+            local key = q.x .. "," .. q.y
+            if not used[key] then
+                local sc = math.min(dd, 4)
+                for _, u in pairs(targets) do sc = math.min(sc, LF.dist(q.x, q.y, u.x, u.y)) end
+                if sc > bestS then best, bestS = q, sc end
+            end
+        end
+        best = best or entry
+        targets[rid] = { x = best.x, y = best.y }
+        used[best.x .. "," .. best.y] = true
+    end
+    return { L = L, door = { x = entry.x, y = entry.y, dx = 0, dy = 0 }, stack = {}, file = live, targets = targets,
+             phase = "go", started = started or LF.tick, phaseAt = LF.tick, next = 1, manAt = LF.tick,
+             face = LF.Tactics.point(entry.x + 0.5, entry.y + 0.5, L.z), faces = {}, room = target, rooms = rooms,
+             hold = {} }
+end
+
 -- Plan the clearing of building L by a team. Returns the plan or nil.
 local function planClear(squad, team, t, L)
     local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
@@ -1531,6 +1624,13 @@ local function planClear(squad, team, t, L)
         if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then file[#file + 1] = rid end
     end
     if #file < 2 then return nil, "only " .. #file .. " fit man in the team" end
+    -- Already inside: clear on from room to room rather than going back out to a door.
+    local inside = 0
+    for _, rid in ipairs(file) do
+        local b = LF.Bodies.get(rid)
+        if b and math.floor(b:getZ()) == z and LF.Building.isInside(L, b:getX(), b:getY()) then inside = inside + 1 end
+    end
+    if inside * 2 >= #file then return planRoom(squad, team, L, file, LF.tick, {}) end
     local ox, oy = door.x + door.dx, door.y + door.dy
     -- Stack against the wall beside the door, on the side nearer the team.
     local lx, ly = -door.dy, door.dx
@@ -1616,6 +1716,16 @@ function LF.Tactics.clearPlace(C, rec)
     end
     local sp = C.stack[idx]
     local body = LF.Bodies.get(rec.id)
+    if not sp then
+        -- Room by room: waiting for his turn, he holds where he is, facing the way in.
+        local h = C.hold and C.hold[rec.id]
+        if not h and body then
+            h = { x = body:getX(), y = body:getY() }
+            if C.hold then C.hold[rec.id] = h end
+        end
+        if not h then return nil end
+        return "file", h.x, h.y, z, C.face, "walk"
+    end
     local far = body and LF.dist(body:getX(), body:getY(), sp.x + 0.5, sp.y + 0.5) > 3
     return "file", sp.x + 0.5, sp.y + 0.5, z, C.face, far and "run" or "walk"
 end
@@ -1704,8 +1814,13 @@ local function updateClear(team, t, squad)
         local rid = C.file[C.next]
         local r = rid and LF.Records.get(rid)
         local b = rid and LF.Bodies.get(rid)
-        local through = b and LF.Building.isInside(C.L, b:getX(), b:getY())
-            and LF.dist(b:getX(), b:getY(), C.door.x + 0.5, C.door.y + 0.5) >= 1.5
+        local through
+        if C.room then
+            through = b and roomKeyAt(C.L, b:getX(), b:getY()) == C.room
+        else
+            through = b and LF.Building.isInside(C.L, b:getX(), b:getY())
+                and LF.dist(b:getX(), b:getY(), C.door.x + 0.5, C.door.y + 0.5) >= 1.5
+        end
         if not (r and fit(r) and b) or through or LF.tick - C.manAt > CFG.clearManTimeout then
             C.next, C.manAt = C.next + 1, LF.tick
             if C.next > #C.file then C.phase, C.phaseAt = "in", LF.tick end
@@ -1716,7 +1831,24 @@ local function updateClear(team, t, squad)
             local tg = C.targets[rid2]
             if tg and not at(rid2, tg.x, tg.y) then all = false end
         end
-        if all or LF.tick - C.phaseAt > 1800 then finish("Room clear!", "in and holding") ; return false end
+        if all or LF.tick - C.phaseAt > 1800 then
+            -- On to the next room (the one the enemy was seen in, or the nearest left).
+            if C.room or LF.Building.isInside(C.L, C.door.x + 0.5, C.door.y + 0.5) then
+                local rooms = C.rooms or {}
+                if C.room then rooms[C.room] = true end
+                local count = (C.roomCount or 1)
+                local nextC = count < CFG.clearRooms and planRoom(squad, team, C.L, live, C.started, rooms)
+                if nextC then
+                    nextC.roomCount = count + 1
+                    t.clear = nextC
+                    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": room clear, on to the next room (" .. nextC.roomCount .. ")")
+                    if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Room clear - next room! Go!") end
+                    return true
+                end
+            end
+            finish("Room clear!", "in and holding")
+            return false
+        end
     end
     return true
 end
@@ -1741,9 +1873,11 @@ function LF.Tactics.orderClear(squad, team, L, why)
         return nil
     end
     t.clear, t.order, t.moving, t.shifting = C, "CLEAR", nil, nil
-    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. " ordered to clear the building by the door at "
-        .. C.door.x .. "," .. C.door.y .. " (" .. why .. ")")
-    if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Stack up on the door!") end
+    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. " ordered to clear the building "
+        .. (C.room and "room by room from inside" or ("by the door at " .. C.door.x .. "," .. C.door.y)) .. " (" .. why .. ")")
+    if team.leader and LF.Bodies.get(team.leader) then
+        LF.Tactics.shout(team.leader, C.room and "Next room - go!" or "Stack up on the door!")
+    end
     return team
 end
 
@@ -1923,6 +2057,35 @@ local function considerStance(squad, sq, cid, cmd)
     return true
 end
 
+-- ---- standing by ------------------------------------------------------------------------------
+--
+-- A unit with nothing in particular to do stands by (LF_Stance "standby"): the men rest round
+-- the leader. On contact it stands to (offensive). Any other unit stands down to it once it has
+-- had no task, no march, no fight and no enemy in mind for CFG.standDownTicks; a team that walked
+-- back after joining another unit stands by the moment it is back.
+local function standDown(squad, sq, cid, cmd)
+    local M = LF.March.get(squad.id)
+    if squad.returning and M and M.arrived then
+        local r = squad.returning
+        squad.returning = nil
+        if r.fx then squad.facingX, squad.facingY = r.fx, r.fy end
+        LF.Tactics.setStance(squad, "standby")
+        LF.Tactics.shout(cid, "Back in position. Stand easy.")
+        LF.log("STANDBY " .. squad.name .. ": back where it was, standing by")
+        return true
+    end
+    local busy = squad.objTask ~= nil or (M ~= nil and not M.arrived) or clearing(squad)
+        or LF.Stance.get(squad).name == "defensive" or sq.intent ~= nil
+        or LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, 60) ~= nil
+    if busy then sq.busyAt = LF.tick; return false end
+    sq.busyAt = sq.busyAt or LF.tick
+    if LF.tick - sq.busyAt < CFG.standDownTicks then return false end
+    LF.log("STANDBY " .. squad.name .. ": nothing to do - standing by")
+    LF.Tactics.setStance(squad, "standby")
+    LF.Tactics.shout(cid, "All quiet - stand easy. Stay sharp.")
+    return true
+end
+
 local function updateSquad(squad)
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
@@ -1931,6 +2094,25 @@ local function updateSquad(squad)
     for _, tid in ipairs(squad.teams) do
         local t, team = teams[tid], LF.Units.get(tid)
         if t and t.clear and team then LF.guard("clear", updateClear, team, t, squad) end
+    end
+    -- Teams that joined this unit for a task go back once it's over.
+    if squad.attached and LF.Join and LF.Join.taskOver(squad) then
+        LF.guard("join release", LF.Join.release, squad, LF.Stance.get(squad).name == "standby" and "task over" or "objective taken")
+        return
+    end
+    if squad.joined then return end                -- (its team is away with another unit)
+    if cmd and not cmd:isDead() then
+        if LF.Stance.get(squad).idle then
+            -- Standing by: stand to on contact; otherwise nothing to order.
+            local c0 = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
+            if c0 then
+                LF.log("STANDBY " .. squad.name .. ": contact - stand to")
+                LF.Tactics.setStance(squad, "offensive")
+                LF.Tactics.shout(cid, "Stand to! Contact!")
+            end
+            return
+        end
+        if standDown(squad, sq, cid, cmd) then return end
     end
     if cmd and not cmd:isDead() and considerStance(squad, sq, cid, cmd) then return end
     if not cmd or cmd:isDead() then
@@ -2023,7 +2205,10 @@ local function updateSquad(squad)
     if total > 0 and fitN / total < CFG.fallbackFit then
         if not sq.broken and LF.Service then LF.guard("service broke", LF.Service.unitBroke, squad) end
         sq.broken = true
-        if front < CFG.fallbackClear then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
+        -- Once out of range, he only falls back again if the enemy comes on (6 tiles closer) -
+        -- not back and forth every second on the edge of range.
+        local clearDist = CFG.fallbackClear - (intent == "HOLD" and 6 or 0)
+        if front < clearDist then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
         else intent, why = "HOLD", "fallen back out of range" end
     elseif intent ~= "HOLD" and intent ~= "FLANK" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         -- Too many men pinned to keep advancing. (A squad already holding still goes on to the

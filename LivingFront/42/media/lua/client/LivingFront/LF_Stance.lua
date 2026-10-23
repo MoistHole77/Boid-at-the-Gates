@@ -4,6 +4,11 @@
 -- by the debug menu). The stance is a table of settings that the brain (LF_Brain) and the
 -- leaders (LF_Tactics) read, so a new stance is mostly a new table.
 --
+--   standby   - nothing in particular to do: the unit rests where its leader is, loosely
+--               gathered round him; the men sit, smoke, check their rifles. Every new unit starts
+--               like this, and a unit goes back to it once it has been quiet with no task for a
+--               while. On contact it stands to (offensive). A fire team standing by next to a
+--               unit that is given a task joins it, and goes back when the task is done.
 --   offensive - everything built before stances: bearings, advance, hold, reposition, flank,
 --               fall back when broken; wounded men pull back to the rear.
 --   patrolling - moving somewhere in a tactical formation (ranger file, tactical column, wedge);
@@ -14,7 +19,7 @@
 --               unit fights to the death (no withdrawal - kept as a setting so a sergeant can be
 --               given that order later).
 --
--- The stance is saved on the unit (squad.stance); a unit without one is offensive.
+-- The stance is saved on the unit (squad.stance); a unit without one is offensive (older saves).
 
 require "LivingFront/LF_Core"
 require "LivingFront/LF_Units"
@@ -22,6 +27,16 @@ require "LivingFront/LF_Units"
 LF.Stance = LF.Stance or {}
 
 local S = {
+    standby = {
+        name = "standby",
+        maneuvers = true,        -- (it can be ordered to patrol; on contact it goes offensive)
+        bearings = true,
+        woundedWithdraw = true,
+        withdrawWhenBroken = true,
+        stickyCover = false,
+        idle = true,
+        spread = 0.6,            -- formation slots pulled in to this share round the leader
+    },
     offensive = {
         name = "offensive",
         maneuvers = true,        -- leaders may order advance / flank / reposition
