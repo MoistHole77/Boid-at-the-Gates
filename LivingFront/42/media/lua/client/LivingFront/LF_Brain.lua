@@ -600,12 +600,19 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         m.marchGait = walkGait
     end
     if moving then
-        -- On the march his place moves up the road: re-path only when it has moved well on
-        -- (or he has stopped), not every step.
+        -- On the march his place moves up the road: the walk he is on is re-aimed at it as it
+        -- moves (no stopping and starting a new walk), so he keeps a steady pace.
         local d = m.marchDest and LF.dist(m.marchDest.x, m.marchDest.y, tx, ty) or math.huge
-        if d >= 3 or not isMoving(body) then
-            if d >= 3 and isMoving(body) then ISTimedActionQueue.clear(body) end
-            if d >= 3 then m.lastPath = -10000 end
+        if d >= 1.5 then
+            local q = ISTimedActionQueue.getTimedActionQueue(body)
+            local a = q and q.queue and q.queue[1]
+            local sq = getCell():getGridSquare(tx, ty, math.floor(sz))
+            local reaimed = a and a.Type == "LF_MoveAction" and a.gait == walkGait and a.retarget
+                and sq and sq:isFree(false) and a:retarget(tx, ty, sz)
+            if not reaimed then
+                if isMoving(body) then ISTimedActionQueue.clear(body) end
+                m.lastPath = -10000
+            end
             m.marchDest = m.marchDest or {}
             m.marchDest.x, m.marchDest.y = tx, ty
         end
@@ -615,7 +622,7 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         m.lastPath = -10000
     end
     if body:isPerformingAnAction() and not isMoving(body) then return end
-    if not isMoving(body) and LF.tick - m.lastPath > 60 then
+    if not isMoving(body) and LF.tick - m.lastPath > (moving and 10 or 60) then
         if LF.Posture.crouched(body) then LF.Posture.set(body, false) end
         -- His exact square if he can stand there and got there last time; otherwise near it.
         local sq = getCell():getGridSquare(tx, ty, math.floor(sz))

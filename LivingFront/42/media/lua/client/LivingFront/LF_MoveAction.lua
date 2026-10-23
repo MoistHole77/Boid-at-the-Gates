@@ -40,8 +40,12 @@ LF.Move.PATROL_PACE = 0.5
 -- Legs: the game's slow walk (Bob_WalkSlow - short steps made for a slow pace, so the feet match
 -- the ground better than a slowed-down normal walk), rifle carried as usual. (An upper-body
 -- "rifle at the ready" overlay was tried in 0.21.4: it put the rifles over their heads.)
+-- One animation speed per kind of step (each animation has its own natural stride):
+--   shuffle (the slow walk), patrol (plain walk), scan (aimed walk forward / backward) and
+--   side (aimed strafe, scanning out to a side). Kept in the save once settled.
 LF.Move.patrolScale = LF.Move.patrolScale or 0.7
 LF.Move.scanScale = LF.Move.scanScale or 0.9
+LF.Move.sideScale = LF.Move.sideScale or 1.0
 LF.Move.shuffleScale = LF.Move.shuffleScale or 1.0
 local function setVars(character, patrol, scan)
     local shuffle = patrol and LF.Move.shuffle ~= false
@@ -52,6 +56,7 @@ local function setVars(character, patrol, scan)
     character:setVariable("LFPatrolSpeed", LF.Move.patrolScale)
     character:setVariable("LFShuffleSpeed", LF.Move.shuffleScale)
     character:setVariable("LFScanSpeed", LF.Move.scanScale)
+    character:setVariable("LFScanSideSpeed", LF.Move.sideScale)
 end
 local SCAN_TURN = { fwd = 0, left = -90, right = 90, back = 180 }
 
@@ -133,20 +138,46 @@ function LF_MoveAction:update()
 end
 
 -- Patrol walk: the animation variables, the scan facing, and the pace calibration.
-local CAL_TICKS = 60
+--
+-- Calibration: a sample is one second of steady walking - the same step all through (no scan
+-- starting or ending), moving every tick (not held up, not stopped at his place), measured along
+-- the ground he actually covered (curves count). Each good sample nudges that step's speed a
+-- few percent toward the patrol pace; a bad one is thrown away. So the scales settle instead of
+-- swinging between their limits, and once settled the pace barely moves.
+local CAL_GAIN = 0.25        -- share of the error corrected per sample
+local CAL_STEP = 0.06        -- ... but never more than this (6%) per sample
+local function scaleKey(scan)
+    if scan == "left" or scan == "right" then return "sideScale" end
+    if scan then return "scanScale" end
+    return LF.Move.shuffle ~= false and "shuffleScale" or "patrolScale"
+end
+local function saveScales()
+    local data = LF.Records and LF.Records.data and LF.Records.data()
+    if not data then return end
+    data.moveScales = data.moveScales or {}
+    for _, k in ipairs({ "shuffleScale", "patrolScale", "scanScale", "sideScale" }) do data.moveScales[k] = LF.Move[k] end
+end
+Events.OnInitGlobalModData.Add(function()
+    local data = LF.Records and LF.Records.data and LF.Records.data()
+    local s = data and data.moveScales
+    if s then
+        for k, v in pairs(s) do if type(v) == "number" then LF.Move[k] = v end end
+    end
+end)
+
 function LF_MoveAction.patrolStep(self)
     local c = self.character
     local scanning = self.scan and self.scanUntil and LF.tick < self.scanUntil
     local scan = scanning and self.scan or nil
-    if scan and scan ~= "fwd" and LF.Move.strafeWorks == false then scan = "fwd" end
     setVars(c, true, scan)
 
     -- Turned out to his side while walking on: face the travel direction turned by the scan.
     local px, py = c:getX(), c:getY()
+    local step = 0
     if self.lastX then
         local mx, my = px - self.lastX, py - self.lastY
-        local ml = math.sqrt(mx * mx + my * my)
-        if ml > 0.005 then self.dirX, self.dirY = mx / ml, my / ml end
+        step = math.sqrt(mx * mx + my * my)
+        if step > 0.005 then self.dirX, self.dirY = mx / step, my / step end
     end
     self.lastX, self.lastY = px, py
     if scan and scan ~= "fwd" and self.dirX then
@@ -156,46 +187,58 @@ function LF_MoveAction.patrolStep(self)
         c:setForwardDirection(fx, fy)
         c:setTargetAndCurrentDirection(fx, fy)
     end
-    -- Pace: measure his speed over each second of steady walking and nudge the scale toward the
-    -- player's aiming pace. A sideways scan that stalls him means strafing doesn't work here.
-    self.calT = (self.calT or 0) + 1
-    if not self.calX then self.calX, self.calY, self.calScan = px, py, scan end
-    if self.calT >= CAL_TICKS then
-        local speed = LF.dist(self.calX, self.calY, px, py) * 60 / self.calT
-        local target = LF.Move.PATROL_PACE
-        if self.calScan == scan and speed > 0.15 then
-            local f = math.max(0.7, math.min(1.3, 1 + 0.4 * (target / speed - 1)))
-            if scan then
-                LF.Move.scanScale = math.max(0.3, math.min(1.6, LF.Move.scanScale * f))
-            elseif LF.Move.shuffle ~= false then
-                LF.Move.shuffleScale = math.max(0.3, math.min(1.6, LF.Move.shuffleScale * f))
-            else
-                LF.Move.patrolScale = math.max(0.25, math.min(1.6, LF.Move.patrolScale * f))
-            end
-            LF.Move.lastPace = speed
-        elseif scan and scan ~= "fwd" and self.calScan == scan and speed <= 0.15 and LF.Move.strafeWorks == nil then
-            LF.Move.strafeWorks = false
-            LF.log("MOVE sideways scan stalls the walk; scans will look ahead instead")
+    -- Pace sample (see above).
+    local ms = now()
+    if self.calScan ~= scan or step < 0.0005 or step > 0.3 or not self.calMs or ms <= 0 then
+        self.calMs, self.calLen, self.calScan = ms, 0, scan     -- broken: start a new sample
+        return
+    end
+    self.calLen = (self.calLen or 0) + step
+    local secs = (ms - self.calMs) / 1000
+    local normalSpeed = not (getGameSpeed and getGameSpeed() ~= 1) and not (isGamePaused and isGamePaused())
+    if secs >= 1.0 and secs < 3 and normalSpeed then
+        local speed = self.calLen / secs
+        local key = scaleKey(scan)
+        local f = 1 + CAL_GAIN * (LF.Move.PATROL_PACE / speed - 1)
+        f = math.max(1 - CAL_STEP, math.min(1 + CAL_STEP, f))
+        LF.Move[key] = math.max(0.3, math.min(2.0, LF.Move[key] * f))
+        LF.Move.lastPace = speed
+        LF.Move.samples = (LF.Move.samples or 0) + 1
+        if LF.Move.samples % 50 == 0 then saveScales() end
+        if (scan == "left" or scan == "right") and not LF.Move.sideLogged then
+            LF.Move.sideLogged = true
+            LF.log(string.format("MOVE sideways scan: walking on at %.2f tiles/s while turned out", speed))
         end
-        if scan and scan ~= "fwd" and speed > 0.15 and LF.Move.strafeWorks == nil then
-            LF.Move.strafeWorks = true
-            LF.log("MOVE sideways scan works (walking on while turned out)")
-        end
-        self.calT, self.calX, self.calY, self.calScan = 0, px, py, scan
+        self.calMs, self.calLen = ms, 0
+    elseif secs >= 3 or (secs >= 1.0 and not normalSpeed) then
+        self.calMs, self.calLen = ms, 0                         -- a hitch (loading, pause): throw it away
     end
 end
 
--- Now and then (at most every ~10 s): the patrol pace against the player's aiming pace.
+-- Now and then (at most every ~10 s): the pace the patrol is walking at, and the scales.
 local lastPaceLog = -100000
 Events.EveryOneMinute.Add(function()
     if LF.Move.lastPace and LF.tick - lastPaceLog >= 600 then
         lastPaceLog = LF.tick
-        LF.log(string.format("PACE patrol %.2f tiles/s (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f",
+        LF.log(string.format("PACE patrol %.2f tiles/s (fixed pace %.2f) - scales shuffle %.2f, walk %.2f, scan %.2f, side %.2f",
             LF.Move.lastPace, LF.Move.PATROL_PACE,
-            LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale))
+            LF.Move.shuffleScale, LF.Move.patrolScale, LF.Move.scanScale, LF.Move.sideScale))
         LF.Move.lastPace = nil
     end
 end)
+
+-- Re-aim a walk that is under way at a new spot, without stopping it (a man keeping his place in
+-- a moving formation). Returns false if it couldn't, and the caller starts a new walk.
+function LF_MoveAction:retarget(x, y, z)
+    local sq = getCell():getGridSquare(math.floor(x), math.floor(y), math.floor(z))
+    if not sq then return false end
+    local pfb = self.character:getPathFindBehavior2()
+    if not pfb then return false end
+    local ok = pcall(function() pfb:pathToLocation(math.floor(x), math.floor(y), math.floor(z)) end)
+    if not ok then return false end
+    self.location = sq
+    return true
+end
 
 local function logSpeed(self, how)
     if not (LF.Config.logGait and self.startMs and self.startMs > 0) then return end

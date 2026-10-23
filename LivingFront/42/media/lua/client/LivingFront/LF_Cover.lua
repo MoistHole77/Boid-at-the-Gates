@@ -120,6 +120,39 @@ local function standable(sq, body)
     return true
 end
 
+-- How many walls, fences, hedges or windows a straight walk from (x1, y1) to (x2, y2) crosses
+-- (stepping square by square). A man who has to vault or climb to get somewhere isn't moving
+-- tactically, so the searches prefer spots with nothing in the way. Stops counting at `cap`.
+function LF.Cover.crossings(x1, y1, x2, y2, z, cap)
+    local cell = getCell()
+    cap = cap or 3
+    local ax, ay = math.floor(x1), math.floor(y1)
+    local bx, by = math.floor(x2), math.floor(y2)
+    local n = 0
+    local cur = cell:getGridSquare(ax, ay, z)
+    local steps = math.max(math.abs(bx - ax), math.abs(by - ay))
+    if steps == 0 or not cur then return 0 end
+    local px, py = ax, ay
+    for i = 1, steps do
+        local nx = math.floor(ax + (bx - ax) * i / steps + 0.5)
+        local ny = math.floor(ay + (by - ay) * i / steps + 0.5)
+        -- Move one axis at a time so a diagonal step can't slip between two fence edges.
+        local hops = { { nx, py }, { nx, ny } }
+        for _, h in ipairs(hops) do
+            if h[1] ~= px or h[2] ~= py then
+                local nxt = cell:getGridSquare(h[1], h[2], z)
+                if not nxt then return n end
+                if cur:isWallTo(nxt) or cur:isHoppableTo(nxt) or cur:isWindowTo(nxt) or cur:isBlockedTo(nxt) then
+                    n = n + 1
+                    if n >= cap then return n end
+                end
+                cur, px, py = nxt, h[1], h[2]
+            end
+        end
+    end
+    return n
+end
+
 local fireCands = {}
 local function byFireScore(a, b) return a.score > b.score end
 local FIRE_CHECKS = 120     -- at most this many candidate squares get the (costly) cover checks
@@ -147,7 +180,9 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
         if leash < r then r = math.ceil(leash) end
     end
     local maxRangeSq = maxRange * maxRange
-    local myThreatDist = LF.dist(bx, by, tx, ty)
+    -- "Toward the enemy" is measured from his anchor when he has one (the spot his team was
+    -- sent to), so a soldier sent forward doesn't pick the squares behind it.
+    local myThreatDist = (ax and LF.dist(ax, ay, tx, ty)) or LF.dist(bx, by, tx, ty)
     local n = 0
     for x = cx - r, cx + r do
         for y = cy - r, cy + r do
@@ -165,16 +200,20 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
     end
     for i = #fireCands, n + 1, -1 do fireCands[i] = nil end
     table.sort(fireCands, byFireScore)
+    -- The best spot he can walk straight to; failing that, the best one behind a fence or wall.
+    local fallX, fallY, fallQ = nil, nil, nil
     for i = 1, math.min(n, FIRE_CHECKS) do
         local c = fireCands[i]
         local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
         if (q == LOW or (loose and q == HIGH)) and not isTaken(c.x, c.y, bz, id) then
             local sq = cell:getGridSquare(c.x, c.y, bz)
             if sq and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
-                return c.x, c.y, bz, q
+                if LF.Cover.crossings(bx, by, c.x, c.y, bz, 1) == 0 then return c.x, c.y, bz, q end
+                if not fallX then fallX, fallY, fallQ = c.x, c.y, q end
             end
         end
     end
+    if fallX then return fallX, fallY, bz, fallQ end
     return nil
 end
 

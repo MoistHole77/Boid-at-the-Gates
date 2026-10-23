@@ -34,7 +34,8 @@ local CFG = {
     nodeEvery = 3,          -- keep every n-th square of the road route as a waypoint
     arrive = 2.0,           -- a man within this of his final place has arrived
     resumeQuiet = 600,      -- form up again after ~10 s with no contact and no orders
-    lead = 3,               -- a marching man walks toward a point this far ahead of his place
+    lead = 5,               -- a marching man walks toward a point this far ahead of his place
+                            -- (far enough that he never quite gets there and stops)
     baseSlack = 3,          -- the head moves on only while the point man is this close to his place
     caughtUp = 2.0,         -- a man who fell behind walks at the normal pace until this close again
     edgeScan = 8,           -- look this far either side for the edges of the road

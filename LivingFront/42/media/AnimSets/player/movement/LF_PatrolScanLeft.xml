@@ -4,7 +4,7 @@
 	<m_AnimName>Bob_StrafeAimRifle_Right</m_AnimName>
 	<m_Looped>true</m_Looped>
 	<m_BlendTime>0.25</m_BlendTime>
-	<m_SpeedScale>LFScanSpeed</m_SpeedScale>
+	<m_SpeedScale>LFScanSideSpeed</m_SpeedScale>
 	<m_Conditions x_name="lf-lf_patrolscanleft-1">
 		<m_Name>isTurningAround</m_Name>
 		<m_Type>BOOL</m_Type>

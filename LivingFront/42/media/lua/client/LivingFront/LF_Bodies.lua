@@ -120,6 +120,7 @@ end
 
 -- Body manager: give nearby records bodies, put distant bodies away.
 -- NOTE: loops every record each pass. Fine for hundreds; will need spatial buckets later.
+local squadsNear = {}
 local function managerPass()
     local player = getPlayer()
     if not player or player:isDead() then return end
@@ -128,6 +129,22 @@ local function managerPass()
     local spawnSq = cfg.spawnRadius * cfg.spawnRadius
     local despawnSq = cfg.despawnRadius * cfg.despawnRadius
     local spawned = 0
+    -- A squad stays together: while any of its men is within range of the player, the rest of
+    -- them keep (or get) their bodies too, as long as the ground under them is loaded - so a long
+    -- column doesn't lose its rear when the player walks on ahead.
+    local near = squadsNear
+    for k in pairs(near) do near[k] = nil end
+    for id, rec in pairs(LF.Records.all()) do
+        local body = bodies[id]
+        if rec.squad and rec.alive and body and not body:isDead()
+            and LF.distSq(body:getX(), body:getY(), px, py) <= despawnSq then
+            near[rec.squad] = true
+        end
+    end
+    local cell = getCell()
+    local function loaded(x, y, z)
+        return cell:getGridSquare(math.floor(x), math.floor(y), math.floor(z or 0)) ~= nil
+    end
 
     for id, rec in pairs(LF.Records.all()) do
         local body = bodies[id]
@@ -139,11 +156,13 @@ local function managerPass()
             LF.log("#" .. id .. " " .. LF.Records.fullName(rec) .. " DIED at " .. math.floor(rec.x) .. "," .. math.floor(rec.y))
             if LF.Units then LF.guard("succession", LF.Units.onDeath, rec) end
         elseif body then
-            if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq then
+            if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq
+                and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())) then
                 LF.Bodies.despawn(id)
             end
         elseif rec.alive and spawned < cfg.maxSpawnsPerPass then
-            if LF.distSq(rec.x, rec.y, px, py) < spawnSq then
+            local d2 = LF.distSq(rec.x, rec.y, px, py)
+            if d2 < spawnSq or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end
             end
         end

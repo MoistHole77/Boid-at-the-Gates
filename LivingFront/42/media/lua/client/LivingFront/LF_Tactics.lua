@@ -49,6 +49,8 @@ local CFG = {
     bound = 6,              -- tiles each bound gains on the covering pair
     arriveDistance = 1.8,   -- a moving soldier within this of his spot has arrived
     phaseTimeout = 600,     -- a bound that hasn't finished in ~10 s is called done anyway
+    boundMin = 150,         -- a rush lasts at least ~2.5 s ...
+    boundSettle = 90,       -- ... then the pair is down and firing ~1.5 s before the other goes
     earshot = 30,           -- tiles a shouted order carries
     contactMemory = 600,
     contactRange = 45,
@@ -77,7 +79,8 @@ local CFG = {
     -- Clearing a building (offensive)
     clearAt = 3,            -- send Alpha 1 in when the enemy known in a building is down to this many
     clearCooldown = 3600,   -- at most one clearing order per ~60 s
-    clearStackTimeout = 2400, -- after ~40 s, go in with whoever is stacked (2+ men) or call it off
+    clearStackTimeout = 1200, -- after ~20 s, go in with whoever is stacked (2+ men) or call it off
+    clearStackClose = 480,  -- after ~8 s, a man within 2.5 tiles of his stack spot counts as stacked
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
     clearTimeout = 7200,    -- give up on a clearing after ~2 min
     -- The sergeant choosing his stance
@@ -256,7 +259,7 @@ end
 -- Has the moving pair finished its bound? Every fit, unpinned man in it must have reached his
 -- spot (or found he can't get there). If all its fit men are pinned, it waits; a pair with no
 -- fit men left is done at once (the other pair carries on alone).
-local function boundDone(team, t, squad)
+local function boundArrived(team, t, squad)
     if LF.tick - t.phaseStart > CFG.phaseTimeout then return true end
     local fx, fy = facing(squad)
     local p = t.pos[t.moving]
@@ -283,6 +286,18 @@ local function boundDone(team, t, squad)
     return true
 end
 
+-- Is the bound over? A rush lasts at least CFG.boundMin; then the pair gets down and fires for
+-- CFG.boundSettle before the other pair goes ("I'm up - he sees me - I'm down"), so the bounds
+-- have a steady rhythm instead of the pairs flicking back and forth.
+local function boundDone(team, t, squad)
+    if LF.tick - t.phaseStart < (t.boundMin or CFG.boundMin) then return false end
+    if not t.settleAt then
+        if not boundArrived(team, t, squad) then return false end
+        t.settleAt = LF.tick
+    end
+    return LF.tick - t.settleAt >= CFG.boundSettle
+end
+
 -- Start a bound: element `el` moves (dx, dy) * bound past the covering pair, or onto
 -- (tx, ty) if that is nearer.
 local function startBound(team, t, el, dx, dy, tx, ty, contact)
@@ -298,8 +313,11 @@ local function startBound(team, t, el, dx, dy, tx, ty, contact)
     end
     t.moving = el
     t.phaseStart = LF.tick
+    t.settleAt, t.boundMin = nil, nil
     local nx, ny = other.x + dx * len, other.y + dy * len
     if tx and LF.dist(other.x, other.y, tx, ty) <= len then nx, ny = tx, ty end
+    -- Already (nearly) there: no rush - the pair just gets down, and the other goes next.
+    if LF.dist(mine.x, mine.y, nx, ny) < 2 then t.boundMin, t.settleAt = 0, LF.tick end
     mine.x, mine.y = nx, ny
     if team.leader then
         LF.Tactics.shout(team.leader, ELEMENT_NAME[el] .. ", move! " .. ELEMENT_NAME[OTHER[el]] .. ", cover!")
@@ -581,6 +599,57 @@ end
 -- alpha team: out to the side, then to a spot beside and short of the end of the enemy's line,
 -- then wrapping in toward his side. Each further flank in the same fight pushes deeper.
 -- Returns the flank plan or nil.
+-- A flank on an enemy in a building: round it in an arc at a steady distance. From the team's
+-- bearing to the building, each waypoint swings further round (35, 70, then ~95 degrees off),
+-- closing to ~10 tiles from the building's side - never a long run out sideways. Each waypoint
+-- is snapped to a free outdoor square. The side is chosen by what's in the way (walls, fences
+-- and hedges to cross count heavily) and then by the cover at the final spot.
+local ARC = { { 35, 1.0 }, { 70, 0.75 }, { 95, 0.0 } }    -- degrees round, share of the way in
+local function freeOutdoor(x, y, z, bid)
+    local cell = getCell()
+    local bx, by = math.floor(x), math.floor(y)
+    for r = 0, 3 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if math.max(math.abs(dx), math.abs(dy)) == r then
+                    local q = cell:getGridSquare(bx + dx, by + dy, z)
+                    if q and q:isFree(false) and not q:getBuilding() then return bx + dx + 0.5, by + dy + 0.5 end
+                end
+            end
+        end
+    end
+    return nil
+end
+local function arcFlank(squad, c, sq, alphas, L)
+    local z = c.z or 0
+    local ox, oy = L.cx, L.cy
+    local best, bestScore, bestRoutes = nil, -math.huge, nil
+    for _, side in ipairs({ -1, 1 }) do
+        local routes, score = {}, 0
+        for k, team in ipairs(alphas) do
+            local t = teams[team.id]
+            local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
+            local r0 = math.max(12, math.min(30, LF.dist(cx, cy, ox, oy)))
+            local rEnd = 10 + (k - 1) * 2                 -- the second team stays a little wider
+            local b0 = math.atan2(cy - oy, cx - ox)
+            local route, px, py = {}, cx, cy
+            for _, a in ipairs(ARC) do
+                local ang = b0 + side * math.rad(a[1] + (k - 1) * 10)
+                local rad = rEnd + (r0 - rEnd) * a[2]
+                local wx, wy = freeOutdoor(ox + math.cos(ang) * rad, oy + math.sin(ang) * rad, z)
+                if not wx then score = score - 20; break end
+                score = score - 6 * LF.Cover.crossings(px, py, wx, wy, z, 3)
+                route[#route + 1] = { x = wx, y = wy }
+                px, py = wx, wy
+            end
+            if #route > 0 then score = score + coverAround(px, py, z, ox, oy) * 0.5 end
+            routes[team.id] = route
+        end
+        if score > bestScore then best, bestScore, bestRoutes = side, score, routes end
+    end
+    return best, bestScore, bestRoutes
+end
+
 local function planFlank(squad, c, sq)
     local fx, fy = facing(squad)
     local rx, ry = -fy, fx
@@ -597,6 +666,28 @@ local function planFlank(squad, c, sq)
     if #alphas == 0 or n == 0 then return nil end
     sx, sy = sx / n, sy / n
     local z = c.z or 0
+    -- The enemy is in a building: round it in an arc.
+    local L = LF.Building.idAt(c.x, c.y, z) and LF.Building.at(c.x, c.y, z)
+    if L then
+        local side, score, routes = arcFlank(squad, c, sq, alphas, L)
+        if side and routes then
+            local plan = { side = side, started = LF.tick, routes = {}, teams = {} }
+            for _, team in ipairs(alphas) do
+                if routes[team.id] and #routes[team.id] > 0 then
+                    local t = teams[team.id]
+                    plan.routes[team.id] = routes[team.id]
+                    plan.teams[#plan.teams + 1] = team.id
+                    t.maneuverDone, t.pushes, t.side = nil, 0, side
+                end
+            end
+            if #plan.teams > 0 then
+                sq.flankCount = (sq.flankCount or 0) + 1
+                LF.log("FLANK " .. squad.name .. " going " .. (side < 0 and "left" or "right") .. " round the building with "
+                    .. #plan.teams .. " alpha team(s); route score " .. math.floor(score) .. ", flank #" .. sq.flankCount)
+                return plan
+            end
+        end
+    end
     local depth = (sq.flankCount or 0) * 3          -- later flanks go further forward
     local function at(F, L, side) return sx + fx * F + rx * side * L, sy + fy * F + ry * side * L end
 
@@ -677,6 +768,14 @@ local function stalemate(squad, sq, x, y)
         return false, enemyBest
     end
     return (sq.supShare or 0) >= enemyBest, enemyBest
+end
+
+-- Is one of the squad's teams clearing a building (no new flank while they're going in)?
+local function clearing(squad)
+    for _, tid in ipairs(squad.teams) do
+        if teams[tid] and teams[tid].clear then return true end
+    end
+    return false
 end
 
 -- What a team should do under the squad's intent.
@@ -1416,21 +1515,40 @@ local function planClear(squad, team, t, L)
     -- Stack against the wall beside the door, on the side nearer the team.
     local lx, ly = -door.dy, door.dx
     local near = ((cx - ox) * lx + (cy - oy) * ly) >= 0 and 1 or -1
-    local stack = nil
-    for _, side in ipairs({ near, -near }) do
-        local spots = {}
+    -- The stack is a chain of squares from the doorstep, each one a free outdoor square a man
+    -- can step to from the one before (no wall, fence, railing or window between): along the
+    -- wall if there is room, bending back from it (or straight back) where there isn't.
+    local doorstep = cell:getGridSquare(ox, oy, z)
+    local function chain(side)
+        local spots, used = {}, { [clearKey(ox, oy)] = true }
+        local prev, px, py = doorstep, ox, oy
+        local steps = { { lx * side, ly * side }, { lx * side + door.dx, ly * side + door.dy }, { door.dx, door.dy } }
         for k = 1, #file do
-            local x, y = ox + lx * side * k, oy + ly * side * k
-            local q = cell:getGridSquare(x, y, z)
-            if not (q and q:isFree(false)) or LF.Building.isInside(L, x, y) then break end
-            spots[k] = { x = x, y = y }
+            local got = false
+            for _, st in ipairs(steps) do
+                local x, y = px + st[1], py + st[2]
+                local q = cell:getGridSquare(x, y, z)
+                if q and prev and q:isFree(false) and not used[clearKey(x, y)] and not LF.Building.isInside(L, x, y)
+                    and LF.Cover.crossings(px, py, x, y, z, 1) == 0 then
+                    spots[k] = { x = x, y = y }
+                    used[clearKey(x, y)] = true
+                    prev, px, py, got = q, x, y, true
+                    break
+                end
+            end
+            if not got then break end
         end
-        if #spots == #file then stack = spots; break end
+        return spots
     end
-    if not stack then
-        -- No room along the wall: a file straight back from the door instead.
-        stack = {}
-        for k = 1, #file do stack[k] = { x = ox + door.dx * k, y = oy + door.dy * k } end
+    local stack = nil
+    if doorstep then
+        local a, b = chain(near), chain(-near)
+        stack = (#b > #a) and b or a
+    end
+    if not stack or #stack < #file then
+        if not stack or #stack < 2 then return nil, "no room to stack up outside the door" end
+        -- Room for only some of them: the rest of the file stays out and covers.
+        for i = #file, #stack + 1, -1 do table.remove(file, i) end
     end
     -- Each man's own spot inside: spread out in the room behind the door.
     local doorSq = cell:getGridSquare(door.x, door.y, z)
@@ -1514,7 +1632,10 @@ local function updateClear(team, t, squad)
     if LF.tick - C.started > CFG.clearTimeout then finish("Pull back to cover!", "took too long"); return false end
     local function at(rid, x, y)
         local b = LF.Bodies.get(rid)
-        return b and LF.dist(b:getX(), b:getY(), x + 0.5, y + 0.5) <= 1.3
+        if not b then return false end
+        local d = LF.dist(b:getX(), b:getY(), x + 0.5, y + 0.5)
+        -- Close enough after a while: a man who can't get onto his exact square still counts.
+        return d <= 1.3 or (C.phase == "stack" and LF.tick - C.phaseAt >= CFG.clearStackClose and d <= 2.5)
     end
     if C.phase == "stack" then
         local all = true
@@ -1898,7 +2019,7 @@ local function updateSquad(squad)
         end
         if done then intent, why = "HOLD", "flankers in position"
         elseif sq.flank and LF.tick - sq.flank.started > CFG.flankTimeout then intent, why = "HOLD", "flank took too long" end
-    elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume
+    elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume and not clearing(squad)
         and LF.tick - (sq.holdSince or LF.tick) >= CFG.flankMinHold
         and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
         and total > 0 and fitN / total >= CFG.flankFit
