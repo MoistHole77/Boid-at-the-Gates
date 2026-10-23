@@ -579,7 +579,6 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
     -- Men fall in as their places reach them. The point man is the base: the head moves on while
     -- he keeps up with it. Anyone who has dropped well behind his place walks at the normal pace
     -- (not the patrol pace) until he is back in it; nobody waits for him.
-    local done = true
     M.lag = M.lag or {}
     for _, rid in ipairs(M.order) do
         local r = LF.Records.get(rid)
@@ -596,9 +595,6 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
                 elseif d <= CFG.caughtUp then
                     M.lag[rid] = nil
                 end
-                if d > CFG.arrive then done = false end
-            else
-                done = false
             end
         end
     end
@@ -632,17 +628,16 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         if not ok then marches[squad.id] = nil end
         return ok
     end
-    if done or LF.tick - (M.endAt or LF.tick) > 1800 then
-        M.arrived = true
-        local _, _, dx, dy = pointAt(M, M.total)
-        squad.facingX, squad.facingY = dx, dy
-        LF.log("PATROL " .. squad.name .. " halts at its destination (" .. math.floor((LF.tick - M.started) / 60)
-            .. " s) - down and eyes outboard")
-        LF.Tactics.shout(cid, "Halt! Get down - eyes out!")
-        return true
-    end
-    M.endAt = M.endAt or LF.tick
-    -- Men whose places never reached them (they were ahead of the route): they join now.
+    -- The point man is at the destination: the patrol has arrived, now - nobody waits for the
+    -- rear to close up (stragglers go straight to their halt places).
+    M.arrived = true
     for _, rid in ipairs(M.order) do M.joined[rid] = true end
+    local _, _, dx, dy = pointAt(M, M.total)
+    squad.facingX, squad.facingY = dx, dy
+    LF.log("PATROL " .. squad.name .. " arrives (" .. math.floor((LF.tick - M.started) / 60) .. " s)")
+    -- A task waiting on the arrival (an objective's assault) takes over at once.
+    if LF.Objective and LF.Objective.onArrived and LF.Objective.onArrived(squad) then return true end
+    LF.log("PATROL " .. squad.name .. " halts at its destination - down and eyes outboard")
+    LF.Tactics.shout(cid, "Halt! Get down - eyes out!")
     return true
 end

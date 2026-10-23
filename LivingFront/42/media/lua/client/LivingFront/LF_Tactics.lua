@@ -244,7 +244,9 @@ end
 -- Is this unit in the opening seconds of a fight (no orders yet; everyone returns fire and
 -- takes cover on his own)?
 function LF.Tactics.bearings(squadId)
-    if not LF.Stance.get(LF.Units.get(squadId)).bearings then return false end
+    local unit = LF.Units.get(squadId)
+    if not LF.Stance.get(unit).bearings then return false end
+    if LF.Objective and LF.Objective.planned(unit) then return false end    -- a planned assault
     local sq = squads[squadId]
     return sq ~= nil and sq.fightStart ~= nil and not sq.intent and LF.tick - sq.fightStart < CFG.bearingsTicks
 end
@@ -1826,10 +1828,23 @@ local function updateSquad(squad)
             sq.fightStart = LF.tick
             LF.log("CONTACT " .. squad.name .. ": fight breaks out, every man returns fire and takes cover")
         end
-        if LF.tick - sq.fightStart < CFG.bearingsTicks then return end
+        -- (A planned assault on an objective needs no bearings: the orders are already given.)
+        local planned = LF.Objective and LF.Objective.planned(squad)
+        if not planned and LF.tick - sq.fightStart < CFG.bearingsTicks then return end
     end
     if not sq.contact then sq.contact = LF.Tactics.point(c.x, c.y, c.z)
     else sq.contact.x, sq.contact.y, sq.contact.z = c.x, c.y, c.z end
+    -- The squad's front is toward the enemy: advances, flanks and formations go that way (not
+    -- along whatever road the patrol last walked). Turned only when it is ~25 degrees off.
+    do
+        local dx, dy = c.x - cmd:getX(), c.y - cmd:getY()
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d > 4 then
+            dx, dy = dx / d, dy / d
+            local fx, fy = facing(squad)
+            if dx * fx + dy * fy < 0.9 then squad.facingX, squad.facingY = dx, dy end
+        end
+    end
 
     initTeams(squad)
 

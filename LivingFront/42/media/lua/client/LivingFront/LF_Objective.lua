@@ -4,14 +4,14 @@
 -- An objective is a building (or a point in the open). A unit gets a task on it:
 --   hold - the defensive stance on the objective (the building defence, or a perimeter).
 --   take - 1. approach:    patrol toward it (the sergeant choosing his formations; long ways
---                          planned in legs) to a rally point ~32 tiles short of it, and halt
---          2. rally:       down at the rally point for a few seconds while the sergeant looks it over
---          3. assault:     offensive stance against the objective: the bravo teams form a base of
+--                          planned in legs) to a rally point ~32 tiles short of it
+--          2. assault:     the moment the point man reaches the rally point, the offensive stance
+--                          against the objective, facing it: the bravo teams form a base of
 --                          fire on the building, the alpha teams flank round it; with nobody in
 --                          sight the men fire on the building's windows. When the defence is down
 --                          to a few men (or nobody has been seen in it for ~30 s), a team clears
 --                          it (stack on the door, in one at a time)
---          4. consolidate: once no enemy is left inside and his men are in it, the defensive
+--          3. consolidate: once no enemy is left inside and his men are in it, the defensive
 --                          stance in the building - men to the windows - and the objective is held
 -- Who holds an objective: the faction with the only living soldiers in it.
 -- Objectives and tasks are saved (task progress is kept on the unit: squad.objTask).
@@ -29,7 +29,6 @@ LF.Objective = LF.Objective or {}
 
 local CFG = {
     rallyDistance = 32,     -- the rally point is this far short of the objective
-    rallyTicks = 300,       -- down at the rally point this long (~5 s) before the assault
     nearAssault = 45,       -- contact this close to the objective on the way in: straight to the assault
     unseenClear = 1800,     -- nobody seen in the building for ~30 s during the assault: clear it
     clearRange = 35,        -- ... if the squad is within this of it
@@ -192,6 +191,40 @@ local function whoIsThere(obj)
     return counts
 end
 
+-- Into the assault, at once: the squad faces the objective and goes offensive; the sergeant's
+-- plan is made, so nobody waits to get his bearings (LF.Objective.planned).
+local function startAssault(squad, obj, why, words)
+    local t = squad.objTask
+    setPhase(squad, "assault", why)
+    local cid = LF.Units.commander(squad)
+    local cmd = cid and LF.Bodies.get(cid)
+    if cmd then
+        local dx, dy = obj.x - cmd:getX(), obj.y - cmd:getY()
+        local d = math.sqrt(dx * dx + dy * dy)
+        if d > 1 then squad.facingX, squad.facingY = dx / d, dy / d end
+    end
+    LF.Tactics.setStance(squad, "offensive")
+    say(squad, words or "Bravo, base of fire on that building! Alpha teams, round the flank - move!")
+    return t
+end
+
+-- The patrol carrying a "take" task has arrived (LF_March calls this the moment the point man
+-- reaches the rally point): straight into the assault. True if the task took over.
+function LF.Objective.onArrived(squad)
+    local t = squad.objTask
+    if not (t and t.kind == "take" and t.phase == "approach") then return false end
+    local obj = LF.Objective.get(t.obj)
+    if not obj then return false end
+    startAssault(squad, obj, "at the rally point")
+    return true
+end
+
+-- Is the squad carrying out a planned assault (no bearings needed when the shooting starts)?
+function LF.Objective.planned(squad)
+    local t = squad and squad.objTask
+    return t ~= nil and t.kind == "take" and t.phase == "assault"
+end
+
 local function updateTake(squad, obj)
     local t = squad.objTask
     local cid = LF.Units.commander(squad)
@@ -205,23 +238,17 @@ local function updateTake(squad, obj)
         local M = LF.March.get(squad.id)
         local near = LF.dist(cmd:getX(), cmd:getY(), obj.x, obj.y)
         if M and M.halted and near <= CFG.nearAssault then
-            setPhase(squad, "assault", "contact " .. math.floor(near) .. " tiles from the objective")
-            LF.Tactics.setStance(squad, "offensive")
-            say(squad, "That's them - deploy! Bravo, base of fire! Alpha, round the flank!")
+            startAssault(squad, obj, "contact " .. math.floor(near) .. " tiles from the objective",
+                "That's them - deploy! Bravo, base of fire! Alpha, round the flank!")
         elseif not M and LF.Stance.get(squad).name ~= "patrolling" then
             -- The patrol was cut short (a fight, or it couldn't route): go straight in from here.
-            setPhase(squad, "assault", "the approach ended " .. math.floor(near) .. " tiles out")
-            LF.Tactics.setStance(squad, "offensive")
+            startAssault(squad, obj, "the approach ended " .. math.floor(near) .. " tiles out")
         elseif M and M.arrived then
-            setPhase(squad, "rally", "at the rally point")
-            say(squad, "Rally point. Down - wait for it.")
+            LF.Objective.onArrived(squad)
         end
     elseif t.phase == "rally" then
-        if LF.tick - t.since >= CFG.rallyTicks then
-            setPhase(squad, "assault")
-            LF.Tactics.setStance(squad, "offensive")
-            say(squad, "Bravo, base of fire on that building! Alpha teams, round the flank - move!")
-        end
+        -- (A task saved in the old rally phase.)
+        startAssault(squad, obj, "at the rally point")
     elseif t.phase == "assault" then
         local c = whoIsThere(obj)
         local ours = c[squad.faction] or 0
