@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_ProneAim</m_Name>
+	<m_AnimName>Bob_Idle_FloorOnFront</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.25</m_BlendTime>
+	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
+	<m_Conditions x_name="lf-prone-aim-0001">
+		<m_Name>PerformingAction</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>LF_ProneAim</m_Value>
+	</m_Conditions>
+</animNode>

@@ -123,6 +123,7 @@ end
 
 function LF_MoveAction:start()
     if LF.Idle then LF.Idle.standUp(self.character) end     -- sitting: up first
+    if LF.Combat and LF.Combat.isProne(self.character) then LF.Combat.setProne(self.character, false) end   -- prone: up
     ISWalkToTimedAction.start(self)
     applyGait(self.character, self.gait)
     self.startX, self.startY, self.startMs = self.character:getX(), self.character:getY(), now()

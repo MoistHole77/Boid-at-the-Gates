@@ -49,31 +49,35 @@ local function edgeCover(sq, nb)
 end
 
 -- Cover quality of the square at (x, y, z) against a threat at (tx, ty).
--- Looks at the cardinal neighbours on the threat side (both, for a diagonal threat), and the
--- diagonal neighbour. The best edge counts.
+-- Judged along the actual line to him: the side of the square the line leaves through must be
+-- covered (a wall, a fence, a car, a tree...). Leaving through a corner, the corner square must
+-- block, or both sides of it. (Up to 0.39 the best of the neighbours on his side counted - so a
+-- man at the end of a car, the car beside him but the enemy off at an angle past its bumper,
+-- thought he was in cover standing in the open.)
+local function blocks(nb)
+    return nb and (nb:getVehicleContainer() ~= nil or nb:HasTree() or nb:isSolidTrans() or nb:isSolid())
+end
 function LF.Cover.quality(x, y, z, tx, ty)
     local cell = getCell()
     local sq = cell:getGridSquare(x, y, z)
     if not sq then return NONE end
     local dx, dy = tx - (x + 0.5), ty - (y + 0.5)
-    local sx = (dx > 0.5 and 1) or (dx < -0.5 and -1) or 0
-    local sy = (dy > 0.5 and 1) or (dy < -0.5 and -1) or 0
-    local best = NONE
-    if sx ~= 0 then
-        local q = edgeCover(sq, cell:getGridSquare(x + sx, y, z))
-        if q > best then best = q end
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 0.75 then return NONE end
+    local ux, uy = dx / len, dy / len
+    local ox, oy = math.floor(x + 0.5 + ux * 0.75) - x, math.floor(y + 0.5 + uy * 0.75) - y
+    if ox == 0 and oy == 0 then
+        ox, oy = math.floor(x + 0.5 + ux * 1.0) - x, math.floor(y + 0.5 + uy * 1.0) - y
     end
-    if sy ~= 0 then
-        local q = edgeCover(sq, cell:getGridSquare(x, y + sy, z))
-        if q > best then best = q end
+    if ox == 0 and oy == 0 then return NONE end
+    if ox ~= 0 and oy ~= 0 then
+        local a = edgeCover(sq, cell:getGridSquare(x + ox, y, z))
+        local b = edgeCover(sq, cell:getGridSquare(x, y + oy, z))
+        local best = math.min(a, b)
+        if best < LOW and blocks(cell:getGridSquare(x + ox, y + oy, z)) then best = LOW end
+        return best
     end
-    if sx ~= 0 and sy ~= 0 and best < HIGH then
-        local nb = cell:getGridSquare(x + sx, y + sy, z)
-        if nb and (nb:getVehicleContainer() ~= nil or nb:HasTree() or nb:isSolidTrans()) and best < LOW then
-            best = LOW
-        end
-    end
-    return best
+    return edgeCover(sq, cell:getGridSquare(x + ox, y + oy, z))
 end
 
 -- Cover of a character's current square against another character.
@@ -306,14 +310,16 @@ end
 function LF.Combat.targetModifier(shooter, target)
     local q = LF.Cover.of(target, shooter)
     local down = hunkered(target)
+    local prone = LF.Combat.isProne and LF.Combat.isProne(target)
     if q == HIGH then return 0.15 end
-    if q == LOW then return down and 0.3 or 0.65 end
+    if q == LOW then return (down or prone) and 0.3 or 0.65 end
+    if prone then return 0.5 end                 -- flat in the open: a small target
     return down and 0.7 or 1.0
 end
 
 -- Which body parts can be hit: behind cover, only what shows above it.
 local UPPER = { "Torso_Upper", "Torso_Upper", "UpperArm_L", "UpperArm_R", "Head" }
 function LF.Combat.hitParts(shooter, target)
-    if LF.Cover.of(target, shooter) ~= NONE then return UPPER end
+    if LF.Cover.of(target, shooter) ~= NONE or (LF.Combat.isProne and LF.Combat.isProne(target)) then return UPPER end
     return nil
 end

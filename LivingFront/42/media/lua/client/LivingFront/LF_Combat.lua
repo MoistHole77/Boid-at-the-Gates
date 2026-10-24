@@ -270,11 +270,32 @@ function LF.Combat.legsOut(body)
     return worst < 30 or (worst <= 55 and LF.Combat.health(body) < 60)
 end
 
--- Set (or clear) his crawling. Returns whether he crawls.
+-- ---- prone ------------------------------------------------------------------------------------
+-- Shooting from the open with nothing to get behind, a man goes flat (the prone pose the crawl
+-- uses; LF_ProneAim keeps the upper body down while he fires). He's a small target lying there
+-- (LF_Cover: half the hit chance, only his head, shoulders and arms to hit), and gets up the
+-- moment he's ordered to move.
+function LF.Combat.isProne(body) return body:getModData().LF_prone == true end
+LF.Combat.PRONE_OPTS = { aimAnim = "LF_ProneAim", fireAnim = "LF_ProneAim" }
+
+local function setCrawlVars(body, on)
+    for _, v in ipairs({ "LFCrawl", "LFCrawlA", "LFCrawlB", "LFCrawlC", "LFCrawlD" }) do body:setVariable(v, on) end
+end
+
+function LF.Combat.setProne(body, on)
+    local md = body:getModData()
+    if (md.LF_prone == true) == (on == true) then return end
+    md.LF_prone = on and true or nil
+    if on and LF.Posture and LF.Posture.crouched(body) then LF.Posture.set(body, false) end
+    local ok, legs = pcall(LF.Combat.legsOut, body)
+    setCrawlVars(body, on or (ok and legs) or false)
+end
+
+-- Set (or clear) his crawling. Returns whether he crawls (from his legs - not from lying prone).
 function LF.Combat.updateCrawl(body)
     local ok, out = pcall(LF.Combat.legsOut, body)
     local crawl = ok and out or false
-    for _, v in ipairs({ "LFCrawl", "LFCrawlA", "LFCrawlB", "LFCrawlC", "LFCrawlD" }) do body:setVariable(v, crawl) end
+    setCrawlVars(body, crawl or LF.Combat.isProne(body))
     body:setVariable("LFCrawlSpeed", 1.0)
     if crawl then
         body:setRunning(false)
@@ -291,7 +312,9 @@ end
 LF.Combat.shotCount = 0
 local function shotEffects(shooter, gun)
     LF.Combat.shotCount = LF.Combat.shotCount + 1
-    shooter:playSound(gun:getSwingSound())
+    -- (The SMGs use a short gun's model - the sawn-off - with a sub-machine gun's report.)
+    local prof = LF.Weapons.profileOf(shooter)
+    shooter:playSound(prof.sound or gun:getSwingSound())
     shooter:addWorldSoundUnlessInvisible(40, 100, false)
 end
 

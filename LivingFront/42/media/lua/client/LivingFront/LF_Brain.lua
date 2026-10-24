@@ -44,7 +44,8 @@ local CFG = {
     thinkTicks = 20,        -- each NPC re-decides about three times a second
     sightRange = 30,        -- tiles
     fireRange = 20,         -- fighters close in to this range before shooting
-    fleeHealth = 35,        -- fighters flee below this overall health when threatened
+    fleeHealth = 35,
+    proneInOpen = true,     -- shooting in the open with no cover: go prone        -- fighters flee below this overall health when threatened
     corneredRange = 6,      -- ... but fight back from where they are when the enemy is this close
     woundedLeftBehind = 15, -- a wounded man hiding this far from his unit's rear goes back to it
     civFleeRange = 20,      -- unarmed civilians flee from hostiles within this range
@@ -998,11 +999,33 @@ end
 -- Crouch while holding a position, but only when not mid-action: the aim/fire actions play
 -- standing clips, so a crouched soldier pops up to shoot and drops back down afterwards.
 local function hunkerDown(body)
+    if LF.Combat.isProne(body) then return end     -- (lying flat already)
     if not body:isPerformingAnAction() and not LF.Posture.crouched(body) then LF.Posture.set(body, true) end
 end
 
 -- In a lull (nothing in his own sights), top up a magazine that is half empty or worse - or any
 -- part-used one when there is no fight at all.
+-- Firing from the open (no cover between him and his target where he stands), outside a
+-- building, not at a window post or in a clearing file, and not on the move: he goes prone.
+-- Cover where he is (the enemy moved), or orders to move: he's up again. (A short wait before
+-- going down again, so he doesn't bob up and down.)
+local function proneCheck(id, body, m, target)
+    if not CFG.proneInOpen then return end
+    local sq = body:getSquare()
+    local inside = sq and sq:getBuilding() ~= nil
+    local exposed = LF.Cover.of(body, target) == LF.Cover.NONE
+    local want = exposed and not inside and m.order ~= "post" and m.order ~= "file" and not isMoving(body)
+        and not LF.Combat.knockedDown(body)
+    if want ~= LF.Combat.isProne(body) then
+        if want and LF.tick - (m.proneAt or -10000) < 90 then return end
+        if body:isPerformingAnAction() then return end
+        m.proneAt = LF.tick
+        LF.Combat.setProne(body, want)
+        LF.log("BRAIN #" .. id .. (want and " goes prone - no cover in the open" or " gets up from prone"))
+    end
+    m.combatOpts = LF.Combat.isProne(body) and LF.Combat.PRONE_OPTS or nil
+end
+
 local function topUp(body, m, full)
     if body:isPerformingAnAction() or LF.tick - (m.lastTopUp or -10000) < 120 then return false end
     local profile = LF.Weapons.profileOf(body)
@@ -1045,6 +1068,7 @@ local function act(id, body, rec, m)
             if not standing then hunkerDown(body) end
         end
         local target = LF.Bodies.get(m.targetId)
+        if target and not target:isDead() then LF.guard("prone", proneCheck, id, body, m, target) end
         if target and not target:isDead()
             and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
             LF.Combat.engage(body, target, m.combat, m.combatOpts)
@@ -1053,6 +1077,7 @@ local function act(id, body, rec, m)
         hunkerDown(body)
         if m.fighter then topUp(body, m, false) end
     elseif m.state == "idle" and m.fighter and LF.Combat.isArmed(body) then
+        if LF.Combat.isProne(body) then LF.Combat.setProne(body, false); m.combatOpts = nil end
         topUp(body, m, true)
     elseif m.state == "guard" then
         -- Watching his quarter: down in cover, facing out.

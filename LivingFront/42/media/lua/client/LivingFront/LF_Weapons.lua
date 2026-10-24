@@ -39,14 +39,14 @@ local W = {
         reload = 220,
     },
     MP40 = {
-        name = "MP40", item = "Base.TrapperCarbine", kind = "smg",
+        name = "MP40", item = "Base.ShotgunSawnoff", sound = "TrapperCarbineShoot", kind = "smg",
         clip = 32, interval = 130, burst = 4, gap = 7, aimTicks = 45, recover = 20,
         wound = 30, impact = 0.55, suppress = 0.55,
         accBase = 58, accFall = 4.0, accMin = 4,
         reload = 210,
     },
     PPSh = {
-        name = "PPSh", item = "Base.AssaultRifle", kind = "smg",
+        name = "PPSh", item = "Base.ShotgunSawnoff", sound = "M16Shoot", kind = "smg",
         clip = 71, interval = 150, burst = 6, gap = 4, aimTicks = 45, recover = 20,
         wound = 26, impact = 0.45, suppress = 0.45,
         accBase = 54, accFall = 4.0, accMin = 4,
