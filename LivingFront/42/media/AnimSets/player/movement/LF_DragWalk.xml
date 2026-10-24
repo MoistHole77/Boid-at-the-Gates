@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_DragWalk</m_Name>
+	<m_AnimName>Bob_WalkBwdDrag_Person</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.20</m_BlendTime>
+	<m_SpeedScale>0.80</m_SpeedScale>
+	<m_maxTorsoTwist>0.00</m_maxTorsoTwist>
+	<m_Conditions x_name="lf-lf_dragwalk-0">
+		<m_Name>isTurningAround</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>false</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_dragwalk-1">
+		<m_Name>LFDrag</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>hold</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_dragwalk-2">
+		<m_Name>LFDragA</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_dragwalk-3">
+		<m_Name>LFDragB</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_dragwalk-4">
+		<m_Name>LFDragC</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_dragwalk-5">
+		<m_Name>LFDragD</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+</animNode>

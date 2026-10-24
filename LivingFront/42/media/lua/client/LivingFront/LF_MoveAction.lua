@@ -88,7 +88,7 @@ local function applyGait(character, gait)
         character:setRunning(false)
         return
     end
-    if gait == "patrol" then
+    if gait == "patrol" or gait == "drag" then
         character:setSprinting(false)
         character:setRunning(false)
     elseif gait == "aim" then
@@ -158,6 +158,7 @@ function LF_MoveAction:update()
     end
     ISWalkToTimedAction.update(self)
     if self.gait == "patrol" then LF.guard("patrol walk", self.patrolStep, self) end
+    if self.gait == "drag" then LF.guard("drag walk", self.dragStep, self) end
     LF.guard("jam check", self.jamCheck, self)
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
     -- stops retrying the same unreachable spot.
@@ -364,6 +365,37 @@ function LF_MoveAction.patrolStep(self)
         self.calMs, self.calLen, self.calMul = ms, 0, mul
     elseif secs >= 3 or (secs >= 1.0 and not normalSpeed) then
         self.calMs, self.calLen = ms, 0                         -- a hitch (loading, pause): throw it away
+    end
+end
+
+-- Dragging a man (LF_Medic): he walks his path backward - facing the way he came, the man at his
+-- feet - on the game's drag walk (LF_DragWalk: LFDrag "hold"). His facing follows the path,
+-- smoothed, so a kink in it doesn't spin him round.
+function LF_MoveAction.dragStep(self)
+    local c = self.character
+    c:setVariable("LFDrag", "hold")
+    for _, k in ipairs({ "LFDragA", "LFDragB", "LFDragC", "LFDragD" }) do c:setVariable(k, true) end
+    local px, py = c:getX(), c:getY()
+    if self.lastX then
+        local mx, my = px - self.lastX, py - self.lastY
+        local step = math.sqrt(mx * mx + my * my)
+        if step > 0.004 then
+            local nx, ny = mx / step, my / step
+            if self.dirX then
+                nx, ny = self.dirX * 0.85 + nx * 0.15, self.dirY * 0.85 + ny * 0.15
+                local l = math.max(0.0001, math.sqrt(nx * nx + ny * ny))
+                nx, ny = nx / l, ny / l
+            end
+            self.dirX, self.dirY = nx, ny
+        end
+    end
+    self.lastX, self.lastY = px, py
+    if self.dirX then
+        c:setForwardDirection(-self.dirX, -self.dirY)
+        c:setTargetAndCurrentDirection(-self.dirX, -self.dirY)
+    elseif self.faceX then
+        c:setForwardDirection(self.faceX, self.faceY)
+        c:setTargetAndCurrentDirection(self.faceX, self.faceY)
     end
 end
 

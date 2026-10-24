@@ -1095,6 +1095,8 @@ local function finishOff(body)
 end
 
 local function stepNpc(id, body, rec)
+    -- Down and being looked after, or dragging a man (LF_Medic): that runs him, not the brain.
+    if LF.Medic and LF.Medic.busy(id) then return end
     local m = mindOf(id)
     if (LF.tick + id) % CFG.thinkTicks == 0 then
         if LF.Combat.health(body) <= 0 then

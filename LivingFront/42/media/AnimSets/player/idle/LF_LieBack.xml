@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_LieBack</m_Name>
+	<m_AnimName>Zombie_Idle_FloorOnBack</m_AnimName>
+	<m_Looped>false</m_Looped>
+	<m_BlendTime>0.40</m_BlendTime>
+	<m_SpeedScale>0.80</m_SpeedScale>
+	<m_maxTorsoTwist>0.00</m_maxTorsoTwist>
+	<m_Conditions x_name="lf-lf_lieback-0">
+		<m_Name>isTurningAround</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>false</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_lieback-1">
+		<m_Name>LFLie</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>back</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_lieback-2">
+		<m_Name>LFLieA</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_lieback-3">
+		<m_Name>LFLieB</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_lieback-4">
+		<m_Name>LFLieC</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+	<m_Conditions x_name="lf-lf_lieback-5">
+		<m_Name>LFLieD</m_Name>
+		<m_Type>BOOL</m_Type>
+		<m_Value>true</m_Value>
+	</m_Conditions>
+</animNode>
