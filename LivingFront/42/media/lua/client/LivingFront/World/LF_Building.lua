@@ -219,8 +219,9 @@ function LF.Building.at(x, y, z)
     return L
 end
 
--- The single movable piece of furniture on a square that blocks it (a chair, a drawer, a
--- table), or nil. Multi-tile furniture (beds, sofas) doesn't count: too big to shove.
+-- The piece of furniture on a square that blocks it and isn't fixed down (the game's movables:
+-- chairs, tables, sofas, beds, cabinets...), or nil. A piece several tiles big counts as one.
+-- (Up to 0.44 only single-tile pieces: a sofa or a big table under a window stayed put.)
 function LF.Building.movableOn(sq)
     local objs = sq:getObjects()
     local found = nil
@@ -228,35 +229,93 @@ function LF.Building.movableOn(sq)
         local o = objs:get(i)
         local props = o:getProperties()
         if o ~= sq:getFloor() and props and props:has("IsMoveAble") then
-            if o:getSpriteGrid() ~= nil then return nil end
-            if found then return nil end            -- more than one piece: leave it
-            found = o
+            if found and not (found:hasSpriteGrid() and found:isConnectedSpriteGridObject(o)) then
+                return nil                          -- two separate pieces: leave it
+            end
+            found = found or o
         end
     end
     return found
 end
 
--- Shove the furniture off a window square onto a free square beside it (inside the building,
--- not a square in `avoid`). Returns true if the window square is now free.
+-- Every part of a piece of furniture (one, or each tile of a big one): { obj, sq, x, y }.
+local function partsOf(obj)
+    local parts = {}
+    local list = nil
+    if obj:hasSpriteGrid() then
+        list = ArrayList.new()
+        obj:getSpriteGridObjectsIncludingSelf(list)
+    end
+    if list and list:size() > 0 then
+        for i = 0, list:size() - 1 do
+            local o = list:get(i)
+            local s = o:getSquare()
+            if s then parts[#parts + 1] = { obj = o, sq = s, x = s:getX(), y = s:getY() } end
+        end
+    else
+        local s = obj:getSquare()
+        parts[1] = { obj = obj, sq = s, x = s:getX(), y = s:getY() }
+    end
+    return parts
+end
+LF.Building.partsOf = partsOf
+
+-- Push the furniture off a window square: the whole piece slides along the wall (either way, up
+-- to 3 tiles) or further into the room, onto squares inside the building that are free (or that
+-- the piece itself is on), not a square in `avoid`, nobody standing there. Returns true if the
+-- window square is now free.
 function LF.Building.shove(L, x, y, dx, dy, avoid)
     local cell = getCell()
     local sq = cell:getGridSquare(x, y, L.z)
     if not sq then return false end
     local okM, obj = pcall(LF.Building.movableOn, sq)
     if not (okM and obj) then return sq:isFree(false) end
-    -- Along the wall first, then further in.
-    local tries = { { -dy, dx }, { dy, -dx }, { -dy - dx, dx - dy }, { dy - dx, -dx - dy }, { -2 * dx, -2 * dy } }
-    for _, t in ipairs(tries) do
-        local nx, ny = x + t[1], y + t[2]
-        local dest = L.insideSet[key(nx, ny)]
-        if dest and dest:isFree(false) and not (avoid and avoid[key(nx, ny)]) and dest:getMovingObjects():size() == 0 then
-            sq:RemoveTileObject(obj)
-            dest:AddTileObject(obj)
-            pcall(function() sq:RecalcAllWithNeighbours(true) end)
-            pcall(function() dest:RecalcAllWithNeighbours(true) end)
+    local okP, parts = pcall(partsOf, obj)
+    if not okP or #parts == 0 then return false end
+    local mine = {}
+    for _, p in ipairs(parts) do mine[key(p.x, p.y)] = true end
+    local shifts = {}
+    for k = 1, 3 do
+        shifts[#shifts + 1] = { -dy * k, dx * k }
+        shifts[#shifts + 1] = { dy * k, -dx * k }
+    end
+    for k = 1, 2 do shifts[#shifts + 1] = { -dx * k, -dy * k } end
+    shifts[#shifts + 1] = { -dy - dx, dx - dy }
+    shifts[#shifts + 1] = { dy - dx, -dx - dy }
+    for _, t in ipairs(shifts) do
+        local ok = true
+        for _, p in ipairs(parts) do
+            local nx, ny = p.x + t[1], p.y + t[2]
+            local k2 = key(nx, ny)
+            local dest = cell:getGridSquare(nx, ny, L.z)
+            local inside = L.insideSet[k2] ~= nil or mine[k2]
+            if nx == x and ny == y then ok = false end                 -- still on the window
+            if not (dest and inside) or (avoid and avoid[k2]) or dest:getMovingObjects():size() > 0 then ok = false end
+            if ok and not mine[k2] and not dest:isFree(false) then ok = false end
+            if not ok then break end
+        end
+        if ok then
+            for _, p in ipairs(parts) do p.sq:RemoveTileObject(p.obj) end
+            for _, p in ipairs(parts) do
+                local dest = cell:getGridSquare(p.x + t[1], p.y + t[2], L.z)
+                dest:AddTileObject(p.obj)
+            end
+            for _, p in ipairs(parts) do
+                pcall(function() p.sq:RecalcAllWithNeighbours(true) end)
+                local dest = cell:getGridSquare(p.x + t[1], p.y + t[2], L.z)
+                pcall(function() dest:RecalcAllWithNeighbours(true) end)
+            end
+            -- The squares it left are walkable again; the ones it's on now aren't.
+            for _, p in ipairs(parts) do
+                if p.sq:isFree(false) then L.insideSet[key(p.x, p.y)] = p.sq end
+            end
+            for _, p in ipairs(parts) do
+                local k2 = key(p.x + t[1], p.y + t[2])
+                local dest = cell:getGridSquare(p.x + t[1], p.y + t[2], L.z)
+                if dest and not dest:isFree(false) then L.insideSet[k2] = nil end
+            end
             if sq:isFree(false) then
                 L.insideSet[key(x, y)] = sq
-                L.insideSet[key(nx, ny)] = nil
                 for _, o in ipairs(L.openings) do
                     if o.x == x and o.y == y then o.blocked, o.movable = false, false end
                 end
@@ -281,8 +340,12 @@ function LF.Building.isInside(L, x, y)
     return L.insideSet[key(math.floor(x), math.floor(y))] ~= nil
 end
 
--- A defender shoves the furniture out of his window (LF.Tactics.shoveWindow does the moving).
+-- A defender pushes the furniture out of his window (LF.Tactics.shoveWindow does the moving): both
+-- hands on it and heave (LF_Shove), with the scrape of it going across the floor. A big piece
+-- takes longer.
 LF_ShoveAction = ISBaseTimedAction:derive("LF_ShoveAction")
+
+local PUSH_SOUNDS = { start = "LogRemoveFromStack", scrape = "LogRemoveFromStack", done = "LogAddToStack" }
 
 function LF_ShoveAction:isValid() return not self.character:isDead() end
 function LF_ShoveAction:waitToStart() return false end
@@ -290,16 +353,32 @@ function LF_ShoveAction:start()
     self.character:faceLocation(self.win.x + 0.5, self.win.y + 0.5)
     self:setActionAnim("LF_Shove")
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
+    pcall(function() self.character:playSound(PUSH_SOUNDS.start) end)
+    self.nextScrape = LF.tick + 45
+end
+function LF_ShoveAction:update()
+    if LF.tick >= self.nextScrape then
+        self.nextScrape = LF.tick + 45
+        pcall(function() self.character:playSound(PUSH_SOUNDS.scrape) end)
+    end
 end
 function LF_ShoveAction:stop() ISBaseTimedAction.stop(self) end
 function LF_ShoveAction:perform()
     if self.onDone then LF.guard("shove", self.onDone, self.rec) end
+    pcall(function() self.character:playSound(PUSH_SOUNDS.done) end)
     ISBaseTimedAction.perform(self)
 end
 function LF_ShoveAction:new(character, rec, win, onDone, gun)
     local o = ISBaseTimedAction.new(self, character)
     o.rec, o.win, o.onDone, o.gun = rec, win, onDone, gun
-    o.maxTime = 60
+    -- (~1.5 s for a chair; ~3 s for a piece several tiles big.)
+    local big = false
+    pcall(function()
+        local sq = getCell():getGridSquare(win.x, win.y, math.floor(character:getZ()))
+        local obj = sq and LF.Building.movableOn(sq)
+        big = obj ~= nil and obj:hasSpriteGrid()
+    end)
+    o.maxTime = big and 180 or 90
     o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
     o.ignoreHandsWounds = true
     return o

@@ -329,8 +329,15 @@ local function updateClear(team, t, squad)
         local r = LF.Records.get(rid)
         if r and fit(r) and LF.Bodies.get(rid) then live[#live + 1] = rid end
     end
-    local function finish(words, why)
+    local function finish(words, why, done)
         if team.leader and LF.Bodies.get(team.leader) and words then LF.Tactics.shout(team.leader, words) end
+        -- Cleared: the objective it was taking can now be called taken (LF_Objective).
+        local task = squad.objTask
+        if done and task and task.kind == "take" then
+            local obj = LF.Objective and LF.Objective.get(task.obj)
+            local q = C.L.inside and C.L.inside[1]
+            if obj and obj.building and q and LF.Building.idAt(q.x, q.y, C.L.z) == obj.building then task.cleared = true end
+        end
         LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": " .. why)
         -- The team holds where its men are now.
         local sx, sy, n = 0, 0, 0
@@ -487,7 +494,7 @@ local function updateClear(team, t, squad)
                     return true
                 end
                 LF.Tactics.shout(lead, "Clear!")
-                finish(team.leader ~= lead and "All clear - hold here!" or nil, "every room cleared - holding")
+                finish(team.leader ~= lead and "All clear - hold here!" or nil, "every room cleared - holding", true)
                 -- Hold where the man who called it is (inside), not halfway back to the door.
                 t.pos.A.x, t.pos.A.y, t.pos.B.x, t.pos.B.y = lb:getX(), lb:getY(), lb:getX(), lb:getY()
                 return false
@@ -562,7 +569,7 @@ local function updateClear(team, t, squad)
                     return true
                 end
             end
-            finish("Room clear!", "in and holding")
+            finish("Room clear!", "in and holding", true)
             return false
         end
     end

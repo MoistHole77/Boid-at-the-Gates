@@ -389,7 +389,8 @@ end
 -- enemy is out of reach again, he reloads as usual.
 
 local MELEE = { range = 2.0, near = 1.3, hitNear = 65, hitFar = 40, strikeAt = 16, ticks = 50,
-                fall = 33, severity = 30, impact = 14 }
+                fall = 33, severity = 30, impact = 14,
+                charge = 4.5 }     -- empty with the enemy this close (and in sight): he goes for him
 LF.Combat.MELEE = MELEE
 local MELEE_PARTS = { "Head", "Torso_Upper", "Torso_Upper", "Torso_Lower", "UpperArm_L", "UpperArm_R" }
 
@@ -450,13 +451,38 @@ function LF.Combat.inReach(a, t)
     return math.abs(t:getZ() - a:getZ()) < 0.5 and LF.dist(a:getX(), a:getY(), t:getX(), t:getY()) <= MELEE.range
 end
 
--- Empty, enemy in reach: strike (dropping a reload in progress). Returns true if he did.
+-- Empty with the enemy close (a few steps, in sight, on the same floor): he rushes him - no
+-- standing there reloading a few feet from a man who's shooting at him. (Up to 0.44 only an enemy
+-- already within arm's length counted, so a man two rooms' width away still got a reload.)
+local function chargeIfEmpty(shooter, target)
+    if not target or LF.Weapons.rounds(shooter) > 0 or LF.Combat.inReach(shooter, target) then return false end
+    if math.abs(target:getZ() - shooter:getZ()) >= 0.5 then return false end
+    local d = LF.dist(shooter:getX(), shooter:getY(), target:getX(), target:getY())
+    if d > MELEE.charge or not LF.Sense.canSee(shooter, target) then return false end
+    local q = ISTimedActionQueue.getTimedActionQueue(shooter)
+    local a = q and q.queue and q.queue[1]
+    if a and a.Type == "LF_MoveAction" and a.charging then return true end
+    if a and a.Type ~= "LF_ReloadAction" and a.Type ~= "LF_MoveAction" then return false end
+    ISTimedActionQueue.clear(shooter)
+    if LF.Posture and LF.Posture.crouched(shooter) then LF.Posture.set(shooter, false) end
+    local sq = getCell():getGridSquare(math.floor(target:getX()), math.floor(target:getY()), math.floor(target:getZ()))
+    if not sq then return false end
+    local mv = LF_MoveAction:new(shooter, sq, "run")
+    mv.charging = true
+    ISTimedActionQueue.add(mv)
+    LF.log("MELEE #" .. tostring(shooter:getModData().LF_id) .. " is empty - rushes #" .. tostring(target:getModData().LF_id)
+        .. " " .. string.format("%.1f", d) .. " tiles away")
+    return true
+end
+
+-- Empty, enemy in reach: strike (dropping a reload, or the rush, in progress). Returns true if he did.
 local function meleeIfEmpty(shooter, target)
-    if not target or LF.Weapons.rounds(shooter) > 0 or not LF.Combat.inReach(shooter, target) then return false end
+    if not target or LF.Weapons.rounds(shooter) > 0 then return false end
+    if not LF.Combat.inReach(shooter, target) then return LF.guard("charge", chargeIfEmpty, shooter, target) == true end
     local q = ISTimedActionQueue.getTimedActionQueue(shooter)
     local a = q and q.queue and q.queue[1]
     if a and a.Type == "LF_MeleeAction" then return true end
-    if a and a.Type ~= "LF_ReloadAction" then return false end     -- (busy with something else)
+    if a and a.Type ~= "LF_ReloadAction" and not (a.Type == "LF_MoveAction" and a.charging) then return false end     -- (busy with something else)
     if a then
         ISTimedActionQueue.clear(shooter)
         LF.log("MELEE #" .. tostring(shooter:getModData().LF_id) .. " drops his reload - enemy in reach")

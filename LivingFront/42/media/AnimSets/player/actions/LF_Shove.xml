@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Pushing furniture out of a window: the heavy two-handed shove, slowed and repeated (the game
+     has no furniture-pushing clip). -->
 <animNode>
 	<m_Name>LF_Shove</m_Name>
-	<m_AnimName>Bob_Shove_Rifle</m_AnimName>
-	<m_Looped>false</m_Looped>
+	<m_AnimName>Bob_Shove_2H_Heavy</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_SpeedScale>0.55</m_SpeedScale>
 	<m_BlendTime>0.15</m_BlendTime>
 	<m_BlendOutTime>0.20</m_BlendOutTime>
 	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>

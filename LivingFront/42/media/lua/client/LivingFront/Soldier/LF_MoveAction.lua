@@ -184,6 +184,7 @@ end
 local JAM_TICKS = 20         -- (~0.3 s getting nowhere with a man against him; was 1 s)
 local GHOST_TICKS = 90
 local ghosts = {}           -- body -> tick when he is solid again
+local still = {}             -- body -> true while made passable for standing still (below)
 
 local function setGhost(c, on) pcall(function() c:setGhostMode(on) end) end
 
@@ -199,10 +200,36 @@ Events.OnTick.Add(function()
     if ghostCount == 0 then return end
     for c, untilTick in pairs(ghosts) do
         if LF.tick >= untilTick or c:isDead() then
-            setGhost(c, false)
+            if not still[c] then setGhost(c, false) end
             ghosts[c] = nil
             ghostCount = ghostCount - 1
         end
+    end
+end)
+
+-- Men standing still are passable to everyone else (the engine pushes two characters apart only
+-- if both are solid - ghost mode makes one not): a man running to his place goes through the man
+-- crouched in cover beside his path, instead of bumping into him, staggering and getting stuck on
+-- him. Men on the move stay solid to each other (they steer round one another, above); they
+-- keep their footsteps and the slow-down of trees and wounds, which ghost mode would take away.
+local function moving(b)
+    local q = ISTimedActionQueue.getTimedActionQueue(b)
+    local a = q and q.queue and q.queue[1]
+    return a ~= nil and (a.Type == "LF_MoveAction" or a.Type == "ISWalkToTimedAction")
+end
+Events.OnTick.Add(function()
+    if LF.tick % 10 ~= 3 then return end
+    for _, b in pairs(LF.Bodies.all()) do
+        if not b:isDead() and not ghosts[b] then
+            local s = not moving(b)
+            if s ~= (still[b] == true) then
+                setGhost(b, s)
+                still[b] = s or nil
+            end
+        end
+    end
+    for b in pairs(still) do
+        if b:isDead() then still[b] = nil end
     end
 end)
 

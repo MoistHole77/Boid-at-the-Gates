@@ -520,6 +520,17 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
     return "post", sx, sy, P.z, wp, true, cp, p.stand, win, p.shove
 end
 
+-- His unit holds a building, he has a post in it, and he's outside the building: the post (x, y, z)
+-- to get back to. nil otherwise.
+function LF.Tactics.insidePost(rec, body)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local L = P and P.layout
+    local p = L and sq.posts and sq.posts[rec.id]
+    if not p or LF.Building.isInside(L, body:getX(), body:getY()) then return nil end
+    return p.x, p.y, L.z
+end
+
 -- May a man posted in a building shoot at (x, y)? Out of his own wall (and a neighbouring wall
 -- left unmanned), anyone inside the building, or anyone within 4 tiles - not across the building
 -- out of somebody else's window.

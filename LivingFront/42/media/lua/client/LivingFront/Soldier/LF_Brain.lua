@@ -332,7 +332,7 @@ local function planCover(id, body, m, threat, ax, ay, leash, sticky)
         end
         if not usable or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
             or (not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5))
-            or not withinLeash(m.cover.x, m.cover.y, ax, ay, 3, leash) then
+            or not withinLeash(m.cover.x, m.cover.y, ax, ay, reached and 3 or 6, leash) then
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
             LF.Cover.reserve(m.cover.x, m.cover.y, m.cover.z, id)   -- keep the claim while holding it
@@ -840,6 +840,18 @@ local function decide(id, body, rec, m)
     if fighter and inSquad and hp < CFG.fleeHealth and (not LF.Stance.of(rec).woundedWithdraw
         or (LF.Tactics and LF.Tactics.clearingInside and LF.Tactics.clearingInside(rec, body))) then
         if LF.Units.relieve(rec) then leader = false end
+        -- Holding a building, but outside it (he was wounded out there, or wandered off before
+        -- the stand): back in to his post first, then down there.
+        local px, py, pz = LF.Tactics.insidePost and LF.Tactics.insidePost(rec, body)
+        if px then
+            if m.state ~= "down" then setState(id, body, rec, m, "down", "wounded - back inside the building") end
+            if not isMoving(body) and LF.tick - m.lastPath > 120 then
+                walkTo(body, px, py, pz, "limp")
+                m.lastPath = LF.tick
+            end
+            m.targetId = nil
+            return
+        end
         if m.state ~= "down" then
             setState(id, body, rec, m, "down", "wounded, health " .. math.floor(hp) .. "; stays where he is")
             if isMoving(body) then ISTimedActionQueue.clear(body) end
@@ -893,6 +905,15 @@ local function decide(id, body, rec, m)
         -- Badly hurt and already hiding: stay down out of sight instead of rejoining the fight
         -- the moment the enemy drops out of view - unless his unit has moved off without him:
         -- then he leaves his hiding place and makes his way back to it.
+        -- (Only with an enemy known: with nobody about, a wounded man stays where he is - up to
+        -- 0.44 a man wounded at his window went out of the building to the squad's "rear" as soon
+        -- as his unit stood down, and stayed out there.)
+        local known = inSquad and LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
+        if not known and not (m.hide and not isAt(body, m.hide)) then
+            if m.state ~= "down" then setState(id, body, rec, m, "down", "wounded, nobody about - stays where he is") end
+            if isMoving(body) then ISTimedActionQueue.clear(body) end
+            return
+        end
         if m.state == "down" then setState(id, body, rec, m, "flee", "wounded, back to cover") end
         if m.hide and inSquad then
             local rx, ry = LF.Squad.rear(rec, CFG.rearDistance)
@@ -906,7 +927,7 @@ local function decide(id, body, rec, m)
             local rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance)
             if rx and not m.hide then
                 local c = LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange + 15)
-                fallBack(m, body, rx, ry, rz, c)
+                if c then fallBack(m, body, rx, ry, rz, c) end
             end
         end
         return
@@ -1246,10 +1267,60 @@ local function finishOff(body)
     body:Kill(nil)
 end
 
+-- Climbing over a fence, through a window, over a wall: the game's own climb runs him. Nothing is
+-- started on top of it (an aim or a shot would replace the climb's animation, and the climb waits
+-- for that animation to finish - up to 0.44 a man could be left frozen on top of a fence).
+local CLIMB_STATES = { ClimbOverFenceState = true, ClimbThroughWindowState = true, ClimbOverWallState = true,
+                       ClimbSheetRopeState = true, ClimbDownSheetRopeState = true }
+local function climbing(body)
+    local ok, name = pcall(function() return body:getCurrentStateName() end)
+    return ok and name ~= nil and CLIMB_STATES[name] == true, ok and name or nil
+end
+LF.Brain.climbing = climbing
+
+-- Stuck: in a climb, or down on the ground, for far longer than it takes - the game's state got
+-- stuck. He's put back on his feet.
+local STUCK_CLIMB, STUCK_DOWN = 300, 900
+local function unstick(id, body, m, why)
+    LF.log("BRAIN #" .. id .. " stuck " .. why .. " - put back on his feet")
+    ISTimedActionQueue.clear(body)
+    pcall(function()
+        for _, v in ipairs({ "ClimbFenceFinished", "ClimbWindowFinished", "ClimbWallFinished", "BumpDone" }) do body:setVariable(v, true) end
+        body:setVariable("ClimbFenceStarted", false)
+        body:setBumpDone(true)
+        body:setOnFloor(false)
+        body:setKnockedDown(false)
+    end)
+    m.stuckSince, m.lastPath = nil, -10000
+end
+
 local function stepNpc(id, body, rec)
     -- Down and being looked after, or dragging a man (LF_Medic): that runs him, not the brain.
     if LF.Medic and LF.Medic.busy(id) then return end
     local m = mindOf(id)
+    local climb = climbing(body)
+    if climb then
+        -- No shooting from the top of a fence: anything queued (but the walk) waits.
+        local q = ISTimedActionQueue.getTimedActionQueue(body)
+        local a = q and q.queue and q.queue[1]
+        if a and a.Type ~= "LF_MoveAction" and a.Type ~= "ISWalkToTimedAction" then ISTimedActionQueue.clear(body) end
+        m.climbSince = m.climbSince or LF.tick
+        if LF.tick - m.climbSince > STUCK_CLIMB then
+            unstick(id, body, m, "climbing for " .. math.floor((LF.tick - m.climbSince) / 60) .. " s")
+            m.climbSince = nil
+        end
+        return
+    end
+    m.climbSince = nil
+    if LF.Combat.knockedDown(body) and not (LF.Medic and LF.Medic.isCritical(id)) then
+        m.downSince = m.downSince or LF.tick
+        if LF.tick - m.downSince > STUCK_DOWN then
+            unstick(id, body, m, "on the ground for " .. math.floor((LF.tick - m.downSince) / 60) .. " s")
+            m.downSince = nil
+        end
+    else
+        m.downSince = nil
+    end
     if (LF.tick + id) % CFG.thinkTicks == 0 then
         if LF.Combat.health(body) <= 0 then
             m.zeroSince = m.zeroSince or LF.tick

@@ -160,11 +160,12 @@ function LF.Objective.clearTarget(squad, countsByBuilding, clearAt)
     local L = LF.Building.at(obj.x, obj.y, obj.z)
     if not L then return nil end
     if knownInside > 0 and knownInside <= clearAt then return L, knownInside .. " enemy known inside" end
+    -- Nobody known inside: a building to take is cleared all the same, room by room - nobody
+    -- walks into it on the strength of not having seen anyone.
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
-    if knownInside == 0 and cmd and LF.dist(cmd:getX(), cmd:getY(), obj.x, obj.y) <= CFG.clearRange
-        and LF.tick - (t.lastSeen or t.since) >= CFG.unseenClear and LF.tick - t.since >= CFG.unseenClear then
-        return L, "nobody seen in it for " .. math.floor((LF.tick - (t.lastSeen or t.since)) / 60) .. " s"
+    if knownInside == 0 and cmd and LF.dist(cmd:getX(), cmd:getY(), obj.x, obj.y) <= CFG.clearRange then
+        return L, "nobody known inside - clearing it anyway"
     end
     return nil
 end
@@ -264,7 +265,8 @@ local function updateTake(squad, obj)
         local ours = c[squad.faction] or 0
         local theirs = 0
         for f, n in pairs(c) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
-        if theirs == 0 and ours > 0 then
+        -- A building is only taken once a team has cleared it (LF_Clearing sets t.cleared).
+        if theirs == 0 and ours > 0 and (not obj.building or t.cleared) then
             obj.holder = squad.faction
             setPhase(squad, "hold", "no enemy left at " .. obj.name)
             t.kind = "hold"

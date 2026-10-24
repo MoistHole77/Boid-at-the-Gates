@@ -201,23 +201,32 @@ end)
 -- Clear corpses, blood and battlefield debris around the player, forget the dead, and restore
 -- the player's health and needs.
 -- Fill the tank of every vehicle within the reset radius. Returns how many were filled.
-local function refuelVehicles(px, py)
-    local n = 0
-    local list = getCell():getVehicles()
-    for i = 0, list:size() - 1 do
-        local v = list:get(i)
-        if v and LF.dist(v:getX(), v:getY(), px, py) <= RESET_RADIUS then
-            local ok = pcall(function()
-                local tank = v:getPartById("GasTank")
-                if not tank then error("no tank") end
-                local cap = tank:getContainerCapacity()
-                if tank:getContainerContentAmount() < cap then
-                    tank:setContainerContentAmount(cap)
-                    n = n + 1
-                    pcall(function() v:transmitPartModData(tank) end)
+-- (Found square by square: the cell's vehicle list is a Java Set, which Lua can't index - 0.44
+-- failed on it.)
+local function refuelVehicles(px, py, pz)
+    local n, seen = 0, {}
+    local cell = getCell()
+    for x = px - RESET_RADIUS, px + RESET_RADIUS, 2 do
+        for y = py - RESET_RADIUS, py + RESET_RADIUS, 2 do
+            local sq = cell:getGridSquare(x, y, pz)
+            local v = sq and sq:getVehicleContainer()
+            if v then
+                local key = tostring(v:getId())
+                if not seen[key] then
+                    seen[key] = true
+                    local ok = pcall(function()
+                        local tank = v:getPartById("GasTank")
+                        if not tank then error("no tank") end
+                        local cap = tank:getContainerCapacity()
+                        if tank:getContainerContentAmount() < cap then
+                            tank:setContainerContentAmount(cap)
+                            n = n + 1
+                            pcall(function() v:transmitPartModData(tank) end)
+                        end
+                    end)
+                    if not ok then LF.log("RESET WORLD couldn't refuel the vehicle at " .. x .. "," .. y) end
                 end
-            end)
-            if not ok then LF.log("RESET WORLD couldn't refuel a vehicle at " .. math.floor(v:getX()) .. "," .. math.floor(v:getY())) end
+            end
         end
     end
     return n
@@ -243,7 +252,7 @@ local function resetWorld(playerNum)
     for id, rec in pairs(LF.Records.all()) do
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
     end
-    local fuelled = LF.guard("refuel vehicles", refuelVehicles, px, py) or 0
+    local fuelled = LF.guard("refuel vehicles", refuelVehicles, px, py, pz) or 0
     getGameTime():setTimeOfDay(8.0)
     LF.Records.data().noFog = true
     LF.guard("clear fog", clearFog)

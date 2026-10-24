@@ -312,7 +312,8 @@ local function worstCase(mrec, mb)
                 if crit[rid] then
                     local score = crit[rid].untilTick - LF.tick + d * 30
                     if score < bestScore then best, bestScore, bestKind = rid, score, "stabilise" end
-                elseif not stable[rid] and (mrec.kit or 0) >= CFG2.bandageCost and LF.Combat.health(b) < CFG2.severeHealth
+                -- (A man already saved once has had his help: no going back to him.)
+                elseif not stable[rid] and not r.critOnce and (mrec.kit or 0) >= CFG2.bandageCost and LF.Combat.health(b) < CFG2.severeHealth
                     and LF.Aid.bleedingPart(b) and not busyAs(rid) then
                     local score = 100000 + LF.Combat.health(b) * 100 + d * 30
                     if score < bestScore then best, bestScore, bestKind = rid, score, "bandage" end
