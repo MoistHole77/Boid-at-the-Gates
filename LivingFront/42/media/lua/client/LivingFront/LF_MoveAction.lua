@@ -88,6 +88,13 @@ local function applyGait(character, gait)
         character:setRunning(false)
         return
     end
+    if gait == "limp" then
+        -- A badly wounded man limping (the game's heavy-limp rifle walk, LF_LimpWalk).
+        character:setSprinting(false)
+        character:setRunning(false)
+        for _, k in ipairs({ "LFLimp", "LFLimpA", "LFLimpB", "LFLimpC", "LFLimpD" }) do character:setVariable(k, true) end
+        return
+    end
     if gait == "patrol" or gait == "drag" then
         character:setSprinting(false)
         character:setRunning(false)
@@ -111,6 +118,7 @@ local function applyGait(character, gait)
 end
 
 local function clearGait(character)
+    for _, k in ipairs({ "LFLimp", "LFLimpA", "LFLimpB", "LFLimpC", "LFLimpD" }) do character:setVariable(k, false) end
     character:setRunning(false)
     character:setSprinting(false)
     if LF.Move.aimWorks then pcall(setAim, character, false) end
@@ -174,7 +182,7 @@ end
 -- ~1 s, with another man right against him, is let through - and so is the other man: the engine
 -- only stops pushing a pair apart if both are passable (ghost mode). After ~1.5 s both are solid
 -- again. (0.28.0 only made the one man passable, and only noticed a man standing dead still.)
-local JAM_TICKS = 60
+local JAM_TICKS = 20         -- (~0.3 s getting nowhere with a man against him; was 1 s)
 local GHOST_TICKS = 90
 local ghosts = {}           -- body -> tick when he is solid again
 
@@ -208,12 +216,12 @@ local function someoneAgainst(c)
 end
 
 function LF_MoveAction.jamCheck(self)
-    if LF.tick % 10 ~= 0 then return end
+    if LF.tick % 5 ~= 0 then return end
     local c = self.character
     local tx, ty = self.location:getX() + 0.5, self.location:getY() + 0.5
     local d = LF.dist(c:getX(), c:getY(), tx, ty)
     if d < 1.0 then return end
-    if not self.jamBest or d < self.jamBest - 0.4 then
+    if not self.jamBest or d < self.jamBest - 0.25 then
         self.jamBest, self.jamT = d, LF.tick            -- making headway
         return
     end

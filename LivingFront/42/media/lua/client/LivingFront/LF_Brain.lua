@@ -45,7 +45,7 @@ local CFG = {
     sightRange = 30,        -- tiles
     fireRange = 20,         -- fighters close in to this range before shooting
     fleeHealth = 35,
-    proneInOpen = true,     -- shooting in the open with no cover: go prone        -- fighters flee below this overall health when threatened
+    proneInOpen = false,    -- (prone in the open: off - the game has no prone firing clips, see LF_Combat)        -- fighters flee below this overall health when threatened
     corneredRange = 6,      -- ... but fight back from where they are when the enemy is this close
     woundedLeftBehind = 15, -- a wounded man hiding this far from his unit's rear goes back to it
     civFleeRange = 20,      -- unarmed civilians flee from hostiles within this range
@@ -1107,17 +1107,30 @@ local function act(id, body, rec, m)
         end
     elseif m.state == "flee" then
         local safe = (m.hide and isAt(body, m.hide)) or m.atRear
-        if m.hide and isAt(body, m.hide) then hunkerDown(body) end
+        if m.hide and isAt(body, m.hide) and not m.rest then hunkerDown(body) end
         if safe and m.fighter and not m.safeLogged then
             m.safeLogged = true
             LF.log("BRAIN #" .. id .. " " .. title(rec) .. " reached safety (" .. (m.atRear and "squad rear" or "hiding spot")
                 .. "), health " .. math.floor(LF.Combat.health(body)))
         end
-        -- Out of the fight: bandage bleeding wounds, one at a time.
-        if safe and m.fighter and not body:isPerformingAnAction() and LF.tick - (m.lastAid or -10000) > 90 then
-            m.lastAid = LF.tick
-            local part = LF.Aid.bleedingPart(body)
-            if part then ISTimedActionQueue.add(LF_AidAction:new(body, part)) end
+        -- Got back to the squad's rear: out of the open first - a hiding spot close by.
+        if safe and m.fighter and m.atRear and not m.hide and not m.rearHideTried then
+            m.rearHideTried = true
+            local c = rec.squad and LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), 3600, 60)
+            if c then
+                local threat = LF.Tactics.point(c.x, c.y, c.z or body:getZ())
+                local hx, hy, hz = LF.Cover.findHidingSpot(id, body, threat, body:getX(), body:getY(), nil)
+                if hx and LF.dist(body:getX(), body:getY(), hx + 0.5, hy + 0.5) <= 10 then
+                    takeSpot(id, body, m, "hide", hx, hy, hz, "hiding spot", "limp", c.x, c.y)
+                    m.atRear = nil
+                    return
+                end
+            end
+        end
+        -- Out of the fight and safe: he sits down and tends his wounds - dressing the bleeding
+        -- ones, seeing to the others - until he's needed or it's over.
+        if safe and m.fighter and not isMoving(body) and LF.Idle and LF.Idle.nurse then
+            LF.guard("nurse", LF.Idle.nurse, body, m)
         end
     end
 end

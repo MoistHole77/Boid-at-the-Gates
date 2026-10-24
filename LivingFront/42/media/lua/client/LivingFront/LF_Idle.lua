@@ -16,6 +16,7 @@
 
 require "TimedActions/ISBaseTimedAction"
 require "LivingFront/LF_Core"
+require "LivingFront/LF_Aid"
 
 LF.Idle = LF.Idle or {}
 
@@ -70,6 +71,7 @@ function LF_IdleAction:waitToStart() return false end
 function LF_IdleAction:start()
     if not self.kind.gun and LF.Combat then self.slung = LF.Combat.sling(self.character) end
     self:setActionAnim(self.kind.anim)
+    if self.kind.bandageType then self:setAnimVariable("BandageType", self.kind.bandageType) end
 end
 
 function LF_IdleAction:update()
@@ -176,4 +178,60 @@ function LF.Idle.tick(body, m, keep)
     end
     m.detail = k.words
     R.nextAct = now + len + rnd(CFG.gapTicks)
+end
+
+-- ---- the wounded, out of the fight -----------------------------------------------------------
+--
+-- A wounded man who has got to safety (a hiding spot, or his squad's rear - LF_Brain; a man the
+-- medic stabilised - LF_Medic) sits down and tends his wounds: dresses any that still bleed, goes
+-- over his worst one again (the game's bandaging clips), holds it, rests with his head down, now
+-- and then looks up. Every 5-15 s something, mostly small.
+
+local NURSE = {
+    { weight = 35, tend = true, words = "seeing to his wounds" },
+    { weight = 20, anim = "LF_SitRub", ticks = 600, words = "nursing his wounds" },
+    { weight = 20, anim = "LF_SitDoze", gun = true, ticks = 900, words = "resting, head down" },
+    { weight = 10, anim = "LF_SitKit", gun = true, ticks = 600, words = "going through his kit" },
+    { weight = 15, look = true, ticks = 300, words = "watching" },
+}
+
+function LF.Idle.nurse(body, m)
+    if body:isPerformingAnAction() then return end
+    local now = LF.tick
+    local R = m.rest
+    if not R or not R.nurse then
+        R = { nurse = true, seated = true, start = now, nextAct = now + 90 }
+        m.rest = R
+        if not LF.Idle.isSitting(body) then LF.guard("sit down", sitDown, body) end
+        m.detail = "sitting down, wounded"
+        return
+    end
+    -- Still bleeding: that first.
+    local bleed = LF.Aid and LF.Aid.bleedingPart(body)
+    if bleed then
+        ISTimedActionQueue.add(LF_AidAction:new(body, bleed))
+        m.detail = "dressing a wound"
+        return
+    end
+    if not LF.Idle.isSitting(body) and now - R.start > 180 and not R.sitAgain then
+        R.sitAgain = true
+        LF.guard("sit down", sitDown, body)
+    end
+    if now < R.nextAct then return end
+    local k = pick(NURSE)
+    local len = k.ticks or 240
+    if k.tend then
+        local part = LF.Aid and LF.Aid.worstPart(body)
+        if part then
+            ISTimedActionQueue.add(LF_IdleAction:new(body, { anim = "Bandage", bandageType = LF.Aid.bandageTypeOf(part),
+                words = k.words }, len))
+        end
+    elseif k.look then
+        local a = ZombRand(360) * math.pi / 180
+        body:faceLocation(body:getX() + math.cos(a) * 5, body:getY() + math.sin(a) * 5)
+    else
+        ISTimedActionQueue.add(LF_IdleAction:new(body, k, len))
+    end
+    m.detail = k.words
+    R.nextAct = now + len + 300 + ZombRand(600)
 end

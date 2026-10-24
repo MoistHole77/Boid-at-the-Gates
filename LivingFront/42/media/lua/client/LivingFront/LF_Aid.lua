@@ -31,6 +31,22 @@ function LF.Aid.bleedingPart(body)
     return LF.guard("find bleeding", firstBleeding, body)
 end
 
+-- The game's bandaging clip variant for a body part.
+function LF.Aid.bandageTypeOf(part)
+    return BANDAGE_TYPE[tostring(part:getType())] or "UpperBody"
+end
+
+-- His most badly hurt body part (for tending it), or nil if he's whole.
+function LF.Aid.worstPart(body)
+    local parts = body:getBodyDamage():getBodyParts()
+    local worst, wh = nil, 95
+    for i = 0, parts:size() - 1 do
+        local p = parts:get(i)
+        if p:getHealth() < wh then worst, wh = p, p:getHealth() end
+    end
+    return worst
+end
+
 -- How many of these bodies are bleeding (for the performance log).
 function LF.Aid.countBleeding(bodies)
     local n = 0

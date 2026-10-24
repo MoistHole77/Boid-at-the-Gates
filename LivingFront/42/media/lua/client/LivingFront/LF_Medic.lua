@@ -604,7 +604,7 @@ local function endJob(mid, why)
     local J = jobs2[mid]
     jobs2[mid] = nil
     busy[mid] = nil
-    cooldown[mid] = LF.tick + (why and 600 or 60)
+    cooldown[mid] = LF.tick + (why and 180 or 60)
     local mb = LF.Bodies.get(mid)
     if mb and not mb:isDead() then
         if LF.Posture and LF.Posture.crouched(mb) then LF.Posture.set(mb, false) end
@@ -697,7 +697,11 @@ local function stepJob(mid, J)
     if not (mb and mrec and mrec.alive) or mb:isDead() then jobs2[mid] = nil; busy[mid] = nil; return end
     if not pb or pb:isDead() then endJob(mid, "the man is dead"); return end
     if J.kind == "stabilise" and not crit[J.pid] then endJob(mid); return end
-    if LF.Combat.knockedDown(mb) then endJob(mid, "knocked down"); return end
+    -- (Only really down: a bump running past his own men isn't - 0.40 broke off for those,
+    -- walked back to his place and came out again.)
+    local down = false
+    pcall(function() down = mb:isOnFloor() or mb:isKnockedDown() end)
+    if down then endJob(mid, "knocked down"); return end
     if enemyClose(mid, mb, mrec) then
         local q = ISTimedActionQueue.getTimedActionQueue(mb)
         local a = q and q.queue and q.queue[1]
@@ -780,7 +784,7 @@ local function limpAway(id, b, rec, s)
     if not tx then tx, ty = rx, ry end
     if tx then
         s.spot = { x = tx, y = ty }
-        walk(b, tx, ty, math.floor(b:getZ()), "walk")
+        walk(b, tx, ty, math.floor(b:getZ()), "limp")
         LF.log(string.format("MEDIC #%d %s limps off to cover at %d,%d", id, LF.Units.title(rec), math.floor(tx), math.floor(ty)))
     else
         s.phase = "rest"
@@ -808,12 +812,13 @@ local function stepStable(id, s)
             ISTimedActionQueue.clear(b)
             s.phase = "rest"
         elseif not moving(b) and s.spot then
-            walk(b, s.spot.x, s.spot.y, math.floor(b:getZ()), "walk")
+            walk(b, s.spot.x, s.spot.y, math.floor(b:getZ()), "limp")
         end
         return
     end
-    -- Resting in cover: down, until the fight is over.
-    if LF.Posture and not LF.Posture.crouched(b) and not b:isPerformingAnAction() then LF.Posture.set(b, true) end
+    -- Resting in cover until the fight is over: sitting, tending his wounds.
+    s.mind = s.mind or {}
+    if LF.Idle and LF.Idle.nurse then LF.guard("nurse", LF.Idle.nurse, b, s.mind) end
     local quiet = #LF.Squad.contactPoints(s.squad, CFG2.quietRelease, 24) == 0
     if not quiet then s.quietSince = nil
     else
