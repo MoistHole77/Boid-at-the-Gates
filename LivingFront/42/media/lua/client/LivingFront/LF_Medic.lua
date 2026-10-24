@@ -106,6 +106,20 @@ function LF.Medic.lieDown(id, body)
     LF.log("MEDIC #" .. id .. " is down on his back at " .. math.floor(body:getX()) .. "," .. math.floor(body:getY()))
 end
 
+-- He has been knocked over backward by the game (on the floor, on his back): keep him there.
+-- The game's knocked-down state is ended under him and our lying pose takes over - the same clip
+-- the game lies him there with (Zombie_Idle_FloorOnBack), so nothing visibly moves - and he
+-- doesn't get up.
+function LF.Medic.holdDown(id, body)
+    pcall(function() body:setBumpDone(true) end)
+    pcall(function() body:setVariable("BumpDone", true) end)
+    pcall(function() body:setBumpFall(false) end)
+    pcall(function() body:setVariable("BumpFall", false) end)
+    pcall(function() body:setKnockedDown(false) end)
+    pcall(function() body:setOnFloor(false) end)
+    LF.Medic.lieDown(id, body)
+end
+
 function LF.Medic.standUp(id, body)
     busy[id] = nil
     if body then setLie(body, nil); ghost(body, false) end
@@ -133,10 +147,14 @@ local function finish(J, why, ok)
     local moved = J.pb and LF.dist(J.px, J.py, J.pb:getX(), J.pb:getY()) or 0
     LF.log(string.format("MEDIC #%d %s #%d: %s (%.1f tiles in %.1f s)", J.mid, ok and "dragged" or "gave up dragging",
         J.pid, why, moved, (LF.tick - J.started) / 60))
+    if J.onDone then LF.guard("drag done", J.onDone, ok, J) end
 end
 
 -- Medic (mid, mb) drags the man (pid, pb) lying on his back to (tx, ty). Returns true if it starts.
-function LF.Medic.drag(mid, mb, pid, pb, tx, ty)
+-- opts.route: waypoints { {x, y}, ... } ending at (tx, ty) - round corners, through doorways;
+-- opts.onDone(ok, J): called when it is over.
+function LF.Medic.drag(mid, mb, pid, pb, tx, ty, opts)
+    opts = opts or {}
     if busy[mid] or not pb or pb:isDead() or not mb or mb:isDead() then return false end
     if busy[pid] ~= "lying" then LF.Medic.lieDown(pid, pb) end
     local dx, dy = fwdOf(pb)
@@ -145,7 +163,8 @@ function LF.Medic.drag(mid, mb, pid, pb, tx, ty)
     -- Where the medic stands to lift him: the game's lift geometry.
     local sx, sy = px + dx * CFG.liftOffset, py + dy * CFG.liftOffset
     local J = { mid = mid, mb = mb, pid = pid, pb = pb, phase = "approach", at = LF.tick, started = LF.tick,
-                px = px, py = py, z = z, dx = dx, dy = dy, sx = sx, sy = sy, tx = tx, ty = ty }
+                px = px, py = py, z = z, dx = dx, dy = dy, sx = sx, sy = sy, tx = tx, ty = ty,
+                route = opts.route or { { x = tx, y = ty } }, wi = 1, onDone = opts.onDone }
     if not walk(mb, sx, sy, z, "walk") then return false end
     busy[mid] = "dragging"
     jobs[#jobs + 1] = J
@@ -198,7 +217,14 @@ local function step(J)
         -- own pace. (0.35 walked him there on the pathfinder: NPC paths go at walking pace
         -- whatever the clip, so he dragged at a trot.)
         local mx, my = mb:getX(), mb:getY()
-        local tx, ty = J.tx - mx, J.ty - my
+        -- On to the next waypoint once he's at this one.
+        local wp = J.route[J.wi]
+        if J.wi < #J.route and LF.dist(mx, my, wp.x, wp.y) <= 0.5 then
+            J.wi = J.wi + 1
+            wp = J.route[J.wi]
+            J.bestD, J.bestAt = math.huge, LF.tick
+        end
+        local tx, ty = wp.x - mx, wp.y - my
         local d = math.sqrt(tx * tx + ty * ty)
         if d > 0.05 then
             local fx, fy = -tx / d, -ty / d
@@ -229,7 +255,7 @@ local function step(J)
         place(pb, wx, wy)
         face(pb, fx, fy)
         if d < J.bestD - 0.1 then J.bestD, J.bestAt = d, LF.tick end
-        local there = d <= CFG.arrive
+        local there = J.wi == #J.route and d <= CFG.arrive
         local stuck = LF.tick - J.bestAt > CFG.stallTicks
         if there or stuck or age > CFG.dragTimeout then
             local secs = (LF.tick - J.dragStart) / 60

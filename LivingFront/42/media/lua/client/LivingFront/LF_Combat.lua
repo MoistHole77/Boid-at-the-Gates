@@ -236,6 +236,8 @@ local function knockFrom(target, sx, sy, fall)
         local t = front and "pushedFront" or "pushedBehind"
         target:setBumpFallType(t)
         target:setVariable("BumpFallType", t)
+        -- Over backward while clearing a building: he stays down and is dragged out (LF_Tactics).
+        if front and LF.Tactics and LF.Tactics.onKnockedBack then LF.guard("knocked back", LF.Tactics.onKnockedBack, target) end
     end
 end
 local function knock(target, shooter, fall) knockFrom(target, shooter:getX(), shooter:getY(), fall) end

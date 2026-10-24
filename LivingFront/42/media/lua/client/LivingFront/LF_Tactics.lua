@@ -41,6 +41,7 @@ require "LivingFront/LF_Sense"
 require "LivingFront/LF_Stance"
 require "LivingFront/LF_Building"
 require "LivingFront/LF_March"
+require "LivingFront/LF_Medic"
 
 LF.Tactics = LF.Tactics or {}
 
@@ -163,6 +164,7 @@ Events.OnPostUIDraw.Add(function() LF.guard("draw shouts", drawShouts) end)
 -- only partly near the player doesn't think it has lost half its men.
 local function fit(rec)
     if not (rec and rec.alive and not rec.wounded) then return false end
+    if LF.Medic and LF.Medic.busy(rec.id) then return false end   -- down on his back, or dragging one
     local body = LF.Bodies.get(rec.id)
     return body == nil or LF.Combat.health(body) >= CFG.fitHealth
 end
@@ -1666,7 +1668,7 @@ local function planRoom(squad, team, L, file, started, rooms, anchor)
 end
 
 -- Plan the clearing of building L by a team. Returns the plan or nil.
-local function planClear(squad, team, t, L, forceDoor)
+local function planClear(squad, team, t, L, forceDoor, restack)
     local cx, cy = (t.pos.A.x + t.pos.B.x) / 2, (t.pos.A.y + t.pos.B.y) / 2
     local cell = getCell()
     local z = L.z
@@ -1710,7 +1712,7 @@ local function planClear(squad, team, t, L, forceDoor)
         local b = LF.Bodies.get(rid)
         if b and math.floor(b:getZ()) == z and LF.Building.isInside(L, b:getX(), b:getY()) then inside = inside + 1 end
     end
-    if inside * 2 >= #file then
+    if inside * 2 >= #file and not restack then
         if forceDoor then return nil, "already inside" end
         return planRoom(squad, team, L, file, LF.tick, {})
     end
@@ -1797,6 +1799,15 @@ end
 -- Where a man of a clearing team goes: "file", x, y, z, facePoint, gait - or nil if he isn't in
 -- the file (he then does what he would otherwise).
 function LF.Tactics.clearPlace(C, rec)
+    if C.halted then
+        -- A man down: everyone holds where he is until he has been dragged clear.
+        local b = LF.Bodies.get(rec.id)
+        if not b then return nil end
+        C.haltAt = C.haltAt or {}
+        local h = C.haltAt[rec.id]
+        if not h then h = { x = b:getX(), y = b:getY() }; C.haltAt[rec.id] = h end
+        return "file", h.x, h.y, C.L.z, C.face, "walk"
+    end
     local idx = nil
     for i, rid in ipairs(C.file) do if rid == rec.id then idx = i; break end end
     if not idx then return nil end
@@ -1838,6 +1849,7 @@ end
 -- Run a clearing (each tactics update). Returns true while it is still going.
 local function updateClear(team, t, squad)
     local C = t.clear
+    if C.halted then return true end              -- (a man down: see casualties, below)
     local live = {}
     for _, rid in ipairs(C.file) do
         local r = LF.Records.get(rid)
@@ -2027,6 +2039,263 @@ local function updateClear(team, t, squad)
     end
     return true
 end
+
+
+-- ---- a man knocked down while clearing ---------------------------------------------------------
+--
+-- A man of a clearing team who is knocked over backward stays down on his back. The nearest of
+-- the others drags him out of the fight - back through the building to a room they've already
+-- cleared, or out of the door if they're still on the first room - while the rest of the team
+-- holds where it is. Then they regroup there and go on clearing (the downed man stays where he was
+-- left until the building is done). Only while a team is clearing a building.
+
+local casualties = {}       -- man id -> { team, squad, phase, at }
+local casualtyCount = 0     -- (Kahlua has no next())
+
+Events.OnInitGlobalModData.Add(function() casualties, casualtyCount = {}, 0 end)
+
+local function inFile(C, id)
+    for _, rid in ipairs(C.file) do if rid == id then return true end end
+    return false
+end
+
+-- Knocked over backward (LF_Combat): is he one of a clearing team? Then he stays down.
+function LF.Tactics.onKnockedBack(body)
+    local id = body:getModData().LF_id
+    local rec = id and LF.Records.get(id)
+    if not (rec and rec.team and rec.squad) or casualties[id] then return end
+    local t = teams[rec.team]
+    local C = t and t.clear
+    if not C or not inFile(C, id) then return end
+    -- Only inside the building (in through the door, going room to room) - not on the way to it.
+    if math.floor(body:getZ()) ~= C.L.z or not LF.Building.isInside(C.L, body:getX(), body:getY()) then return end
+    local squad = LF.Units.get(rec.squad)
+    if not squad or LF.Stance.get(squad).maneuvers ~= true then return end
+    casualties[id] = { team = rec.team, squad = rec.squad, phase = "falling", at = LF.tick }
+    casualtyCount = casualtyCount + 1
+    LF.log("CASUALTY #" .. id .. " " .. LF.Units.title(rec) .. " knocked down on his back while clearing - stays down")
+end
+
+-- A route for dragging him (BFS over the floor, through doorways, never through a wall or window):
+-- to a square of a room the team has cleared (not the one he's in), or - with none - out of the
+-- building, a couple of tiles clear of it. Returns the waypoints (square centres where the way
+-- turns, ending at the spot) and whether it leads outside; or nil.
+local function dragRoute(C, px, py, z)
+    local L = C.L
+    local cell = getCell()
+    local sx, sy = math.floor(px), math.floor(py)
+    local here = roomKeyAt(L, px, py)
+    local cleared = false
+    if C.rooms then
+        for k, v in pairs(C.rooms) do if v and k ~= here then cleared = true; break end end
+    end
+    local function ok(x, y)
+        if math.abs(x - sx) > 16 or math.abs(y - sy) > 16 then return nil end
+        local q = cell:getGridSquare(x, y, z)
+        if not q or not q:isFree(false) then return nil end
+        if L.insideSet[x .. "," .. y] then return q, true end
+        if not cleared and q:getBuilding() == nil then return q, false end
+        return nil
+    end
+    local function pass(a, b)
+        if a:isDoorTo(b) then return true end
+        return not (a:isWallTo(b) or a:isWindowTo(b) or a:isHoppableTo(b))
+    end
+    local start = cell:getGridSquare(sx, sy, z)
+    if not start then return nil end
+    local key = function(x, y) return x .. "," .. y end
+    local from, depth, open, head = { [key(sx, sy)] = false }, { [key(sx, sy)] = 0 }, { { sx, sy, start } }, 1
+    local goal, firstOut = nil, nil
+    while head <= #open and head < 900 do
+        local c = open[head]; head = head + 1
+        local ck = key(c[1], c[2])
+        local dd = depth[ck]
+        local inside = L.insideSet[ck] ~= nil
+        if cleared then
+            local rk = inside and roomKeyAt(L, c[1] + 0.5, c[2] + 0.5)
+            if rk and rk ~= here and C.rooms[rk] and dd >= 2 then goal = c; break end
+        elseif not inside then
+            firstOut = firstOut or dd
+            if dd >= firstOut + 2 then goal = c; break end
+        end
+        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+            local nx, ny = c[1] + d[1], c[2] + d[2]
+            local nk = key(nx, ny)
+            if depth[nk] == nil then
+                local q = ok(nx, ny)
+                if q and pass(c[3], q) then
+                    depth[nk], from[nk] = dd + 1, ck
+                    open[#open + 1] = { nx, ny, q }
+                end
+            end
+        end
+    end
+    if not goal then return nil end
+    -- Back from the goal to the start, then keep only the turns.
+    local pts = {}
+    local k = key(goal[1], goal[2])
+    while k do
+        local x, y = k:match("(-?%d+),(-?%d+)")
+        table.insert(pts, 1, { x = tonumber(x) + 0.5, y = tonumber(y) + 0.5 })
+        k = from[k] or nil
+    end
+    table.remove(pts, 1)                         -- (his own square)
+    local route = {}
+    for i, p in ipairs(pts) do
+        local nx = pts[i + 1]
+        local pv = pts[i - 1]
+        if not nx or not pv or (nx.x - p.x) ~= (p.x - pv.x) or (nx.y - p.y) ~= (p.y - pv.y) then
+            route[#route + 1] = p
+        end
+    end
+    return route, not cleared
+end
+
+-- The team goes on clearing from where he was dragged to.
+local function regroup(cas, ok, J)
+    local team, squad = LF.Units.get(cas.team), LF.Units.get(cas.squad)
+    local t = team and teams[cas.team]
+    local C = t and t.clear
+    cas.phase, cas.at = "out", LF.tick
+    if not (C and squad) then return end
+    local live = {}
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and fit(r) and LF.Bodies.get(rid) then live[#live + 1] = rid end
+    end
+    local C2
+    if #live >= 1 then
+        if cas.outside then
+            C2 = planClear(squad, team, t, C.L, C.entry, true)       -- everyone out and stack up again
+        else
+            local mb = J and J.mb
+            local anchor = mb and { x = mb:getX(), y = mb:getY() } or nil
+            C2 = planRoom(squad, team, C.L, live, C.started, C.rooms, anchor)
+        end
+    end
+    if C2 then
+        C2.rooms = C2.rooms or C.rooms
+        C2.entry = C.entry or (C.door and C.door.dx ~= 0 and C.door) or C.entry
+        C2.roomCount = C.roomCount
+        t.clear = C2
+        LF.log("CASUALTY " .. team.name .. " regroups " .. (cas.outside and "outside" or "in a cleared room") .. " and clears on")
+        if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "He's out - regroup! Go again!") end
+    else
+        t.clear, t.order = nil, "HOLD"
+        LF.log("CASUALTY " .. team.name .. " can't go on clearing (" .. #live .. " fit) - holds")
+    end
+end
+
+local function dragHim(id, cas, body)
+    local t = teams[cas.team]
+    local C = t and t.clear
+    if not C then return false end
+    -- The nearest of the others in the file.
+    local best, bd = nil, math.huge
+    for _, rid in ipairs(C.file) do
+        local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
+        if rid ~= id and r and fit(r) and b and not LF.Combat.knockedDown(b) and math.abs(b:getZ() - body:getZ()) < 0.5 then
+            local d = LF.dist(b:getX(), b:getY(), body:getX(), body:getY())
+            if d < bd then best, bd = rid, d end
+        end
+    end
+    if not best then return false end
+    local z = math.floor(body:getZ())
+    local route, outside = dragRoute(C, body:getX(), body:getY(), z)
+    if not route or #route == 0 then
+        LF.log("CASUALTY #" .. id .. ": no way to drag him out - he stays where he is")
+        return false
+    end
+    -- He lies with his head toward the way out: the dragger lifts him from there and walks back
+    -- along the route.
+    local first = route[1]
+    local lx, ly = first.x - body:getX(), first.y - body:getY()
+    local l = math.max(0.01, math.sqrt(lx * lx + ly * ly))
+    body:setForwardDirection(-lx / l, -ly / l)
+    pcall(function() body:setTargetAndCurrentDirection(-lx / l, -ly / l) end)
+    local last = route[#route]
+    cas.outside = outside
+    C.halted, C.haltAt = true, {}
+    if not C.entry and C.door and C.door.dx ~= 0 then C.entry = C.door end
+    local mb = LF.Bodies.get(best)
+    local started = LF.Medic.drag(best, mb, id, body, last.x, last.y,
+        { route = route, onDone = function(ok, J) regroup(cas, ok, J) end })
+    if not started then C.halted = nil; return false end
+    cas.phase, cas.at = "dragged", LF.tick
+    local team = LF.Units.get(cas.team)
+    if team and team.leader and team.leader ~= best and LF.Bodies.get(team.leader) then
+        LF.Tactics.shout(team.leader, "Man down! Get him out of here!")
+    end
+    LF.Tactics.shout(best, "I've got him!")
+    LF.log(string.format("CASUALTY #%d dragged by #%d %s, %d waypoints, %d tiles", id, best,
+        outside and "out of the building" or "back to a cleared room", #route,
+        math.floor(LF.dist(body:getX(), body:getY(), last.x, last.y))))
+    return true
+end
+
+local function casualtyStep(id, cas)
+    local body = LF.Bodies.get(id)
+    local rec = LF.Records.get(id)
+    local function drop()
+        casualties[id] = nil
+        casualtyCount = casualtyCount - 1
+        if body and not body:isDead() then LF.Medic.standUp(id, body) end
+    end
+    if not body or body:isDead() or not (rec and rec.alive) then
+        casualties[id] = nil
+        casualtyCount = casualtyCount - 1
+        if LF.Medic then LF.Medic.standUp(id, nil) end
+        local t = teams[cas.team]
+        if t and t.clear and t.clear.halted and cas.phase ~= "out" then t.clear.halted = nil end
+        return
+    end
+    local age = LF.tick - cas.at
+    if cas.phase == "falling" then
+        -- Wait till he's down (the game's fall), then keep him there.
+        local down = false
+        pcall(function() down = body:isOnFloor() end)
+        if down then cas.downSeen = cas.downSeen or LF.tick end
+        if (cas.downSeen and LF.tick - cas.downSeen >= 20) or age > 240 then
+            LF.Medic.holdDown(id, body)
+            cas.phase, cas.at = "down", LF.tick
+        end
+    elseif cas.phase == "down" then
+        if age % 30 == 0 and dragHim(id, cas, body) then return end
+        if age > 900 then cas.phase, cas.at = "out", LF.tick end   -- nobody to drag him: he lies there
+    elseif cas.phase == "out" then
+        -- Left lying until his team's clearing is over (or a few minutes); then he's himself again.
+        local t = teams[cas.team]
+        if not (t and t.clear) or age > 10800 then drop() end
+    end
+end
+
+-- Test: knock over (backward) the man of a clearing team nearest (x, y), as if shot from the front.
+function LF.Tactics.testKnockBack(x, y)
+    local best, bd = nil, math.huge
+    for _, t in pairs(teams) do
+        local C = t.clear
+        if C and not C.halted then
+            for _, rid in ipairs(C.file) do
+                local b = LF.Bodies.get(rid)
+                if b and not b:isDead() and LF.Building.isInside(C.L, b:getX(), b:getY()) then
+                    local d = LF.dist(b:getX(), b:getY(), x, y)
+                    if d < bd then best, bd = b, d end
+                end
+            end
+        end
+    end
+    if not best then LF.say("Nobody is clearing a building (inside it) just now"); return end
+    local v = best:getForwardDirection()
+    LF.Combat.knock(best, best:getX() + v:getX() * 3, best:getY() + v:getY() * 3, true)
+    LF.say("Knocked over #" .. tostring(best:getModData().LF_id))
+end
+
+Events.OnTick.Add(function()
+    if casualtyCount == 0 then return end
+    local ids = {}
+    for id in pairs(casualties) do ids[#ids + 1] = id end
+    for _, id in ipairs(ids) do LF.guard("casualty", casualtyStep, id, casualties[id]) end
+end)
 
 -- Order a team to clear building L (Alpha 1, or the next team with enough fit men if it is
 -- shot up). Returns the team that goes, or nil.

@@ -493,9 +493,8 @@ local function onMenu(playerNum, context, worldObjects, test)
         end
     end
     local tests = sub(main, "Tests")
-    tests:addOption("Medic drag (spawns a German fire team here: one man goes down, another drags him back)", nil,
-        function() LF.Medic.testDrag(x, y, z, playerNum) end)
-    tests:addOption("End the medic test (the downed man gets up)", nil, function() LF.Medic.endTest() end)
+    tests:addOption("Knock over the nearest man clearing a building (he stays down; his team drags him out)", nil,
+        function() LF.Tactics.testKnockBack(x + 0.5, y + 0.5) end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
