@@ -363,3 +363,431 @@ function LF.Medic.endTest()
     busy = {}
     LF.say("Medic test ended")
 end
+
+-- =================================================================================================
+-- The squad medic (stage 2)
+-- =================================================================================================
+--
+-- Who: in every full squad, one private of the rearmost team (Bravo 2) is the medic. He carries a
+-- leather satchel of dressings (Bag_Satchel_Leather) and a sub-machine gun instead of a rifle
+-- (MP40 / PPSh). His kit holds CFG2.kit dressings; it doesn't refill in a fight.
+--
+-- Critical, not dead: when a man of a squad whose medic is alive and has dressings left takes a
+-- hit that would kill him - not a head shot, not the middle of a grenade blast - there's a chance
+-- (the medic's: green 50%, veteran 75%, shaken 40%) that he goes down critical instead. He lies
+-- on his back calling for the medic, bleeding out: 60-90 s (a veteran medic's squad gets 30%
+-- longer). Reach him in time and he's stabilised - he lives, out of the fight, lying in cover
+-- until it's over, then gets up as wounded. Nobody comes: he dies when the clock runs out. Hit
+-- again while he's down: he dies.
+--
+-- The medic: every half second he looks for the worst case in his squad within 30 tiles - the
+-- critical first (soonest to die), then badly hurt men still bleeding - and goes to him at a run
+-- (the sergeant calls "Cover the medic!" when the enemy is near the man). Next to him he crouches,
+-- slings his SMG and works (the game's low-reach clip): stabilising a critical man takes ~6 s and
+-- 2 dressings, bandaging a bleeder ~2.5 s and 1. An enemy in sight within 8 tiles of him, or a
+-- knockdown, breaks it off - he fights first, then goes back. A shaken medic hesitates 4 s before
+-- going out; a veteran one (5 men saved) works 30% faster.
+
+require "LivingFront/LF_Aid"
+
+local CFG2 = {
+    kit = 8, stabiliseCost = 2, bandageCost = 1,
+    chance = { green = 50, veteran = 75, shaken = 40 },
+    bleedOut = { 3600, 1800 },  -- 60 s + up to 30 s
+    vetWindow = 1.3,
+    vetSaves = 5,               -- saves for a medic to count as a veteran at it
+    floor = 3,                  -- a critical man's health is held at this (the clock kills him)
+    stableFloor = 15,           -- a stabilised man's health never drops below this
+    stabiliseTicks = 360, bandageTicks = 150, vetSpeed = 0.7,
+    range = 30,                 -- he goes to men this close
+    severeHealth = 45,          -- "badly hurt" (and bleeding): worth his dressings
+    threatRange = 8,            -- an enemy in sight this close: he fights first
+    shakenDelay = 240,
+    quietRelease = 3600,        -- stabilised men get up after ~60 s with no enemy known
+}
+LF.Medic.CFG2 = CFG2
+
+local crit = {}             -- id -> { squad, untilTick, since }
+local stable = {}           -- id -> { squad, quietSince }
+local jobs2 = {}            -- medic id -> { pid, kind, phase, at, nextPath }
+local cooldown = {}         -- medic id -> tick he may take a new job
+Events.OnInitGlobalModData.Add(function() crit, stable, jobs2, cooldown = {}, {}, {}, {} end)
+
+function LF.Medic.isCritical(id) return crit[id] ~= nil end
+function LF.Medic.isStable(id) return stable[id] ~= nil end
+function LF.Medic.critLeft(id) local c = crit[id]; return c and math.max(0, c.untilTick - LF.tick) or nil end
+function LF.Medic.job(id) return jobs2[id] end
+
+local SMG = { GER = "MP40", SOV = "PPSh" }
+
+-- His level at it: "veteran" (enough men saved, or a veteran soldier), "shaken", or "green".
+local function levelOf(rec)
+    local s = rec.svc
+    if s and s.shaken then return "shaken" end
+    if (rec.medicSaves or 0) >= CFG2.vetSaves or (s and s.veteran) then return "veteran" end
+    return "green"
+end
+LF.Medic.levelOf = levelOf
+
+-- Put the satchel on him and the SMG in his hands (at spawn, or when he's made the medic).
+function LF.Medic.equip(body, rec)
+    if not rec.medic then return end
+    local inv = body:getInventory()
+    local have = false
+    pcall(function()
+        local worn = body:getWornItems()
+        for i = 0, worn:size() - 1 do
+            local it = worn:getItemByIndex(i)
+            if it and it:getFullType() == "Base.Bag_Satchel_Leather" then have = true end
+        end
+    end)
+    if not have then
+        local bag = inv:AddItem("Base.Bag_Satchel_Leather")
+        local worn = false
+        if bag then
+            for _, loc in ipairs({ function() return bag:canBeEquipped() end, function() return "base:satchel" end,
+                                   function() return "Satchel" end }) do
+                local ok = pcall(function()
+                    local l = loc()
+                    if not l or l == "" then error("no location") end
+                    body:setWornItem(l, bag)
+                end)
+                if ok then worn = true; break end
+            end
+        end
+        pcall(function() body:onWornItemsChanged(); body:resetModelNextFrame() end)
+        if not worn then LF.log("MEDIC #" .. rec.id .. " couldn't put the satchel on") end
+    end
+    if LF.Combat then LF.guard("medic arm", LF.Combat.arm, body) end
+end
+
+-- Make one private of the squad's rearmost team its medic.
+function LF.Medic.pick(squad)
+    if not squad or squad.kind ~= "squad" or squad.teamOnly then return nil end
+    squad.medicSet = true
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.medic and r.alive then return r end
+    end
+    local team = LF.Units.get(squad.teams[4]) or LF.Units.get(squad.teams[#squad.teams])
+    if not team then return nil end
+    local pick = nil
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and r.rank == "PVT" then pick = r end
+    end
+    if not pick then return nil end
+    pick.medic, pick.kit, pick.medicSaves = true, CFG2.kit, pick.medicSaves or 0
+    pick.weapon = SMG[pick.faction] or pick.weapon
+    local b = LF.Bodies.get(pick.id)
+    if b then LF.guard("medic equip", LF.Medic.equip, b, pick) end
+    LF.log("MEDIC " .. LF.Units.title(pick) .. " (#" .. pick.id .. ") of " .. team.name .. " is " .. squad.name .. "'s medic")
+    return pick
+end
+
+-- The squad's medic, if he's alive, on his feet and has dressings.
+local function medicOf(squadId)
+    for _, rid in ipairs(LF.Units.members(squadId)) do
+        local r = LF.Records.get(rid)
+        if r and r.medic then
+            if r.alive and not crit[rid] and not stable[rid] and (r.kit or 0) > 0 then return r end
+            return nil
+        end
+    end
+    return nil
+end
+LF.Medic.medicOf = medicOf
+
+local function kill(body)
+    pcall(function() body:setHealth(0) end)
+    pcall(function() body:Kill(nil) end)
+end
+
+local function addHealth(body, n)
+    pcall(function() body:getBodyDamage():AddGeneralHealth(n) end)
+end
+
+-- ---- going critical -----------------------------------------------------------------------------
+
+-- After any wound (LF_Combat, LF_Grenade): a killing blow may leave him critical instead.
+-- cause: "shot" (part = where), "blast", "blastLethal", "melee".
+function LF.Medic.onHit(body, cause, part, force)
+    if body:isDead() then return end
+    local id = body:getModData().LF_id
+    local rec = id and LF.Records.get(id)
+    if not (rec and rec.alive and rec.squad and rec.faction ~= "CIV") then return end
+    if LF.Combat.health(body) > 0 then return end
+    if crit[id] then crit[id] = nil; busy[id] = nil; return end     -- hit again while down: he's gone
+    if stable[id] or rec.critOnce then return end
+    if cause == "blastLethal" or (cause == "shot" and part == "Head") then return end
+    local medic = medicOf(rec.squad)
+    if not medic or medic.id == id or (medic.kit or 0) < CFG2.stabiliseCost then return end
+    local lvl = levelOf(medic)
+    if not force and ZombRand(100) >= CFG2.chance[lvl] then return end
+    rec.critOnce = true
+    addHealth(body, CFG2.floor + 5 - LF.Combat.health(body))
+    if LF.Tactics and LF.Tactics.dropCasualty then LF.Tactics.dropCasualty(id) end
+    LF.Medic.holdDown(id, body)
+    local secs = CFG2.bleedOut[1] + ZombRand(CFG2.bleedOut[2])
+    if lvl == "veteran" then secs = math.floor(secs * CFG2.vetWindow) end
+    crit[id] = { squad = rec.squad, untilTick = LF.tick + secs, since = LF.tick }
+    if LF.Units.relieve then LF.Units.relieve(rec) end
+    if LF.Tactics then LF.Tactics.shout(id, "Medic! MEDIC!") end
+    LF.log(string.format("CRITICAL #%d %s is down, bleeding out in %d s (medic %s, %s)", id, LF.Units.title(rec),
+        math.floor(secs / 60), LF.Units.title(medic), lvl))
+end
+
+-- ---- treating -----------------------------------------------------------------------------------
+
+LF_TreatAction = ISBaseTimedAction:derive("LF_TreatAction")
+function LF_TreatAction:isValid() return not self.character:isDead() and not self.patient:isDead() end
+function LF_TreatAction:waitToStart() return false end
+function LF_TreatAction:start()
+    self.character:faceThisObject(self.patient)
+    self:setActionAnim("Loot")
+    self:setAnimVariable("LootPosition", "Low")
+end
+function LF_TreatAction:update()
+    self.character:faceThisObject(self.patient)
+end
+function LF_TreatAction:stop()
+    if self.onStop then LF.guard("treat stopped", self.onStop) end
+    ISBaseTimedAction.stop(self)
+end
+function LF_TreatAction:perform()
+    if self.onDone then LF.guard("treat done", self.onDone) end
+    ISBaseTimedAction.perform(self)
+end
+function LF_TreatAction:new(medic, patient, ticks, onDone, onStop)
+    local o = ISBaseTimedAction.new(self, medic)
+    o.patient, o.onDone, o.onStop = patient, onDone, onStop
+    o.maxTime = ticks
+    o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
+    o.ignoreHandsWounds = true
+    return o
+end
+
+local function dressAll(body)
+    local parts = body:getBodyDamage():getBodyParts()
+    local n = 0
+    for i = 0, parts:size() - 1 do
+        local p = parts:get(i)
+        if p:bleeding() or p:haveBullet() then
+            pcall(function() p:setBleeding(false); p:setBleedingTime(0) end)
+            pcall(function() p:setHaveBullet(false, 0) end)
+            pcall(function() p:setBandaged(true, 10) end)
+            n = n + 1
+        end
+    end
+    return n
+end
+
+local function endJob(mid, why)
+    local J = jobs2[mid]
+    jobs2[mid] = nil
+    busy[mid] = nil
+    cooldown[mid] = LF.tick + (why and 600 or 60)
+    local mb = LF.Bodies.get(mid)
+    if mb and not mb:isDead() then
+        if LF.Posture and LF.Posture.crouched(mb) then LF.Posture.set(mb, false) end
+        if J and J.slung and LF.Combat then LF.Combat.unsling(mb) end
+    end
+    if why then LF.log("MEDIC #" .. mid .. " breaks off (" .. why .. ")") end
+end
+
+local function finishTreat(mid, J)
+    local mrec, prec = LF.Records.get(mid), LF.Records.get(J.pid)
+    local pb = LF.Bodies.get(J.pid)
+    if not (mrec and prec and pb) or pb:isDead() then endJob(mid, "the man died"); return end
+    local n = dressAll(pb)
+    if J.kind == "stabilise" then
+        mrec.kit = math.max(0, (mrec.kit or 0) - CFG2.stabiliseCost)
+        crit[J.pid] = nil
+        stable[J.pid] = { squad = prec.squad, quietSince = nil }
+        busy[J.pid] = "lying"
+        if LF.Combat.health(pb) < CFG2.stableFloor + 5 then addHealth(pb, CFG2.stableFloor + 5 - LF.Combat.health(pb)) end
+        mrec.medicSaves = (mrec.medicSaves or 0) + 1
+        LF.log(string.format("MEDIC #%d %s stabilises #%d %s (%d wounds dressed; %d saved; kit %d)", mid,
+            LF.Units.title(mrec), J.pid, LF.Units.title(prec), n, mrec.medicSaves, mrec.kit))
+        if LF.Tactics then LF.Tactics.shout(mid, "He'll live - keep your head down!") end
+    else
+        mrec.kit = math.max(0, (mrec.kit or 0) - CFG2.bandageCost)
+        LF.log(string.format("MEDIC #%d %s dresses #%d %s's wounds (%d; kit %d)", mid, LF.Units.title(mrec), J.pid,
+            LF.Units.title(prec), n, mrec.kit))
+    end
+    if (mrec.kit or 0) <= 0 and LF.Tactics then LF.Tactics.shout(mid, "I'm out of dressings!") end
+    endJob(mid)
+end
+
+-- The worst case in his squad he can go to: (patient id, body, kind) or nil.
+local function worstCase(mrec, mb)
+    local best, bestScore, bestKind = nil, math.huge, nil
+    for _, rid in ipairs(LF.Units.members(mrec.squad)) do
+        local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
+        if rid ~= mrec.id and r and r.alive and b and not b:isDead() and math.abs(b:getZ() - mb:getZ()) < 0.5 then
+            local d = LF.dist(mb:getX(), mb:getY(), b:getX(), b:getY())
+            local taken = false
+            for oid, oj in pairs(jobs2) do if oid ~= mrec.id and oj.pid == rid then taken = true end end
+            if d <= CFG2.range and not taken then
+                if crit[rid] then
+                    local score = crit[rid].untilTick - LF.tick + d * 30
+                    if score < bestScore then best, bestScore, bestKind = rid, score, "stabilise" end
+                elseif not stable[rid] and (mrec.kit or 0) >= CFG2.bandageCost and LF.Combat.health(b) < CFG2.severeHealth
+                    and LF.Aid.bleedingPart(b) and not busy[rid] then
+                    local score = 100000 + LF.Combat.health(b) * 100 + d * 30
+                    if score < bestScore then best, bestScore, bestKind = rid, score, "bandage" end
+                end
+            end
+        end
+    end
+    return best, best and LF.Bodies.get(best), bestKind
+end
+
+local function enemyClose(mid, mb, mrec)
+    local seen = LF.Sense.look(mid, mb, mrec, CFG2.threatRange)
+    return #seen > 0
+end
+
+local function startJob(mid, mb, mrec, pid, pb, kind)
+    local lvl = levelOf(mrec)
+    local J = { pid = pid, kind = kind, phase = "go", at = LF.tick, nextPath = 0,
+                waitUntil = lvl == "shaken" and LF.tick + CFG2.shakenDelay or nil }
+    jobs2[mid] = J
+    busy[mid] = "treating"
+    ISTimedActionQueue.clear(mb)
+    if LF.Idle then LF.Idle.stop(mb) end
+    local prec = LF.Records.get(pid)
+    LF.log(string.format("MEDIC #%d %s goes to %s #%d %s, %d tiles", mid, LF.Units.title(mrec),
+        kind == "stabilise" and "save" or "dress", pid, prec and LF.Units.title(prec) or "?",
+        math.floor(LF.dist(mb:getX(), mb:getY(), pb:getX(), pb:getY()))))
+    -- The enemy near the man: the squad gives him cover.
+    local near = false
+    for _, c in ipairs(LF.Squad.contactPoints(mrec.squad, 600, 24)) do
+        if LF.dist(c.x, c.y, pb:getX(), pb:getY()) <= 25 then near = true; break end
+    end
+    if near and LF.Tactics then
+        local squad = LF.Units.get(mrec.squad)
+        local caller = squad and LF.Units.commander(squad)
+        if caller and caller ~= mid and caller ~= pid and LF.Bodies.get(caller) then LF.Tactics.shout(caller, "Cover the medic!") end
+        LF.Tactics.shout(mid, kind == "stabilise" and "I'm coming - hold on!" or "Hold still, I've got you.")
+    end
+end
+
+local function stepJob(mid, J)
+    local mb, pb = LF.Bodies.get(mid), LF.Bodies.get(J.pid)
+    local mrec = LF.Records.get(mid)
+    if not (mb and mrec and mrec.alive) or mb:isDead() then jobs2[mid] = nil; busy[mid] = nil; return end
+    if not pb or pb:isDead() then endJob(mid, "the man is dead"); return end
+    if J.kind == "stabilise" and not crit[J.pid] then endJob(mid); return end
+    if LF.Combat.knockedDown(mb) then endJob(mid, "knocked down"); return end
+    if enemyClose(mid, mb, mrec) then
+        local q = ISTimedActionQueue.getTimedActionQueue(mb)
+        local a = q and q.queue and q.queue[1]
+        if a and a.Type == "LF_TreatAction" then ISTimedActionQueue.clear(mb) end
+        endJob(mid, "enemy in sight close by")
+        return
+    end
+    if J.waitUntil and LF.tick < J.waitUntil then return end
+    if J.phase == "go" then
+        local d = LF.dist(mb:getX(), mb:getY(), pb:getX(), pb:getY())
+        if d <= 1.4 then
+            ISTimedActionQueue.clear(mb)
+            if LF.Posture then LF.Posture.set(mb, true) end
+            if LF.Combat then J.slung = LF.Combat.sling(mb) end
+            local ticks = J.kind == "stabilise" and CFG2.stabiliseTicks or CFG2.bandageTicks
+            if levelOf(mrec) == "veteran" then ticks = math.floor(ticks * CFG2.vetSpeed) end
+            J.phase, J.at = "treat", LF.tick
+            ISTimedActionQueue.add(LF_TreatAction:new(mb, pb, ticks,
+                function() finishTreat(mid, J) end,
+                function() if jobs2[mid] == J and J.phase == "treat" then endJob(mid, "interrupted") end end))
+            LF.log("MEDIC #" .. mid .. " works on #" .. J.pid)
+        elseif LF.tick >= J.nextPath or not moving(mb) then
+            J.nextPath = LF.tick + 60
+            if LF.Suppress and LF.Suppress.isPinned(mb) then ISTimedActionQueue.clear(mb); return end
+            -- Beside him, on the side nearest the medic.
+            local dx, dy = mb:getX() - pb:getX(), mb:getY() - pb:getY()
+            local l = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+            local tx, ty = pb:getX() + dx / l * 0.9, pb:getY() + dy / l * 0.9
+            walk(mb, tx, ty, math.floor(pb:getZ()), d > 4 and "run" or "walk")
+        elseif LF.tick - J.at > 2400 then
+            endJob(mid, "couldn't get to him")
+        end
+    end
+end
+
+local function stepCrit(id, c)
+    local b = LF.Bodies.get(id)
+    local rec = LF.Records.get(id)
+    if not b or b:isDead() or not (rec and rec.alive) then crit[id] = nil; busy[id] = nil; return end
+    -- Being worked on: the clock stops.
+    local treating = false
+    for _, J in pairs(jobs2) do if J.pid == id and J.phase == "treat" then treating = true end end
+    if treating then c.untilTick = c.untilTick + 1 end
+    if LF.Combat.health(b) < CFG2.floor then addHealth(b, CFG2.floor - LF.Combat.health(b)) end
+    if LF.tick >= c.untilTick then
+        crit[id] = nil
+        busy[id] = nil
+        LF.log("CRITICAL #" .. id .. " " .. LF.Units.title(rec) .. " bled out - nobody reached him")
+        kill(b)
+    end
+end
+
+local function stepStable(id, s)
+    local b = LF.Bodies.get(id)
+    local rec = LF.Records.get(id)
+    if not b or b:isDead() or not (rec and rec.alive) then stable[id] = nil; busy[id] = nil; return end
+    if LF.Combat.health(b) < CFG2.stableFloor then addHealth(b, CFG2.stableFloor - LF.Combat.health(b)) end
+    local quiet = #LF.Squad.contactPoints(s.squad, CFG2.quietRelease, 24) == 0
+    if not quiet then s.quietSince = nil
+    else
+        s.quietSince = s.quietSince or LF.tick
+        if LF.tick - s.quietSince > 120 then
+            stable[id] = nil
+            rec.wounded = true
+            LF.log("MEDIC #" .. id .. " " .. LF.Units.title(rec) .. " gets up - out of the fight, wounded")
+            LF.Medic.getUp(id, b)
+        end
+    end
+end
+
+Events.OnTick.Add(function()
+    for id, c in pairs(crit) do LF.guard("critical", stepCrit, id, c) end
+    if LF.tick % 30 == 0 then
+        for id, s in pairs(stable) do LF.guard("stabilised", stepStable, id, s) end
+        for mid, J in pairs(jobs2) do LF.guard("medic job", stepJob, mid, J) end
+    end
+    if LF.tick % 30 ~= 15 then return end
+    -- Medics without a job look for one.
+    for _, squad in pairs(LF.Units.all()) do
+        if squad.kind == "squad" and not squad.teamOnly then
+            if not squad.medicSet then LF.guard("pick medic", LF.Medic.pick, squad) end
+            local mrec = medicOf(squad.id)
+            local mb = mrec and LF.Bodies.get(mrec.id)
+            if mb and not mb:isDead() and not jobs2[mrec.id] and not busy[mrec.id] and LF.tick >= (cooldown[mrec.id] or 0)
+                and LF.Combat.health(mb) >= 35 and not LF.Combat.knockedDown(mb) and not enemyClose(mrec.id, mb, mrec) then
+                local pid, pb, kind = worstCase(mrec, mb)
+                if pid then LF.guard("medic start", startJob, mrec.id, mb, mrec, pid, pb, kind) end
+            end
+        end
+    end
+end)
+
+-- Test: the soldier nearest (x, y) whose squad has a medic takes a killing wound and goes critical.
+function LF.Medic.testCritical(x, y)
+    local best, bd = nil, math.huge
+    for id, b in pairs(LF.Bodies.all()) do
+        local r = LF.Records.get(id)
+        if r and r.alive and not r.medic and r.squad and not crit[id] and not stable[id] and medicOf(r.squad) then
+            local d = LF.dist(b:getX(), b:getY(), x, y)
+            if d < bd then best, bd = b, d end
+        end
+    end
+    if not best then LF.say("No soldier with a squad medic nearby"); return end
+    local id = best:getModData().LF_id
+    local r = LF.Records.get(id)
+    r.critOnce = nil
+    pcall(function() best:getBodyDamage():getBodyPart(BodyPartType.Torso_Upper):damageFromFirearm(60) end)
+    pcall(function() best:getBodyDamage():ReduceGeneralHealth(LF.Combat.health(best)) end)
+    LF.Medic.onHit(best, "shot", "Torso_Upper", true)
+    LF.say(crit[id] and ("#" .. id .. " is down critical - his medic should come") or "Couldn't make him critical (see log)")
+end

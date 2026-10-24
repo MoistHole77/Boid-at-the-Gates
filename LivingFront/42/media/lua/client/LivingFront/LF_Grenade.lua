@@ -149,6 +149,7 @@ local function hurt(g, body)
     end
     for _ = 1, hits do LF.Combat.blastWound(body, PARTS[ZombRand(#PARTS) + 1], severity, impact / hits) end
     if fall ~= nil then LF.Combat.knock(body, g.x, g.y, fall) end
+    if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, body, d <= CFG.lethal and "blastLethal" or "blast") end
     if id and LF.Service and g.by then LF.Service.shot(g.by, id, true) end
 end
 

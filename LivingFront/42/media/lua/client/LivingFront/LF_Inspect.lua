@@ -148,6 +148,15 @@ function LF_InspectWindow:render()
         local g = LF.Grenade.count(rec)
         if g > 0 or rec.rank == "SGT" or rec.rank == "CPL" then text("Grenades: " .. g, 0.8, 0.8, 0.8) end
     end
+    if LF.Medic and LF.Medic.levelOf then
+        if rec.medic then
+            text("Squad medic (" .. LF.Medic.levelOf(rec) .. ") - dressings " .. (rec.kit or 0) .. "/" .. LF.Medic.CFG2.kit
+                .. ", men saved " .. (rec.medicSaves or 0), 0.6, 0.9, 0.6)
+        end
+        local left = LF.Medic.critLeft(rec.id)
+        if left then text("CRITICAL - bleeding out, " .. math.floor(left / 60) .. " s left", 1, 0.4, 0.4)
+        elseif LF.Medic.isStable(rec.id) then text("Stabilised by the medic - out of the fight", 0.9, 0.8, 0.5) end
+    end
     gap()
     -- Traits.
     local s = LF.Service.of(rec)

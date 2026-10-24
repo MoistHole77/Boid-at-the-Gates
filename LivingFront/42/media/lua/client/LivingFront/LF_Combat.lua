@@ -343,6 +343,8 @@ function LF.Combat.resolveShot(shooter, target, gun)
         else
             LF.guard("flinch", flinch, target)
         end
+        -- A killing hit may leave him critical instead, if his squad's medic can get to him.
+        if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, target, "shot", partName) end
         result = "HIT " .. partName
     end
     LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)
@@ -401,6 +403,7 @@ local function strike(self)
     LF.Combat.blastWound(t, part, MELEE.severity, MELEE.impact)
     pcall(function() t:playSound("HitPlayerBlunt") end)
     LF.Combat.knock(t, a:getX(), a:getY(), ZombRand(100) < MELEE.fall)
+    if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, t, "melee", part) end
     if LF.Suppress then LF.Suppress.add(t, 60) end
     local aid, tid = a:getModData().LF_id, t:getModData().LF_id
     if LF.Service and aid and tid then LF.guard("service melee", LF.Service.shot, aid, tid, true) end

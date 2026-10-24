@@ -1944,6 +1944,15 @@ local function updateClear(team, t, squad)
         end
         t.clear, t.order, t.heard, t.moving, t.shifting = nil, "HOLD", "HOLD", nil, nil
         LF.Tactics.holdInside(team, t, squad, C, live)
+        if not t.inside and n > 0 then
+            -- Given up outside: back off from the building before taking cover (not crouching
+            -- under its windows by the door - or wandering in through it).
+            local mx, my = sx / n, sy / n
+            local dx, dy = mx - C.L.cx, my - C.L.cy
+            local l = math.max(0.5, math.sqrt(dx * dx + dy * dy))
+            mx, my = mx + dx / l * 5, my + dy / l * 5
+            t.pos.A.x, t.pos.A.y, t.pos.B.x, t.pos.B.y = mx, my, mx, my
+        end
     end
     if #live == 0 then
         -- (A man knocked down and about to be dragged out isn't lost yet.)
@@ -2233,6 +2242,11 @@ Events.OnInitGlobalModData.Add(function() casualties, casualtyCount = {}, 0 end)
 local function inFile(C, id)
     for _, rid in ipairs(C.file) do if rid == id then return true end end
     return false
+end
+
+-- He's gone critical instead (LF_Medic): he isn't a casualty to drag.
+function LF.Tactics.dropCasualty(id)
+    if casualties[id] then casualties[id] = nil; casualtyCount = casualtyCount - 1 end
 end
 
 -- Knocked over backward (LF_Combat): is he one of a clearing team? Then he stays down.

@@ -174,6 +174,7 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
             if ms.leader then team.leader = rec.id end
         end
     end
+    if not teamOnly and LF.Medic and LF.Medic.pick then LF.guard("pick medic", LF.Medic.pick, squad) end
     LF.log("UNITS created " .. squad.name .. " (#" .. squad.id .. ") at " .. math.floor(x) .. "," .. math.floor(y)
         .. " facing " .. string.format("%.1f,%.1f", fx, fy) .. ", led by "
         .. LF.Units.title(LF.Records.get(LF.Units.commander(squad))))

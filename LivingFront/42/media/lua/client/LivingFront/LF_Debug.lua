@@ -495,6 +495,8 @@ local function onMenu(playerNum, context, worldObjects, test)
     local tests = sub(main, "Tests")
     tests:addOption("Knock over the nearest man clearing a building (he stays down; his team drags him out)", nil,
         function() LF.Tactics.testKnockBack(x + 0.5, y + 0.5) end)
+    tests:addOption("Wound the nearest soldier critically (his squad's medic comes for him)", nil,
+        function() LF.Medic.testCritical(x + 0.5, y + 0.5) end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)

@@ -200,6 +200,16 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
     end
     for i = #fireCands, n + 1, -1 do fireCands[i] = nil end
     table.sort(fireCands, byFireScore)
+    -- Never into the building the enemy is in (unless he's in it already - clearing it): a man
+    -- looking for cover outside its door doesn't wander in among the defenders.
+    local tsq = cell:getGridSquare(math.floor(tx), math.floor(ty), bz)
+    local tb = tsq and tsq:getBuilding()
+    local enemyB = tb and tb:getID() or nil
+    if enemyB then
+        local msq = cell:getGridSquare(bx, by, bz)
+        local mb = msq and msq:getBuilding()
+        if mb and mb:getID() == enemyB then enemyB = nil end
+    end
     -- The best spot he can walk straight to; failing that, the best one behind a fence or wall.
     local fallX, fallY, fallQ = nil, nil, nil
     for i = 1, math.min(n, FIRE_CHECKS) do
@@ -207,7 +217,8 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
         local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
         if (q == LOW or (loose and q == HIGH)) and not isTaken(c.x, c.y, bz, id) then
             local sq = cell:getGridSquare(c.x, c.y, bz)
-            if sq and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
+            local sb = sq and enemyB and sq:getBuilding()
+            if sq and not (sb and sb:getID() == enemyB) and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
                 if LF.Cover.crossings(bx, by, c.x, c.y, bz, 1) == 0 then return c.x, c.y, bz, q end
                 if not fallX then fallX, fallY, fallQ = c.x, c.y, q end
             end

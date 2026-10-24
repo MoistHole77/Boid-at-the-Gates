@@ -78,6 +78,7 @@ function LF.Bodies.spawn(rec)
         return true
     end)
     local wornCount = LF.Appearance.dress(body, rec)
+    if rec.medic and LF.Medic and LF.Medic.equip then LF.guard("medic kit", LF.Medic.equip, body, rec) end
 
     setStat(body, "HUNGER", rec.hunger)
     setStat(body, "THIRST", rec.thirst)
