@@ -8,3 +8,4 @@ desktop.ini
 # logs pulled for debugging
 *.log
 console*.txt
+dist/

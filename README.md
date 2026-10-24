@@ -41,51 +41,80 @@ Pure Lua. No Java, no ZombieBuddy.
 
 The player is currently neutral: NPCs ignore you.
 
-## Install (development)
+## Install
 
-Copy the `LivingFront` folder into `C:\Users\<you>\Zomboid\mods\` and enable **Living Front**
-in the game's Mods menu. Use a throwaway save, ideally with zombies turned off in sandbox settings.
+Build the release copy and install that:
 
-Testing tools are in the right-click menu under **Living Front (debug)**, including
-**Combat / brains → Skirmish**. Every decision, shot and death is logged to
-`Zomboid\console.txt` with the `[LivingFront]` tag.
+    python3 tools/build.py        # writes dist/LivingFront
 
-## Code layout
+Copy `dist/LivingFront` into `C:\Users\<you>\Zomboid\mods\` and enable **Living Front** in the
+game's Mods menu. Use a throwaway save, ideally with zombies turned off in sandbox settings.
+(The `LivingFront` source folder also runs as-is; the build only strips comments and indentation
+to make the download about a third smaller. Line numbers are kept, so errors in `console.txt`
+point at the same line of the source.)
 
-`LivingFront/42/media/lua/client/LivingFront/`
+Testing tools are in the right-click menu under **Living Front (debug)**. Every decision, shot
+and death is logged to `Zomboid\console.txt` with the `[LivingFront]` tag.
 
-| File | Role |
-|------|------|
-| `LF_Core.lua` | Config, factions, hostility table, shared helpers |
-| `LF_Records.lua` | NPC records in global ModData (the single source of truth) |
-| `LF_Appearance.lua` | Builds a consistent person (sex, skin, hair, clothing) from a record |
-| `LF_Bodies.lua` | Spawns bodies near the player, despawns far ones, draws them, detects deaths |
-| `LF_Sim.lua` | Off-screen simulation (needs tick while an NPC has no body) |
-| `LF_Combat.lua` | Gunfire: turning, aiming stance, hit resolution, damage, gunfire memory |
-| `LF_ShootAction.lua` | Timed actions: aim + fire (with target tracking), flinch |
-| `LF_MoveAction.lua` | Walk / run / sprint to a square (the timed action that makes running work) |
-| `LF_Sense.lua` | Perception: grid of live bodies, capped line-of-sight checks |
-| `LF_Squad.lua` | Squad knowledge (contacts, recognised enemy leaders) and formation slots |
-| `LF_Posture.lua` | NPC crouch/stand, immune to the player's crouch key |
-| `LF_Names.lua` | German and Russian names |
-| `LF_Suppress.lua` | Suppression: near misses pin soldiers, slowing and spoiling their fire |
-| `LF_Tactics.lua` | Unit tactics: commander intent, corporal bounding drills, shouted orders, the defensive perimeter |
-| `LF_Stance.lua` | Unit stances (offensive / defensive) and their settings |
-| `LF_Building.lua` | Building layouts: inside squares, windows and doors by wall |
-| `LF_March.lua` | Patrolling: road routes in legs, formations (ranger file, tactical column, wedge) chosen from the ground, halts |
-| `LF_Objective.lua` | Objectives: take / hold tasks run as a sequence of the drills above; who holds it; labels |
-| `LF_Watch.lua` | Keeps the real player visible (and logs his render state) |
-| `LF_Aid.lua` | Self-aid: wounded soldiers bandage their bleeding wounds |
-| `LF_Weapons.lua` | Weapon profiles (who carries what, fire rate, bursts, accuracy, damage), magazines, reloading |
-| `LF_Units.lua` | Squads and fire teams: structure, ranks, formation spawning, unit report |
-| `LF_Perf.lua` | Stress-test logging: frame rate and the mod's own cost per frame |
-| `LF_Cover.lua` | Cover quality per square, firing positions, hiding spots, cover effect on incoming fire |
-| `LF_Brain.lua` | Perceive / decide / act loop per NPC |
-| `LF_Debug.lua` | Right-click debug menu |
+## Code layout (for contributors)
 
-`LivingFront/42/media/AnimSets/player/actions/` registers the game's own rifle aim, rifle fire,
-bolt-rack, magazine-reload and shot-reaction clips as action animations (`LF_AimRifle`,
-`LF_FireRifle`, `LF_RackBolt`, `LF_Reload`, `LF_HitShot`).
+`LivingFront/42/media/lua/client/LivingFront/`, in folders that follow the order things are
+built on each other: a file only depends on files in its own folder or the ones above it.
+
+| Folder | File | Role |
+|--------|------|------|
+| **Core** - settings and saved data | `LF_Core` | Config, factions, hostility, shared helpers, logging |
+| | `LF_Records` | NPC records in global ModData (the single source of truth) |
+| | `LF_Names` | German and Russian names |
+| | `LF_Perf` | Stress-test logging: frame rate and the mod's own cost |
+| **World** - bodies and what they can see | `LF_Bodies` | Spawns bodies near the player, despawns far ones, draws them, deaths |
+| | `LF_Appearance` | A consistent person (sex, skin, hair, clothing) from a record |
+| | `LF_Sense` | Perception: grid of live bodies, capped line-of-sight checks |
+| | `LF_Building` | Building layouts: inside squares, windows and doors by wall |
+| | `LF_Cover` | Cover quality, firing positions, hiding spots, cover against incoming fire |
+| | `LF_Watch` | Keeps the real player visible |
+| | `LF_Sim` | Off-screen simulation |
+| **Soldier** - one man | `LF_Posture` | Crouch / stand, immune to the player's crouch key |
+| | `LF_MoveAction` | Walk / run / sprint / limp; stepping round other men |
+| | `LF_ShootAction` | Aim + fire, flinch and hold-aim actions |
+| | `LF_Weapons` | Weapon profiles, magazines, reloading |
+| | `LF_Combat` | Gunfire: aiming, hit resolution, damage, knock-downs, melee |
+| | `LF_Suppress` | Near misses pin soldiers |
+| | `LF_Aid` | Self-aid: bandaging |
+| | `LF_Idle` | What a man does standing by (and the wounded nursing their wounds) |
+| | `LF_Brain` | Perceive / decide / act loop per NPC |
+| | `LF_Service` | Service records and earned traits |
+| **Units** - squads and teams | `LF_Units` | Squads and fire teams: structure, ranks, spawning |
+| | `LF_Squad` | Shared contacts, formation slots |
+| | `LF_Stance` | Offensive / defensive / patrolling settings |
+| | `LF_Join` | Idle teams joining a unit given a task |
+| | `LF_March` | Patrolling: routes, formations, halts |
+| | `LF_Objective` | Take / hold objectives |
+| **Tactics** - what a unit does in a fight | `LF_Tactics` | Shared core: settings, shouts, placement, commander intent |
+| | `LF_Manoeuvre` | Bounding drills, repositioning, flanking, a corporal on his own |
+| | `LF_Defence` | All-round defence, holding a building |
+| | `LF_Clearing` | Clearing a building room by room; a man knocked down inside dragged out |
+| | `LF_Command` | Stance choice, standing by, the squad update loop |
+| **Specialists** - special roles | `LF_Grenade` | Grenades |
+| | `LF_Downed` | Men down on their back, getting up, being dragged |
+| | `LF_Medic` | The squad medic and critical wounds |
+| **UI** | `LF_Inspect` | The inspect window |
+| | `LF_Debug` | Right-click debug menu (tests) |
+
+Conventions:
+
+* Each file starts with a header comment saying what it does, then its `require`s, then a
+  `CFG` table of its settings. Files talk to each other through the `LF.<Module>` tables;
+  nothing else is global except the timed-action classes (`LF_*Action`).
+* Require paths include the folder: `require "LivingFront/World/LF_Cover"`.
+* The tactics files share their internals through `LF.Tactics.I`: each one borrows names at its
+  top and lends its own at the bottom. Load order is core -> manoeuvre -> defence -> clearing
+  -> command; `require "LivingFront/Tactics/LF_Command"` loads them all.
+* Tables shared this way are reset in place (never replaced), so every file keeps seeing the
+  same table.
+* Animations: `LivingFront/42/media/AnimSets/player/{actions,idle,movement}/`. Each node is
+  switched on by an `LF...` animation variable that the Lua sets. A new or changed XML needs
+  the game restarted, not just a reload.
 
 ## Engine findings (Build 42.21)
 
