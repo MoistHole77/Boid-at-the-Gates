@@ -359,10 +359,96 @@ function LF.Combat.resolveShot(shooter, target, gun)
     return true
 end
 
+-- ---- hand to hand ------------------------------------------------------------------------------
+--
+-- Empty and the enemy right on top of him (within 2 tiles): no standing there reloading in his
+-- face - he goes for him with the rifle butt (the game's butt-strike clip, LF_ButtStrike). A hit
+-- (65% close in, 40% at arm's length) is a heavy blow - the head or body - that staggers him, or
+-- knocks him down a third of the time. A reload already under way is dropped for it. When the
+-- enemy is out of reach again, he reloads as usual.
+
+local MELEE = { range = 2.0, near = 1.3, hitNear = 65, hitFar = 40, strikeAt = 16, ticks = 50,
+                fall = 33, severity = 30, impact = 14 }
+LF.Combat.MELEE = MELEE
+local MELEE_PARTS = { "Head", "Torso_Upper", "Torso_Upper", "Torso_Lower", "UpperArm_L", "UpperArm_R" }
+
+LF_MeleeAction = ISBaseTimedAction:derive("LF_MeleeAction")
+function LF_MeleeAction:isValid() return not self.character:isDead() end
+function LF_MeleeAction:waitToStart() return false end
+function LF_MeleeAction:start()
+    self.character:faceThisObject(self.target)
+    self:setActionAnim("LF_ButtStrike")
+    if self.gun then self:setOverrideHandModels(self.gun, nil) end
+    pcall(function() self.character:playSound(self.gun:getSwingSound()) end)
+    self.hitAt = LF.tick + MELEE.strikeAt
+end
+local function strike(self)
+    if self.done then return end
+    self.done = true
+    local a, t = self.character, self.target
+    if t:isDead() or math.abs(t:getZ() - a:getZ()) > 0.5 then return end
+    local d = LF.dist(a:getX(), a:getY(), t:getX(), t:getY())
+    if d > MELEE.range + 0.3 then
+        LF.log("MELEE #" .. tostring(a:getModData().LF_id) .. " swings and misses (out of reach)")
+        return
+    end
+    local chance = d <= MELEE.near and MELEE.hitNear or MELEE.hitFar
+    if ZombRand(100) >= chance then
+        LF.log("MELEE #" .. tostring(a:getModData().LF_id) .. " -> #" .. tostring(t:getModData().LF_id) .. " miss")
+        return
+    end
+    local part = MELEE_PARTS[ZombRand(#MELEE_PARTS) + 1]
+    LF.Combat.blastWound(t, part, MELEE.severity, MELEE.impact)
+    pcall(function() t:playSound("HitPlayerBlunt") end)
+    LF.Combat.knock(t, a:getX(), a:getY(), ZombRand(100) < MELEE.fall)
+    if LF.Suppress then LF.Suppress.add(t, 60) end
+    local aid, tid = a:getModData().LF_id, t:getModData().LF_id
+    if LF.Service and aid and tid then LF.guard("service melee", LF.Service.shot, aid, tid, true) end
+    LF.log("MELEE #" .. tostring(aid) .. " -> #" .. tostring(tid) .. " hits " .. part .. " with the rifle butt")
+end
+function LF_MeleeAction:update()
+    if self.hitAt and LF.tick >= self.hitAt then LF.guard("melee strike", strike, self) end
+end
+function LF_MeleeAction:stop() ISBaseTimedAction.stop(self) end
+function LF_MeleeAction:perform()
+    LF.guard("melee strike", strike, self)
+    ISBaseTimedAction.perform(self)
+end
+function LF_MeleeAction:new(character, target, gun)
+    local o = ISBaseTimedAction.new(self, character)
+    o.target, o.gun = target, gun
+    o.maxTime = MELEE.ticks
+    o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false
+    o.ignoreHandsWounds = true
+    return o
+end
+
+-- Is the enemy close enough to go for him hand to hand?
+function LF.Combat.inReach(a, t)
+    return math.abs(t:getZ() - a:getZ()) < 0.5 and LF.dist(a:getX(), a:getY(), t:getX(), t:getY()) <= MELEE.range
+end
+
+-- Empty, enemy in reach: strike (dropping a reload in progress). Returns true if he did.
+local function meleeIfEmpty(shooter, target)
+    if not target or LF.Weapons.rounds(shooter) > 0 or not LF.Combat.inReach(shooter, target) then return false end
+    local q = ISTimedActionQueue.getTimedActionQueue(shooter)
+    local a = q and q.queue and q.queue[1]
+    if a and a.Type == "LF_MeleeAction" then return true end
+    if a and a.Type ~= "LF_ReloadAction" then return false end     -- (busy with something else)
+    if a then
+        ISTimedActionQueue.clear(shooter)
+        LF.log("MELEE #" .. tostring(shooter:getModData().LF_id) .. " drops his reload - enemy in reach")
+    end
+    if LF.Posture and LF.Posture.crouched(shooter) then LF.Posture.set(shooter, false) end
+    ISTimedActionQueue.add(LF_MeleeAction:new(shooter, target, LF.Combat.arm(shooter)))
+    return true
+end
+
 -- One engagement step, called every tick while an NPC is fighting a target.
 -- state is a per-shooter table owned by the caller ({} to start).
 -- opts (optional): aimAnim / fireAnim to use (e.g. crouched clips).
 function LF.Combat.engage(shooter, target, state, opts)
+    if LF.guard("melee", meleeIfEmpty, shooter, target) then return end
     if shooter:isPerformingAnAction() then return end
     if LF.Weapons.rounds(shooter) <= 0 then
         LF.Weapons.reload(shooter, LF.Combat.arm(shooter), "empty")

@@ -1847,6 +1847,24 @@ end
 
 -- Where a man of a clearing team goes: "file", x, y, z, facePoint, gait - or nil if he isn't in
 -- the file (he then does what he would otherwise).
+-- Empty, or reloading right now.
+local function emptyGun(b)
+    if LF.Weapons.rounds(b) <= 0 then return true end
+    local q = ISTimedActionQueue.getTimedActionQueue(b)
+    local a = q and q.queue and q.queue[1]
+    return a ~= nil and a.Type == "LF_ReloadAction"
+end
+
+-- A room's been called clear: anyone at half a magazine or less tops up before the next.
+local function topUpFile(file)
+    for _, rid in ipairs(file) do
+        local b = LF.Bodies.get(rid)
+        if b and not b:isPerformingAnAction() and LF.Weapons.rounds(b) <= LF.Weapons.profileOf(b).clip * 0.5 then
+            LF.Weapons.reload(b, LF.Combat.arm(b), "between rooms")
+        end
+    end
+end
+
 function LF.Tactics.clearPlace(C, rec)
     if C.halted then
         -- A man down: everyone holds where he is until he has been dragged clear.
@@ -1861,6 +1879,14 @@ function LF.Tactics.clearPlace(C, rec)
     for i, rid in ipairs(C.file) do if rid == rec.id then idx = i; break end end
     if not idx then return nil end
     local z = C.L.z
+    if C.waitReload == rec.id then
+        -- Reloading before his turn: he stays where he is.
+        local body = LF.Bodies.get(rec.id)
+        C.hold = C.hold or {}
+        local h = C.hold[rec.id]
+        if not h and body then h = { x = body:getX(), y = body:getY() }; C.hold[rec.id] = h end
+        if h then return "file", h.x, h.y, z, C.face, "walk" end
+    end
     if (C.phase == "go" or C.phase == "in") and idx <= C.next then
         local tg = C.targets[rec.id]
         local f = C.faces[rec.id]
@@ -2045,6 +2071,7 @@ local function updateClear(team, t, squad)
                     and planRoom(squad, team, C.L, live, LF.tick, rooms, { x = lb:getX(), y = lb:getY() })
                 if nextC then
                     nextC.roomCount = count + 1
+                    topUpFile(nextC.file)
                     t.clear = nextC
                     LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": #" .. lead .. " calls the room clear, on to the next room ("
                         .. nextC.roomCount .. ")")
@@ -2070,6 +2097,37 @@ local function updateClear(team, t, squad)
             through = b and LF.Building.isInside(C.L, b:getX(), b:getY())
                 and LF.dist(b:getX(), b:getY(), C.door.x + 0.5, C.door.y + 0.5) >= 1.5
         end
+        -- Nobody goes into a room on an empty magazine: a loaded man behind him takes his turn,
+        -- or (none) he holds where he is and reloads first.
+        if r and b and fit(r) and not through and emptyGun(b) then
+            local swapped = false
+            for j = C.next + 1, #C.file do
+                local bj = LF.Bodies.get(C.file[j])
+                local rj = LF.Records.get(C.file[j])
+                if bj and rj and fit(rj) and not emptyGun(bj) then
+                    C.file[C.next], C.file[j] = C.file[j], C.file[C.next]
+                    LF.log("CLEAR " .. team.name .. ": #" .. rid .. " is empty - #" .. C.file[C.next] .. " goes in first")
+                    if not C.saidSwap then
+                        C.saidSwap = true
+                        LF.Tactics.shout(rid, "I'm empty - you go!")
+                    end
+                    C.manAt, swapped = LF.tick, true
+                    break
+                end
+            end
+            if not swapped then
+                if C.waitReload ~= rid then
+                    C.waitReload, C.waitSince = rid, LF.tick
+                    LF.log("CLEAR " .. team.name .. ": #" .. rid .. " is empty - reloads before he goes in")
+                    LF.Tactics.shout(rid, "Reloading!")
+                end
+                if not b:isPerformingAnAction() then LF.Weapons.reload(b, LF.Combat.arm(b), "before going in") end
+                C.manAt = LF.tick
+                if LF.tick - C.waitSince < 900 then return true end
+            end
+        elseif C.waitReload == rid then
+            C.waitReload = nil
+        end
         if not (r and fit(r) and b) or through or LF.tick - C.manAt > CFG.clearManTimeout then
             C.next, C.manAt = C.next + 1, LF.tick
             if C.next > #C.file then C.phase, C.phaseAt = "in", LF.tick end
@@ -2089,6 +2147,7 @@ local function updateClear(team, t, squad)
                 local nextC = count < CFG.clearRooms and planRoom(squad, team, C.L, live, LF.tick, rooms)
                 if nextC then
                     nextC.roomCount = count + 1
+                    topUpFile(nextC.file)
                     t.clear = nextC
                     LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": room clear, on to the next room (" .. nextC.roomCount .. ")")
                     if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "Room clear - next room! Go!") end
