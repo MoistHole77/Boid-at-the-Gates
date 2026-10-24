@@ -53,7 +53,13 @@ local CFG = {
     range = 30,             -- aimed fire at men he can see this close
     areaRange = 34,         -- area fire at a last-known position this close
     burstTicks = 240,       -- ~4 s bursts ...
-    burstJitter = 40,       -- ... give or take ~0.7 s
+    burstJitter = 40,       -- ... give or take ~0.7 s (never under 3 s or over 5 s)
+    burstMin = 180, burstMax = 300,
+    minBurstSecs = 3,       -- a belt / pan with less than 3 s of firing left is changed first
+    driftTiles = 1.6,       -- the gun stays set up unless he moves this far from where he set it
+    atGun = 1.5,            -- the gunner counts as on the gun's spot this close to it
+    settleTicks = 360,      -- en route to the spot this long with the enemy in sight: set up where he is
+    windowArc = 0.3,        -- a gun in a window fires only out of it (cosine off the window's facing)
     adjust = 45,            -- after every burst, relaying the gun (~0.75 s at least)
     soloPause = { 90, 180 },-- a gun on its own: ~1.5-3 s between bursts
     coverPause = 50,        -- covering for a gun that is being worked on: shorter
@@ -183,6 +189,12 @@ local function upkeep(team)
         local new = nil
         if ar and fit(ar) and LF.Bodies.get(ar.id) then new, ar = ar, nil else new = takeFrom(rest) end
         if new then
+            -- Holding a building: he takes the gun's window (and the man he replaces his old post).
+            local squad = LF.Units.get(team.squad)
+            local S = squad and LF.Tactics.state(squad)
+            if gr and S and S.posts and S.posts[gr.id] then
+                S.posts[gr.id], S.posts[new.id] = S.posts[new.id], S.posts[gr.id]
+            end
             if gr then gr.mgRole, gr.weapon = "ammo", nil end      -- (if he comes back, with a rifle)
             new.mgRole, new.weapon = "gunner", LF.Weapons.MG_OF[team.faction]
             arm(new)
@@ -195,6 +207,11 @@ local function upkeep(team)
     if gr and not (ar and fit(ar)) then
         local new = takeFrom(rest)
         if new then
+            local squad = LF.Units.get(team.squad)
+            local S = squad and LF.Tactics.state(squad)
+            if ar and S and S.posts and S.posts[ar.id] and (S.posts[ar.id].kind == "assist") then
+                S.posts[ar.id], S.posts[new.id] = S.posts[new.id], S.posts[ar.id]
+            end
             if ar then ar.mgRole = "ammo" end
             new.mgRole = "assistant"
             g.aspot = nil
@@ -283,6 +300,7 @@ end
 local zoneCtx = {}
 local function zoneOne(e, _dsq, ctx)
     if e.body == ctx.target or e.body:isDead() or not LF.isHostile(ctx.faction, e.rec.faction) then return end
+    if LF.Medic and LF.Medic.isCritical(e.id or e.rec.id) then return end     -- (down, calling for the medic)
     local mod = LF.Combat.targetModifier and (LF.guard("cover modifier", LF.Combat.targetModifier, ctx.shooter, e.body) or 1) or 1
     if ZombRand(1000) < ctx.P.zoneHit * 10 * mod then
         LF.Combat.applyHit(ctx.shooter, e.body, ctx.P, ctx.dist)
@@ -339,7 +357,8 @@ function LF_MGBurstAction:start()
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
     self.interval = 3600 / self.profile.rpm
     self.nextRound = LF.tick
-    self.endAt = LF.tick + CFG.burstTicks + ZombRand(2 * CFG.burstJitter + 1) - CFG.burstJitter
+    local len = CFG.burstTicks + ZombRand(2 * CFG.burstJitter + 1) - CFG.burstJitter
+    self.endAt = LF.tick + math.max(CFG.burstMin, math.min(CFG.burstMax, len))
     self.g.firing = true
 end
 function LF_MGBurstAction:update()
@@ -443,19 +462,22 @@ local function startService(g, kind, gb, gr, team, stand)
     end
     local ticks = kind == "belt" and P.reload or P.barrel
     local who, wb = gr, gb
-    local ar = g.assistId and LF.Records.get(g.assistId)
+    local _, ar = crew(team)
     local ab = ar and LF.Bodies.get(ar.id)
-    if ar and fit(ar) and ab and LF.dist(ab:getX(), ab:getY(), gb:getX(), gb:getY()) <= CFG.assistReach and not busyOther(ab) then
-        who, wb = ar, ab
-    else
-        ticks = ticks * CFG.gunnerServeMul
-    end
+    local why = nil
+    if not ar then why = "no assistant left"
+    elseif not ab then why = "assistant not here"
+    elseif not fit(ar) then why = "assistant hurt"
+    elseif LF.dist(ab:getX(), ab:getY(), gb:getX(), gb:getY()) > CFG.assistReach then
+        why = "assistant " .. string.format("%.1f", LF.dist(ab:getX(), ab:getY(), gb:getX(), gb:getY())) .. " tiles away"
+    elseif busyOther(ab) then why = "assistant busy" end
+    if not why then who, wb = ar, ab else ticks = ticks * CFG.gunnerServeMul end
     if wb:isPerformingAnAction() then ISTimedActionQueue.clear(wb) end   -- (the assistant drops his rifle shot)
     g.service = { kind = kind, by = who.id, since = LF.tick, ticks = ticks }
     ISTimedActionQueue.add(LF_MGServeAction:new(wb, g, kind, ticks, gb, gb:getPrimaryHandItem(), who == gr and stand))
     LF.Tactics.shout(who.id, (SERVE_WORDS[kind] or {})[g.faction] or "Reloading!")
     LF.log("MG " .. team.name .. ": " .. title(who) .. (kind == "belt" and (P.name == "DP-27" and " fits a new pan" or " feeds a new belt")
-        or " changes the barrel") .. (who == gr and " himself (no assistant at the gun)" or "") .. ", heat " .. fmt(g.heat))
+        or " changes the barrel") .. (who == gr and (" himself (" .. tostring(why) .. ")") or "") .. ", heat " .. fmt(g.heat))
 end
 
 -- One fire step for a gunner (from the brain, every tick while he's fighting): target is a body
@@ -472,7 +494,9 @@ function LF.MG.fire(body, rec, m, target, area)
     g.x, g.y, g.z = body:getX(), body:getY(), body:getZ()
     if body:isPerformingAnAction() then return end
     local stand = m.cover ~= nil and m.cover.stand == true and not LF.Posture.crouched(body)
-    if not g.set or LF.dist(body:getX(), body:getY(), g.setX or -1000, g.setY or -1000) > 0.8 then
+    -- (Not the exact square: a man jostled half a tile by the man beside him hasn't moved the
+    -- gun - up to 0.43 that set it up again and again without ever firing.)
+    if not g.set or LF.dist(body:getX(), body:getY(), g.setX or -1000, g.setY or -1000) > CFG.driftTiles then
         g.set = false
         ISTimedActionQueue.add(LF_MGSetupAction:new(body, g, LF.Combat.arm(body), stand, target))
         return
@@ -487,7 +511,9 @@ function LF.MG.fire(body, rec, m, target, area)
             return
         end
     end
-    if g.belt <= 0 then startService(g, "belt", body, rec, team, stand); return end
+    -- Less than ~3 s of firing left in the belt (a DP-27's pan, after one burst): change it now
+    -- rather than fire a short stub of a burst.
+    if g.belt <= 0 or g.belt < P.rpm / 60 * CFG.minBurstSecs then startService(g, "belt", body, rec, team, stand); return end
     local h = heatNow(g)
     if P.barrelAt and h >= P.barrelAt then startService(g, "barrel", body, rec, team, stand); return end
     if P.coolAt and h >= P.coolAt then startService(g, "cool", body, rec, team, stand); return end
@@ -601,6 +627,39 @@ local function clearingPoint(squad)
     return nil
 end
 
+-- A gunner posted at a window: the way the window faces (unit vector), or nil.
+local function windowDir(rec)
+    local squad = rec.squad and LF.Units.get(rec.squad)
+    local S = squad and LF.Tactics.state(squad)
+    local p = S and S.posts and S.posts[rec.id]
+    if not (p and p.kind == "window" and p.wall) then return nil end
+    local d = LF.Building.WALL_DIR[p.wall]
+    return d[1], d[2], p
+end
+
+-- May the gun fire at (x, y)? From a window, only out of it - never back across the room he's
+-- in (up to 0.43 a gun at an east window could be given an enemy to the south-west and fired
+-- through the house). Anywhere else, anything.
+function LF.MG.gunCovers(rec, x, y)
+    local dx, dy, p = windowDir(rec)
+    if not dx then return true end
+    local vx, vy = x - (p.x + 0.5), y - (p.y + 0.5)
+    local d = math.sqrt(vx * vx + vy * vy)
+    if d <= 4 then return true end
+    return (vx * dx + vy * dy) / d >= CFG.windowArc
+end
+
+-- The gunner has been held up on the way to the gun's spot with the enemy in front of him: the gun
+-- goes where he is.
+function LF.MG.settleHere(rec, body)
+    local team = rec.team and LF.Units.get(rec.team)
+    if not (team and team.mg) then return end
+    local g = gunOf(team)
+    g.spot = { x = math.floor(body:getX()), y = math.floor(body:getY()), z = math.floor(body:getZ()) }
+    g.pickedAt, g.aspot = LF.tick, nil
+    LF.log("MG " .. team.name .. ": held up on the way - setting the gun up where he is")
+end
+
 -- Called with a crewman's normal placement; returns his placement on the gun: "gun" (the gunner,
 -- on the gun's spot) or "assist" (beside it). Everyone else, and anything that isn't a fighting
 -- position (moving, marching, clearing), passes straight through.
@@ -619,10 +678,17 @@ function LF.MG.place(rec, role, x, y, z, point, watching, coverPoint, stand, win
     if rec.mgRole == "gunner" then
         g.gunnerId = rec.id
         if role == "post" then
-            -- In a building: the window he was given (LF.MG.dealPosts).
+            -- In a building: the window he was given (LF.MG.dealPosts). Only what's out of it:
+            -- anything else, he watches out of it.
             g.spot = g.spot or {}
             g.spot.x, g.spot.y, g.spot.z = math.floor(x), math.floor(y), math.floor(z)
             g.stand = stand
+            local dx, dy = windowDir(rec)
+            if dx and point and not watching and not LF.MG.gunCovers(rec, point.x, point.y) then
+                g.watchPt = g.watchPt or LF.Tactics.point(0, 0, 0)
+                g.watchPt.x, g.watchPt.y, g.watchPt.z = x + dx * 15, y + dy * 15, z
+                point, watching = g.watchPt, true
+            end
             return "gun", x, y, z, point, watching, coverPoint, stand, win, shove
         end
         g.stand = false
@@ -739,7 +805,7 @@ end
 function LF.MG.dealPosts(squad, sq, L, walls, posts, wallPosts)
     if not squad.mg then return end
     local WALL_DIR = LF.Building.WALL_DIR
-    local used = {}
+    local cell = getCell()
     local function holderOf(x, y)
         for rid, p in pairs(posts) do if p.x == x and p.y == y then return rid end end
         return nil
@@ -750,21 +816,62 @@ function LF.MG.dealPosts(squad, sq, L, walls, posts, wallPosts)
         if h then posts[h] = posts[rid] end
         posts[rid] = p
     end
+    -- How much road a window looks out on: road squares out to ~24 tiles in a fan out of it that
+    -- can be seen from it.
+    local RAYS = { -40, -20, 0, 20, 40 }
+    local function roadView(p)
+        local d = WALL_DIR[p.wall]
+        local n = 0
+        for _, deg in ipairs(RAYS) do
+            local a = math.rad(deg)
+            local rx, ry = d[1] * math.cos(a) - d[2] * math.sin(a), d[1] * math.sin(a) + d[2] * math.cos(a)
+            for r = 3, 24, 3 do
+                local x, y = math.floor(p.x + 0.5 + rx * r), math.floor(p.y + 0.5 + ry * r)
+                local q = cell:getGridSquare(x, y, L.z)
+                if q and LF.March.isRoad(q) and LF.Cover.canSeeFrom(p.x, p.y, L.z, LF.Tactics.point(x + 0.5, y + 0.5, L.z)) then
+                    n = n + 1
+                end
+            end
+        end
+        return n
+    end
+    -- Every window, scored: facing the enemy first (the front wall, then the walls either side),
+    -- then the most road in view.
+    local WALL_SCORE = { [walls[1]] = 6, [walls[2]] = 3, [walls[4]] = 3, [walls[3]] = 0 }
+    local cands = {}
+    for w = 1, 4 do
+        for _, p in ipairs(wallPosts(L, w)) do
+            if p.kind == "window" then
+                local rv = LF.guard("road view", roadView, p) or 0
+                cands[#cands + 1] = { p = p, road = rv, score = (WALL_SCORE[w] or 0) + math.min(rv, 12) }
+            end
+        end
+    end
+    table.sort(cands, function(a, b) return a.score > b.score end)
+    local taken = {}
     local k = 0
     for _, tid in ipairs(squad.teams) do
         local team = LF.Units.get(tid)
         if team and team.mg then
             k = k + 1
             local gr, ar = crew(team)
-            local win = nil
-            for _, w in ipairs(k == 1 and { walls[1] } or { walls[4], walls[2], walls[1] }) do
-                for _, p in ipairs(wallPosts(L, w)) do
-                    if p.kind == "window" and not used[p.x .. "," .. p.y] then win = p; break end
+            -- The best window left - the second gun not right beside the first, and on another
+            -- wall if one is as good.
+            local pick, best = nil, -math.huge
+            for _, c in ipairs(cands) do
+                local ok = true
+                for _, t in ipairs(taken) do
+                    if LF.dist(c.p.x, c.p.y, t.p.x, t.p.y) < 3 then ok = false end
                 end
-                if win then break end
+                if ok then
+                    local sc = c.score
+                    for _, t in ipairs(taken) do if t.p.wall ~= c.p.wall then sc = sc + 2 end end
+                    if sc > best then pick, best = c, sc end
+                end
             end
-            if gr and win then
-                used[win.x .. "," .. win.y] = true
+            if gr and pick then
+                taken[#taken + 1] = pick
+                local win = pick.p
                 swap(gr.id, win)
                 if ar then
                     local d = WALL_DIR[win.wall]
@@ -774,7 +881,9 @@ function LF.MG.dealPosts(squad, sq, L, walls, posts, wallPosts)
                     end
                 end
                 LF.log("MG " .. team.name .. " of " .. squad.name .. " takes the window at " .. win.x .. "," .. win.y
-                    .. " (" .. LF.Building.WALL_NAME[win.wall] .. " wall)")
+                    .. " (" .. LF.Building.WALL_NAME[win.wall] .. " wall, " .. pick.road .. " road squares in view)")
+            elseif gr then
+                LF.log("MG " .. team.name .. " of " .. squad.name .. ": no window left for the gun")
             end
         end
     end

@@ -73,7 +73,13 @@ local function startBound(team, t, el, dx, dy, tx, ty, contact)
     -- Already (nearly) there: no rush - the pair just gets down, and the other goes next.
     if LF.dist(mine.x, mine.y, nx, ny) < 2 then t.boundMin, t.settleAt = 0, LF.tick end
     mine.x, mine.y = nx, ny
-    if team.leader then
+    -- (No orders shouted to a pair with nobody left in it to move.)
+    local anyone = false
+    for _, rid in ipairs(team.members) do
+        local r = LF.Records.get(rid)
+        if r and r.team == team.id and r.element == el and fit(r) and LF.Bodies.get(rid) then anyone = true end
+    end
+    if team.leader and anyone then
         LF.Tactics.shout(team.leader, ELEMENT_NAME[el] .. ", move! " .. ELEMENT_NAME[OTHER[el]] .. ", cover!")
     end
 end
@@ -639,7 +645,10 @@ local function passOrders(squad, sq, cmd)
             if t.clear or t.inside then
                 -- busy clearing a building, or holding the part of it it has cleared (on its own)
             elseif cpl and not cpl:isDead() then
-                if cmd and sq.intent and LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
+                -- (A corporal on his own comes back under his commander only well inside earshot, and
+                -- goes it alone only well outside it - on the edge, 0.43 flipped every second or two.)
+                local d = cmd and LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY())
+                if cmd and sq.intent and d <= CFG.earshot - (t.alone and 4 or -4) then
                     if t.alone then LF.log("CORPORAL " .. team.name .. " of " .. squad.name .. " back under his commander") end
                     t.heard, t.alone = orderFor(team, sq), nil
                 else

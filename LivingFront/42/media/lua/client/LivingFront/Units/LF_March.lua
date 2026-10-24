@@ -230,8 +230,11 @@ end
 --   wedge  - each team a wedge (point man, two men back-left and back-right, one behind); the
 --            squad's teams in a wedge too - Alpha 1 at the point, Alpha 2 back-left, Bravo 1
 --            back-right, Bravo 2 at the rear, the sergeant in the middle
--- Order of march (file and column): Alpha 1, Alpha 2, the sergeant (in the centre), Bravo 1,
--- Bravo 2. The point man is the first man of Alpha 1.
+-- Order of march: Alpha 1 leads; the point man is its first man.
+--   ranger file   - Alpha 1, then the sergeant, then the other teams
+--   tactical column - the teams down both sides of the road; the sergeant walks in the middle of
+--                   the road, level with the point man
+--   wedge         - the sergeant in the middle of the formation
 -- Halted (stopped while patrolling): every man crouches and aims outboard - in a file or column
 -- the point man to the front, the rear man to the back, the rest alternately left and right; in
 -- a wedge each man out from the middle of the formation (an all-round defence).
@@ -242,8 +245,9 @@ local TEAM_WEDGE = { { 0, 0 }, { -7, -7 }, { -7, 7 }, { -14, 0 } }     -- by tea
 local MAN_WEDGE = { { 0, 0 }, { -2, -2 }, { -2, 2 }, { -4, 0 } }       -- by place in the team
 local MG_WEDGE = { 1, 4, 2, 3 }     -- a machine-gun squad: the guns back-left and back-right, Alpha 2 at the rear
 
--- The order of march (living men only).
-local function columnOrder(squad)
+-- The order of march (living men only). In a tactical column the sergeant is last in the list but
+-- not in the file (he walks level with the point man, in the middle of the road - layOut).
+local function columnOrder(squad, form)
     local order = {}
     local function addTeam(slot)
         for _, tid in ipairs(squad.teams) do
@@ -258,13 +262,18 @@ local function columnOrder(squad)
     end
     -- (A machine-gun squad carries its guns in the middle: Alpha 1, Gun 1, the sergeant, Gun 2,
     -- Alpha 2 at the rear.)
-    local first, last = squad.mg and { 1, 3 } or { 1, 2 }, squad.mg and { 4, 2 } or { 3, 4 }
-    addTeam(first[1]); addTeam(first[2])
+    local slots = squad.mg and { 1, 3, 4, 2 } or { 1, 2, 3, 4 }
+    local sgt = nil
     if squad.leader then
         local r = LF.Records.get(squad.leader)
-        if r and r.alive then order[#order + 1] = squad.leader end
+        if r and r.alive then sgt = squad.leader end
     end
-    addTeam(last[1]); addTeam(last[2])
+    for i, slot in ipairs(slots) do
+        addTeam(slot)
+        if i == 1 and sgt and form == "file" then order[#order + 1] = sgt; sgt = nil end   -- behind the first team
+        if i == 2 and sgt and form ~= "column" then order[#order + 1] = sgt; sgt = nil end -- (wedge: the centre)
+    end
+    if sgt then order[#order + 1] = sgt end
     return order
 end
 
@@ -310,13 +319,22 @@ local function layOut(squad, M)
             finish(o)
         end
     else
-        for i, rid in ipairs(M.order) do
-            local side = (i % 2 == 1) and -1 or 1
-            local l = M.form == "column" and side * CFG.lateral or 0
-            local o = { f = -(i - 1) * CFG.spacing, l = l }
-            if i == 1 then o.hf, o.hl = 1, 0
-            elseif i == n then o.hf, o.hl = -1, 0
-            else o.hf, o.hl = 0, side end
+        local column = M.form == "column"
+        local inFile = n - ((column and squad.leader and M.order[n] == squad.leader) and 1 or 0)
+        local k = 0
+        for _, rid in ipairs(M.order) do
+            local o
+            if column and rid == squad.leader then
+                -- The sergeant: the middle of the road, level with the point man.
+                o = { f = 0, l = 0, centre = true, hf = 1, hl = 0 }
+            else
+                k = k + 1
+                local side = (k % 2 == 1) and -1 or 1
+                o = { f = -(k - 1) * CFG.spacing, l = column and side * CFG.lateral or 0 }
+                if k == 1 then o.hf, o.hl = 1, 0
+                elseif k == inFile then o.hf, o.hl = -1, 0
+                else o.hf, o.hl = 0, side end
+            end
             finish(o)
             M.off[rid] = o
         end
@@ -326,7 +344,9 @@ local function layOut(squad, M)
     -- its length only - its width is the road's).
     local D = CFG.disperse
     local ids = {}
-    for rid in pairs(M.off) do ids[#ids + 1] = rid end
+    for rid, o in pairs(M.off) do
+        if not o.centre then ids[#ids + 1] = rid end    -- (the sergeant in the road's middle is across it from the file)
+    end
     local function minPair(kf, kl)
         local m = math.huge
         for i = 1, #ids do
@@ -364,7 +384,9 @@ local function placeOf(M, rid, lead)
     local lat = o.l
     if M.form == "column" and M.edges then
         local left, right = filesAt(M, si, st, o.margin or 0.25)
-        if left then lat = o.l < 0 and left or right end
+        if left then
+            if o.centre then lat = (left + right) / 2 else lat = o.l < 0 and left or right end
+        end
     end
     local px, py = x + rx * lat, y + ry * lat
     local hx, hy = dx * o.hf + rx * o.hl, dy * o.hf + ry * o.hl
@@ -477,7 +499,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end
-    local order = columnOrder(squad)
+    local order = columnOrder(squad, LF.March.FORMATIONS[form] and form or "column")
     local point = nil
     for _, rid in ipairs(order) do
         local b = LF.Bodies.get(rid)
@@ -492,6 +514,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     if auto then
         form = (opts and opts.form) or (onRoad and "column" or "wedge")
     end
+    order = columnOrder(squad, form)
     local M = { pts = pts, z = z, form = form, auto = auto, x = x, y = y, final = final,
                 dest = { x = lx + 0.5, y = ly + 0.5 } }
     M.len = measure(pts)
@@ -557,6 +580,11 @@ local function chooseFormation(squad, cid, M)
     if want ~= M.wantForm then M.wantForm, M.wantSince = want, LF.tick end
     if want == M.form or LF.tick - M.wantSince < 180 or LF.tick - (M.formAt or 0) < 600 then return end
     M.form, M.formAt = want, LF.tick
+    -- (The sergeant's place in the order changes with the formation.)
+    local old = {}
+    for _, rid in ipairs(M.order) do old[rid] = true end
+    M.order = columnOrder(squad, want)
+    for i = #M.order, 1, -1 do if not old[M.order[i]] then table.remove(M.order, i) end end
     layOut(squad, M)
     if want == "column" and not M.edges then roadEdges(M) end
     LF.log("PATROL " .. squad.name .. " changes to " .. LF.March.FORMATIONS[want] .. " (" .. thick .. "/" .. n

@@ -189,7 +189,9 @@ function LF.Medic.onHit(body, cause, part, force)
     -- Nothing kills him before his clock runs out - not more hits, not the bleeding: the game's
     -- own god mode holds him (it restores his health every update) until the medic has him or
     -- the clock kills him.
-    pcall(function() body:setGodMod(true) end)
+    -- (Forced: plain setGodMod(true) needs a capability NPCs don't have and quietly turns it off
+    -- instead - up to 0.43 critical men could still be killed.)
+    pcall(function() body:setGodMod(true, true) end)
     if LF.Tactics and LF.Tactics.dropCasualty then LF.Tactics.dropCasualty(id) end
     LF.Medic.holdDown(id, body)
     local secs = CFG2.bleedOut[1] + ZombRand(CFG2.bleedOut[2])
@@ -249,6 +251,7 @@ end
 local function endJob(mid, why)
     local J = jobs2[mid]
     jobs2[mid] = nil
+    if LF.Suppress then LF.Suppress.setMoving(mid, false) end
     setBusy(mid, nil)
     cooldown[mid] = LF.tick + (why and 180 or 60)
     local mb = LF.Bodies.get(mid)
@@ -277,7 +280,7 @@ local function finishTreat(mid, J)
         mrec.kit = math.max(0, (mrec.kit or 0) - CFG2.stabiliseCost)
         crit[J.pid] = nil
         -- Out of god mode, and badly hurt (the god mode healed him): a dressed wound, low health.
-        pcall(function() pb:setGodMod(false) end)
+        pcall(function() pb:setGodMod(false, true) end)
         pcall(function() pb:getBodyDamage():ReduceGeneralHealth(55) end)
         pcall(function() pb:getBodyDamage():getBodyPart(BodyPartType.Torso_Upper):setBandaged(true, 10) end)
         stable[J.pid] = { squad = prec.squad, quietSince = nil }      -- (stepStable: up, limp to cover)
@@ -346,11 +349,16 @@ local function startJob(mid, mb, mrec, pid, pb, kind)
         local squad = LF.Units.get(mrec.squad)
         local caller = squad and LF.Units.commander(squad)
         if caller and caller ~= mid and caller ~= pid and LF.Bodies.get(caller) then LF.Tactics.shout(caller, "Cover the medic!") end
-        if kind == "stabilise" and mrec.lastPatient ~= pid then LF.Tactics.shout(mid, "I'm coming - hold on!") end
     end
+    J.callOut = kind == "stabilise" and mrec.lastCalled ~= pid
+    mrec.lastCalled = pid
+    -- Off at once (not on the next half-second check).
+    LF.guard("medic job", LF.Medic.stepJob, mid, J)
 end
 
-local function stepJob(mid, J)
+local stepJob
+function LF.Medic.stepJob(mid, J) return stepJob(mid, J) end
+stepJob = function(mid, J)
     local mb, pb = LF.Bodies.get(mid), LF.Bodies.get(J.pid)
     local mrec = LF.Records.get(mid)
     if not (mb and mrec and mrec.alive) or mb:isDead() then jobs2[mid] = nil; setBusy(mid, nil); return end
@@ -370,6 +378,12 @@ local function stepJob(mid, J)
         return
     end
     if J.waitUntil and LF.tick < J.waitUntil then return end
+    if J.callOut then
+        J.callOut = nil
+        if LF.Tactics then LF.Tactics.shout(mid, "I'm coming - hold on!") end
+    end
+    -- Running to a man he isn't pinned on the way (like a man moving under orders).
+    if LF.Suppress then LF.Suppress.setMoving(mid, J.phase == "go") end
     if J.phase == "go" then
         local d = LF.dist(mb:getX(), mb:getY(), pb:getX(), pb:getY())
         if d <= 1.4 then
@@ -419,7 +433,7 @@ local function stepCrit(id, c)
         crit[id] = nil
         setBusy(id, nil)
         LF.log("CRITICAL #" .. id .. " " .. LF.Units.title(rec) .. " bled out - nobody reached him")
-        pcall(function() b:setGodMod(false) end)
+        pcall(function() b:setGodMod(false, true) end)
         kill(b)
     end
 end
@@ -522,7 +536,8 @@ Events.OnTick.Add(function()
             local mrec = medicOf(squad.id)
             local mb = mrec and LF.Bodies.get(mrec.id)
             if mb and not mb:isDead() and not jobs2[mrec.id] and not busyAs(mrec.id) and LF.tick >= (cooldown[mrec.id] or 0)
-                and LF.Combat.health(mb) >= 35 and not LF.Combat.knockedDown(mb) and not enemyClose(mrec.id, mb, mrec) then
+                and LF.Combat.health(mb) >= 35 and not LF.Combat.knockedDown(mb) and not enemyClose(mrec.id, mb, mrec)
+                and not (LF.Suppress and LF.Suppress.isPinned(mb)) then
                 local pid, pb, kind = worstCase(mrec, mb)
                 if pid then LF.guard("medic start", startJob, mrec.id, mb, mrec, pid, pb, kind) end
             end

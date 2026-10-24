@@ -278,10 +278,19 @@ local function updateSquad(squad)
             end
         end
     end
+    -- (Only teams with a fit man left count: a team whose men are all down in the building it was
+    -- clearing isn't the squad's front - up to 0.43 the squad, measuring from them, fell back and
+    -- back, and its last teams bounded away across the map.)
     local front = math.huge
     for _, tid in ipairs(squad.teams) do
         local t = teams[tid]
-        if t then
+        local team = LF.Units.get(tid)
+        local anyFit = false
+        for _, rid in ipairs(team and team.members or {}) do
+            local r = LF.Records.get(rid)
+            if r and r.team == tid and fit(r) and LF.Bodies.get(rid) then anyFit = true; break end
+        end
+        if t and anyFit then
             for _, p in pairs(t.pos) do
                 local d = LF.dist(p.x, p.y, c.x, c.y)
                 if d < front then front = d end

@@ -207,6 +207,14 @@ local walkTo = LF.Brain.walkTo
 local function isAt(body, spot)
     return spot ~= nil and math.floor(body:getX()) == spot.x and math.floor(body:getY()) == spot.y
 end
+-- On his spot - for a machine gun's, close enough to it (a man jostled half a tile off it by the
+-- man beside him is still on the gun).
+local function onSpot(body, spot)
+    if spot and spot.gun and LF.MG then
+        return LF.distSq(body:getX(), body:getY(), spot.x + 0.5, spot.y + 0.5) <= LF.MG.CFG.atGun * LF.MG.CFG.atGun
+    end
+    return isAt(body, spot)
+end
 
 -- Drop any claimed position and stand up.
 local function leavePosition(id, body, m)
@@ -594,7 +602,7 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
     local spot = m.cover
     if spot and spot.post and spot.x == px and spot.y == py then
         LF.Cover.reserve(px, py, pz, id)
-        resumeWalk(body, m, spot)
+        if not onSpot(body, spot) then resumeWalk(body, m, spot) end
     else
         leavePosition(id, body, m)
         takeSpot(id, body, m, "cover", px, py, pz, stand and "window" or "post", "run")
@@ -611,7 +619,7 @@ local function exactSpot(id, body, m, sx, sy, sz, label)
     local spot = m.cover
     if spot and spot.post and spot.x == px and spot.y == py then
         LF.Cover.reserve(px, py, pz, id)
-        resumeWalk(body, m, spot)
+        if not onSpot(body, spot) then resumeWalk(body, m, spot) end
     else
         leavePosition(id, body, m)
         takeSpot(id, body, m, "cover", px, py, pz, label, "run")
@@ -638,6 +646,13 @@ local function holdGun(id, body, rec, m, sx, sy, sz, point, watching, stand, win
     else
         setState(id, body, rec, m, "alert", "on the gun, firing on " .. math.floor(point.x) .. "," .. math.floor(point.y))
         m.targetId = nil
+    end
+    -- Held up on the way with the enemy in front of him: the gun goes where he is.
+    local c = m.cover
+    if c and c.gun and not stand and (pick or not watching) and not onSpot(body, c)
+        and LF.tick - (c.since or LF.tick) > LF.MG.CFG.settleTicks and not body:isPerformingAnAction() then
+        LF.MG.settleHere(rec, body)
+        sx, sy = body:getX(), body:getY()
     end
     exactSpot(id, body, m, sx, sy, sz, stand and "gun in the window" or "gun position")
     m.cover.stand = stand
@@ -936,14 +951,19 @@ local function decide(id, body, rec, m)
             holdFile(id, body, rec, m, sx, sy, sz, point, watching, pick, threatId, dist, scanDir)
             return
         end
-        if role == "post" and stuckNear(m, sx, sy) and LF.Tactics.postUnreachable(rec) then
+        if (role == "post" or (role == "gun" and stand)) and stuckNear(m, sx, sy) and LF.Tactics.postUnreachable(rec) then
             -- A window he can't get to: he'll fire out of it from further back (next think).
             m.stuck = nil
             return
         end
         if role and role ~= "file" and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
-            if role == "gun" then LF.MG.unreachable(rec) end
+            if role == "gun" then
+                -- (A gun doesn't go off to some other cover: it sets up where he got to.)
+                LF.MG.settleHere(rec, body)
+                m.stuck = nil
+                return
+            end
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
             if role == "move" then role = "hold" end
         end
@@ -954,11 +974,16 @@ local function decide(id, body, rec, m)
         end
         if role == "post" or role == "gun" then
             -- At a window: only what's out of his own wall (or close, or inside the building).
-            if pick and LF.Tactics.postCovers and not LF.Tactics.postCovers(rec, pick.body:getX(), pick.body:getY()) then
+            -- (A gun in a window: only what's out of the window itself - LF_MG.)
+            local function covers(x, y)
+                if LF.Tactics.postCovers and not LF.Tactics.postCovers(rec, x, y) then return false end
+                return role ~= "gun" or LF.MG.gunCovers(rec, x, y)
+            end
+            if pick and not covers(pick.body:getX(), pick.body:getY()) then
                 local alt = {}
                 for i = 1, #visible do
                     local v = visible[i]
-                    if LF.Tactics.postCovers(rec, v.body:getX(), v.body:getY()) then alt[#alt + 1] = v end
+                    if covers(v.body:getX(), v.body:getY()) then alt[#alt + 1] = v end
                 end
                 pick = #alt > 0 and chooseTarget(id, body, rec, m, alt) or nil
                 threatId, dist = pick and pick.id, pick and pick.dist
@@ -1122,7 +1147,7 @@ local function act(id, body, rec, m)
     if st == "alert" and m.point then
         -- Covering: area fire on where the enemy was last seen (not from a blind shelter).
         if m.cover then
-            if not isAt(body, m.cover) then return end
+            if not onSpot(body, m.cover) then return end
             if not standing then hunkerDown(body) end
             if m.cover.loose then return end
         end
@@ -1135,7 +1160,7 @@ local function act(id, body, rec, m)
     end
     if m.state == "engage" and m.targetId then
         if m.cover then
-            if not isAt(body, m.cover) then return end   -- still moving into position
+            if not onSpot(body, m.cover) then return end   -- still moving into position
             if not standing then hunkerDown(body) end
         end
         local target = LF.Bodies.get(m.targetId)

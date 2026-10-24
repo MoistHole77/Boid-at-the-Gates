@@ -200,6 +200,29 @@ end)
 
 -- Clear corpses, blood and battlefield debris around the player, forget the dead, and restore
 -- the player's health and needs.
+-- Fill the tank of every vehicle within the reset radius. Returns how many were filled.
+local function refuelVehicles(px, py)
+    local n = 0
+    local list = getCell():getVehicles()
+    for i = 0, list:size() - 1 do
+        local v = list:get(i)
+        if v and LF.dist(v:getX(), v:getY(), px, py) <= RESET_RADIUS then
+            local ok = pcall(function()
+                local tank = v:getPartById("GasTank")
+                if not tank then error("no tank") end
+                local cap = tank:getContainerCapacity()
+                if tank:getContainerContentAmount() < cap then
+                    tank:setContainerContentAmount(cap)
+                    n = n + 1
+                    pcall(function() v:transmitPartModData(tank) end)
+                end
+            end)
+            if not ok then LF.log("RESET WORLD couldn't refuel a vehicle at " .. math.floor(v:getX()) .. "," .. math.floor(v:getY())) end
+        end
+    end
+    return n
+end
+
 local function resetWorld(playerNum)
     local p = getSpecificPlayer(playerNum)
     if not p then return end
@@ -220,14 +243,15 @@ local function resetWorld(playerNum)
     for id, rec in pairs(LF.Records.all()) do
         if not rec.alive then LF.Records.remove(id); forgotten = forgotten + 1 end
     end
+    local fuelled = LF.guard("refuel vehicles", refuelVehicles, px, py) or 0
     getGameTime():setTimeOfDay(8.0)
     LF.Records.data().noFog = true
     LF.guard("clear fog", clearFog)
     LF.guard("heal player", healPlayer, p)
     LF.guard("clean player", cleanPlayer, p)
     LF.log("RESET WORLD removed " .. counts.corpses .. " corpses, " .. counts.items .. " items, "
-        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units; player healed; time set to 08:00; fog off")
-    LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared")
+        .. forgotten .. " dead records, " .. unitsRemoved .. " wiped-out units, " .. fuelled .. " vehicles refuelled; player healed; time set to 08:00; fog off")
+    LF.say("World reset: " .. counts.corpses .. " bodies and " .. counts.items .. " items cleared, " .. fuelled .. " vehicles refuelled")
 end
 
 -- ---- choosing a unit ----------------------------------------------------------------------------
@@ -499,7 +523,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
-    tools:addOption("Reset world (clear bodies, blood, debris; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
+    tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
 end
 
 Events.OnFillWorldObjectContextMenu.Add(onMenu)
