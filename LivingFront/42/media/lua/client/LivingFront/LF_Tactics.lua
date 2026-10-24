@@ -85,7 +85,9 @@ local CFG = {
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
     clearTimeout = 5400,    -- give up on a room after ~90 s (each room, and each regroup, starts the clock again)
     clearRooms = 6,
-    clearPartnerWait = 900, -- a team stacked on one door waits up to ~15 s for the team at the other
+    clearPartnerWait = 480, -- a team stacked on one door waits up to ~8 s for the team at the other -
+                            -- and only if that team is nearly stacked itself
+    casualtyMinHealth = 35, -- a man knocked over while clearing is dragged out only if healthier than this
     backDoorMin = 6,        -- a back door: at least this far from the front one         -- clear at most this many rooms one after another
     standDownTicks = 2700,  -- ~45 s with nothing to do: the unit stands by
     -- The sergeant choosing his stance
@@ -110,6 +112,8 @@ local CFG = {
 LF.Tactics.CFG = CFG
 
 local squads = {}   -- squad id -> { intent, contact (point), broken }
+local casualties = {}       -- man id -> { team, squad, phase, at } (a man knocked down while clearing)
+local casualtyCount = 0     -- (Kahlua has no next())
 function LF.Tactics.state(squad) return squad and squads[squad.id] end
 local teams = {}    -- team id -> { order, heard, moving, pos = { A = {x,y}, B = {x,y} }, phaseStart }
 local shouts = {}   -- record id -> { text, untilTick }
@@ -1343,6 +1347,32 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
     return "post", sx, sy, P.z, wp, true, cp, p.stand, win, p.shove
 end
 
+-- May a man posted in a building shoot at (x, y)? Out of his own wall (and a neighbouring wall
+-- left unmanned), anyone inside the building, or anyone within 4 tiles - not across the building
+-- out of somebody else's window.
+function LF.Tactics.postCovers(rec, x, y)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local L = P and P.layout
+    local p = sq and sq.posts and sq.posts[rec.id]
+    if not (L and p) or p.any then return true end
+    local sx, sy = p.x + 0.5, p.y + 0.5
+    local vx, vy = x - sx, y - sy
+    local dd = math.sqrt(vx * vx + vy * vy)
+    if dd <= 4 or LF.Building.isInside(L, x, y) then return true end
+    local squad = LF.Units.get(rec.squad)
+    local arc = squad and LF.Stance.get(squad).arcCos or 0.34
+    local function within(w) local d = WALL_DIR[w]; return (vx * d[1] + vy * d[2]) / dd >= arc end
+    if within(p.wall) then return true end
+    for slot = 1, 4 do
+        if sq.lost[slot] then
+            local w = P.walls[slot]
+            if (w == (p.wall + 2) % 4 + 1 or w == p.wall % 4 + 1) and within(w) then return true end
+        end
+    end
+    return false
+end
+
 local updateDefensiveInner
 local function updateDefensive(squad, sq, cid, cmd)
     local r = updateDefensiveInner(squad, sq, cid, cmd)
@@ -1434,9 +1464,24 @@ updateDefensiveInner = function(squad, sq, cid, cmd)
                 or ("Enemy " .. where .. "! Alpha 1 front, Alpha 2 and Bravo 2 the flanks, Bravo 1 the rear!"))
         end
     end
-    -- Quarters with nobody fit left: the teams either side widen their arcs.
+    -- Quarters with nobody fit left: the teams either side widen their arcs. In a building, a
+    -- wall counts by the men actually posted on it (or it has no window or door to watch) - not
+    -- by the team named for it: two teams hold all four walls between them, and up to 0.37 the
+    -- walls of the two teams that didn't exist were "down" from the start, so every man aimed
+    -- through the building at them.
     for i = 1, 4 do
-        local alive = sectorHasFit(squad, i)
+        local alive
+        if sq.perim.layout then
+            local w = sq.perim.walls[i]
+            alive = (sq.perim.layout.wallOpenings[w] or 0) == 0
+            for rid, p in pairs(sq.posts or {}) do
+                if not alive and p.wall == w and p.kind ~= "reserve" and p.kind ~= "centre" then
+                    alive = fit(LF.Records.get(rid))
+                end
+            end
+        else
+            alive = sectorHasFit(squad, i)
+        end
         if not alive and not sq.lost[i] then
             sq.lost[i] = true
             local d = SECTOR_NAME[i]
@@ -1874,7 +1919,11 @@ local function updateClear(team, t, squad)
         t.clear, t.order, t.heard, t.moving, t.shifting = nil, "HOLD", "HOLD", nil, nil
         LF.Tactics.holdInside(team, t, squad, C, live)
     end
-    if #live == 0 then finish(nil, "the whole file is down"); return false end
+    if #live == 0 then
+        -- (A man knocked down and about to be dragged out isn't lost yet.)
+        for _, rid in ipairs(C.file) do if casualties[rid] then return true end end
+        finish(nil, "the whole file is down"); return false
+    end
     if LF.tick - C.started > CFG.clearTimeout then finish("Hold here! Hold what we've got!", "took too long"); return false end
     local function at(rid, x, y)
         local b = LF.Bodies.get(rid)
@@ -1917,7 +1966,15 @@ local function updateClear(team, t, squad)
         if C.partner then
             local pt = teams[C.partner]
             local pc = pt and pt.clear
-            if pc and pc.phase == "stack" and LF.tick - (C.waitFrom or LF.tick) < CFG.clearPartnerWait then
+            local close = false
+            if pc and pc.phase == "stack" then
+                close = true
+                for i, rid in ipairs(pc.file) do
+                    local b, sp = LF.Bodies.get(rid), pc.stack[i]
+                    if b and sp and LF.dist(b:getX(), b:getY(), sp.x + 0.5, sp.y + 0.5) > 4 then close = false; break end
+                end
+            end
+            if close and LF.tick - (C.waitFrom or LF.tick) < CFG.clearPartnerWait then
                 C.waitFrom = C.waitFrom or LF.tick
                 if not C.saidWait then
                     C.saidWait = true
@@ -2085,7 +2142,9 @@ function LF.Tactics.updateInside(team, t, squad)
         if math.floor(c.z or 0) == I.L.z and LF.Building.isInside(I.L, c.x, c.y) then I.lastSeen = LF.tick; break end
     end
     local why = nil
+    local ssq = squads[squad.id]
     if LF.Stance.get(squad).maneuvers ~= true then why = "the unit isn't attacking any more"
+    elseif ssq and ssq.intent == "FALLBACK" then why = "the unit is falling back"
     elseif LF.tick - I.lastSeen > 2700 then why = "no enemy seen in the building for 45 s" end
     if why then
         t.inside = nil
@@ -2109,8 +2168,6 @@ end
 -- holds where it is. Then they regroup there and go on clearing (the downed man stays where he was
 -- left until the building is done). Only while a team is clearing a building.
 
-local casualties = {}       -- man id -> { team, squad, phase, at }
-local casualtyCount = 0     -- (Kahlua has no next())
 
 Events.OnInitGlobalModData.Add(function() casualties, casualtyCount = {}, 0 end)
 
@@ -2129,6 +2186,9 @@ function LF.Tactics.onKnockedBack(body)
     if not C or not inFile(C, id) then return end
     -- Only inside the building (in through the door, going room to room) - not on the way to it.
     if math.floor(body:getZ()) ~= C.L.z or not LF.Building.isInside(C.L, body:getX(), body:getY()) then return end
+    -- Not a man already badly hurt (or crawling on ruined legs): he's past being dragged back
+    -- in to fight - the usual wounded behaviour takes him.
+    if LF.Combat.health(body) < CFG.casualtyMinHealth or (LF.Combat.legsOut and LF.Combat.legsOut(body)) then return end
     local squad = LF.Units.get(rec.squad)
     if not squad or LF.Stance.get(squad).maneuvers ~= true then return end
     casualties[id] = { id = id, team = rec.team, squad = rec.squad, phase = "falling", at = LF.tick }
@@ -2239,7 +2299,8 @@ local function regroupPlan(cas, J)
         C2.roomCount = C.roomCount
         t.clear = C2
         LF.log("CASUALTY " .. team.name .. " regroups " .. (cas.outside and "outside" or "in a cleared room") .. " and clears on")
-        if team.leader and LF.Bodies.get(team.leader) then LF.Tactics.shout(team.leader, "He's out - regroup! Go again!") end
+        local caller = (team.leader ~= cas.id and team.leader) or (J and J.mid)
+        if caller and LF.Bodies.get(caller) then LF.Tactics.shout(caller, "He's out - regroup! Go again!") end
     else
         t.clear, t.order = nil, "HOLD"
         LF.log("CASUALTY " .. team.name .. " can't go on clearing (" .. #live .. " fit) - holds")
@@ -2298,7 +2359,7 @@ local function dragHim(id, cas, body)
     if not started then C.halted = nil; return false end
     cas.phase, cas.at = "dragged", LF.tick
     local team = LF.Units.get(cas.team)
-    if team and team.leader and team.leader ~= best and LF.Bodies.get(team.leader) then
+    if team and team.leader and team.leader ~= best and team.leader ~= id and LF.Bodies.get(team.leader) then
         LF.Tactics.shout(team.leader, "Man down! Get him out of here!")
     end
     LF.Tactics.shout(best, "I've got him!")
@@ -2380,8 +2441,15 @@ end)
 function LF.Tactics.orderClear(squad, team, L, why)
     initTeams(squad)
     local C, reason = nil, "no team positions yet"
-    local order = { team.id }
-    for _, tid in ipairs(squad.teams) do if tid ~= team.id then order[#order + 1] = tid end end
+    -- A team already holding inside this building goes on with it first.
+    local order = {}
+    for _, tid in ipairs(squad.teams) do
+        local tt = teams[tid]
+        if tt and tt.inside and tt.inside.L == L then order[#order + 1] = tid end
+    end
+    local function has(id) for _, o in ipairs(order) do if o == id then return true end end return false end
+    if not has(team.id) then order[#order + 1] = team.id end
+    for _, tid in ipairs(squad.teams) do if not has(tid) then order[#order + 1] = tid end end
     for _, tid in ipairs(order) do
         local tm, t = LF.Units.get(tid), teams[tid]
         if tm and t and not t.clear then

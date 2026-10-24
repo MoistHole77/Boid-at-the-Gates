@@ -881,6 +881,16 @@ local function decide(id, body, rec, m)
         end
         if role == "command" then leash = CFG.commandLeash end
         if role == "post" then
+            -- At a window: only what's out of his own wall (or close, or inside the building).
+            if pick and LF.Tactics.postCovers and not LF.Tactics.postCovers(rec, pick.body:getX(), pick.body:getY()) then
+                local alt = {}
+                for i = 1, #visible do
+                    local v = visible[i]
+                    if LF.Tactics.postCovers(rec, v.body:getX(), v.body:getY()) then alt[#alt + 1] = v end
+                end
+                pick = #alt > 0 and chooseTarget(id, body, rec, m, alt) or nil
+                threatId, dist = pick and pick.id, pick and pick.dist
+            end
             holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
             return
         end

@@ -15,7 +15,8 @@ LF.Sense = LF.Sense or {}
 
 local CELL = 10              -- grid cell size, tiles
 local REBUILD_TICKS = 10     -- the grid is rebuilt this often (bodies move under a tile in that time)
-local MAX_LOS = 5            -- line-of-sight checks per look (nearest candidates first)
+local MAX_LOS = 5            -- enemies seen per look (nearest first)
+local MAX_CHECKS = 14        -- line-of-sight checks per look at most
 
 local grid = {}              -- cell key -> array of entries
 local entryPool = {}
@@ -118,7 +119,11 @@ function LF.Sense.look(id, body, rec, range)
     for i = #cands, nCands + 1, -1 do cands[i] = nil end
     if nCands > 1 then table.sort(cands, byDsq) end
     local n = 0
-    for i = 1, math.min(nCands, MAX_LOS) do
+    -- The nearest MAX_LOS that he can actually see, checking at most MAX_CHECKS: the nearest
+    -- enemies are often behind a wall (up to 0.37 only the nearest 5 were checked, so a defender
+    -- with the enemy at the door behind him never saw the man in front of his own window).
+    for i = 1, math.min(nCands, MAX_CHECKS) do
+        if n >= MAX_LOS then break end
         local e = cands[i].e
         if not e.body:isDead() and LF.Sense.canSee(body, e.body) then
             n = n + 1

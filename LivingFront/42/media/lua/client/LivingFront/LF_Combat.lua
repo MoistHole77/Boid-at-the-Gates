@@ -244,7 +244,14 @@ local function knock(target, shooter, fall) knockFrom(target, shooter:getX(), sh
 function LF.Combat.knock(target, sx, sy, fall) return LF.guard("knock", knockFrom, target, sx, sy, fall) end
 
 -- Staggering, or down on the ground (and getting up): he can't do anything else just now.
+-- (Sitting on the ground counts as "on the floor" to the game: a man resting while his unit
+-- stands by isn't knocked down - up to 0.37 the brain took him for one and never woke him when
+-- the unit was given orders.)
 function LF.Combat.knockedDown(body)
+    if LF.Idle and LF.Idle.isSitting(body) then
+        local ok, v = pcall(function() return body:isBumped() end)
+        return ok and v or false
+    end
     local ok, v = pcall(function() return body:isBumped() or body:isOnFloor() or body:isKnockedDown() end)
     return ok and v or false
 end
