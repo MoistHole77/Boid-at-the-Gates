@@ -16,7 +16,7 @@ local casualtyCount = 0     -- (Kahlua has no next())
 -- ---- clearing a building (offensive) -------------------------------------------------------
 --
 -- When the sergeant judges a building's defence is down to a few men (the enemy his squad knows
--- about there, CFG.clearAt or fewer), he sends Alpha 1 to clear it while the rest cover. The
+-- about there, CFG.clearAt or fewer), he sends Alpha to clear it while the rest cover. The
 -- team, slowly and in order:
 --   stack  - single file against the wall beside the nearest door (outside), point man nearest
 --            the door, kneeling, facing it
@@ -151,7 +151,8 @@ local function planClear(squad, team, t, L, forceDoor, restack)
     local file = {}
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
-        if r and r.team == team.id and fit(r) and LF.Bodies.get(rid) then file[#file + 1] = rid end
+        -- (Not the squad medic, who goes with Bravo: he waits outside for the wounded.)
+        if r and r.team == team.id and not r.medic and fit(r) and LF.Bodies.get(rid) then file[#file + 1] = rid end
     end
     if #file < 2 then return nil, "only " .. #file .. " fit man in the team" end
     -- Already inside: clear on from room to room rather than going back out to a door.
@@ -985,7 +986,7 @@ Events.OnTick.Add(function()
     for _, id in ipairs(ids) do LF.guard("casualty", casualtyStep, id, casualties[id]) end
 end)
 
--- Order a team to clear building L (Alpha 1, or the next team with enough fit men if it is
+-- Order a team to clear building L (Alpha, or the next team with enough fit men if it is
 -- shot up). Returns the team that goes, or nil.
 local function bidOf(L)
     local q = L and L.inside and L.inside[1]
@@ -1092,7 +1093,7 @@ function LF.Tactics.backDoor(squad, team, C, L)
 end
 
 -- The sergeant: is the enemy holed up in a building, down to a few men he knows of? Send
--- Alpha 1 in (the rest keep firing on it).
+-- Alpha in (the rest keep firing on it).
 local function sergeantClear(squad, sq, cid)
     if LF.tick - (sq.lastClear or -100000) < CFG.clearCooldown then return end
     local team = LF.Units.get(squad.teams[1])

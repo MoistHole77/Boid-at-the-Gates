@@ -421,7 +421,8 @@ local function planFlank(squad, c, sq)
         if team and t then
             for _, el in ipairs({ "A", "B" }) do sx, sy, n = sx + t.pos[el].x, sy + t.pos[el].y, n + 1 end
             local cpl = team.leader and LF.Records.get(team.leader)
-            if team.element == "A" and cpl and fit(cpl) and not t.clear then alphas[#alphas + 1] = team end
+            -- (Gun teams never go round: a machine-gun squad is a base of fire.)
+            if team.element == "A" and not team.mg and cpl and fit(cpl) and not t.clear then alphas[#alphas + 1] = team end
         end
     end
     if #alphas == 0 or n == 0 then return nil end

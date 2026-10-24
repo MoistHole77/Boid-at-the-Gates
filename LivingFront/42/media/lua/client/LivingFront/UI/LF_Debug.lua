@@ -2,10 +2,11 @@
 --
 --   Inspect <soldier>     - when you right-click on or right next to a soldier (top of the menu)
 --   Living Front >
---     Spawn here          - a soldier, a fire team (4) or a squad (17), German or Soviet; a civilian
---     Give orders to      - any unit in the game (by side, nearest the click first): stance, patrol
---                           here, take / hold this place as an objective, clear this building,
---                           inspect its leader
+--     Spawn here          - a soldier, a fire team (4), a squad (10), a machine-gun squad (10) or a
+--                           platoon (23: headquarters and two squads), German or Soviet; a civilian
+--     Give orders to      - any platoon (take / hold this place, withdraw to here) or unit in the
+--                           game (by side, nearest the click first): stance, patrol here, take /
+--                           hold this place as an objective, clear this building, inspect its leader
 --     Sergeants choose their stance (on/off)
 --     Tools               - move / kill / delete the nearest of a type, clear objectives, unit
 --                           report, delete all,
@@ -30,6 +31,7 @@ require "LivingFront/UI/LF_Inspect"
 require "LivingFront/Units/LF_Join"
 require "LivingFront/Specialists/LF_Medic"
 require "LivingFront/Specialists/LF_MG"
+require "LivingFront/Tactics/LF_Platoon"
 
 LF.Debug = LF.Debug or {}
 
@@ -341,8 +343,38 @@ local function spawnUnit(faction, x, y, z, size, playerNum)
     local p = getSpecificPlayer(playerNum)
     local fx, fy = 1, 0
     if p then fx, fy = x + 0.5 - p:getX(), y + 0.5 - p:getY() end
+    if size == "platoon" or size == "platoonMG" then
+        local plt = LF.Platoon.create(faction, x + 0.5, y + 0.5, z, fx, fy, size == "platoonMG")
+        LF.say("Spawned " .. plt.name .. " (23)")
+        return
+    end
     local unit = LF.Units.createSquad(faction, x + 0.5, y + 0.5, z, fx, fy, size == "team", size == "mg")
-    LF.say("Spawned " .. unit.name .. (size == "team" and " (4)" or " (17)"))
+    LF.say("Spawned " .. unit.name .. (size == "team" and " (4)" or " (10)"))
+end
+
+-- ---- platoon orders -----------------------------------------------------------------------------
+
+local function platoonList(x, y)
+    local by = {}
+    for _, p in pairs(LF.Units.all()) do
+        if p.kind == "platoon" then
+            local hq = LF.Units.get(p.hq)
+            local px, py = hq and unitPos(hq)
+            if not px then
+                for _, sid in ipairs(p.squads or {}) do
+                    local s = LF.Units.get(sid)
+                    if s then px, py = unitPos(s) end
+                    if px then break end
+                end
+            end
+            if px then
+                by[p.faction] = by[p.faction] or {}
+                table.insert(by[p.faction], { p = p, d = LF.dist(px, py, x + 0.5, y + 0.5) })
+            end
+        end
+    end
+    for _, list in pairs(by) do table.sort(list, function(a, b) return a.d < b.d end) end
+    return by
 end
 
 -- The objective at (x, y), or a new one there. A building that is already an objective stays that
@@ -450,9 +482,11 @@ local function onMenu(playerNum, context, worldObjects, test)
         local key = f[1]
         fm:addOption("Soldier", nil, function() spawnUnit(key, x, y, z, "soldier", playerNum) end)
         fm:addOption("Fire team (4)", nil, function() spawnUnit(key, x, y, z, "team", playerNum) end)
-        fm:addOption("Squad (17)", nil, function() spawnUnit(key, x, y, z, "squad", playerNum) end)
-        fm:addOption("Machine-gun squad (17, " .. (key == "GER" and "2 MG34s" or "2 DP-27s") .. ")", nil,
+        fm:addOption("Squad (10)", nil, function() spawnUnit(key, x, y, z, "squad", playerNum) end)
+        fm:addOption("Machine-gun squad (10, " .. (key == "GER" and "2 MG34s" or "2 DP-27s") .. ")", nil,
             function() spawnUnit(key, x, y, z, "mg", playerNum) end)
+        fm:addOption("Platoon (23: HQ + 2 rifle squads)", nil, function() spawnUnit(key, x, y, z, "platoon", playerNum) end)
+        fm:addOption("Platoon (23: HQ + rifle squad + MG squad)", nil, function() spawnUnit(key, x, y, z, "platoonMG", playerNum) end)
     end
     spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 
@@ -461,6 +495,37 @@ local function onMenu(playerNum, context, worldObjects, test)
     local orders = sub(main, "Give orders to")
     local lists = unitList(x, y)
     local any = false
+    local plists = platoonList(x, y)
+    for _, f in ipairs({ { "GER", "German platoons" }, { "SOV", "Soviet platoons" } }) do
+        local list = plists[f[1]]
+        if list and #list > 0 then
+            any = true
+            local fm = sub(orders, f[2])
+            for _, e in ipairs(list) do
+                local plt = e.p
+                local pm = sub(fm, LF.Platoon.describe(plt) .. string.format(" (%d tiles)", math.floor(e.d)))
+                pm:addOption(building and "Take this building" or "Take this spot", nil, function()
+                    local obj = objectiveAt(x, y, z)
+                    local ok, why = LF.Platoon.take(plt, obj)
+                    LF.say(ok and (plt.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
+                end)
+                pm:addOption(building and "Hold this building" or "Hold this spot", nil, function()
+                    local obj = objectiveAt(x, y, z)
+                    local ok, why = LF.Platoon.hold(plt, obj)
+                    LF.say(ok and (plt.name .. " holds " .. obj.name) or ("Can't: " .. tostring(why)))
+                end)
+                pm:addOption("Withdraw to here", nil, function()
+                    LF.Platoon.withdraw(plt, x, y, z, "debug order")
+                    LF.say(plt.name .. " withdraws")
+                end)
+                local cmd = LF.Platoon.commander(plt)
+                if cmd then
+                    local cid = cmd.id
+                    pm:addOption("Inspect " .. LF.Units.title(cmd), nil, function() LF.Inspect.open(cid) end)
+                end
+            end
+        end
+    end
     for _, f in ipairs({ { "GER", "German units" }, { "SOV", "Soviet units" }, { "CIV", "Civilian units" } }) do
         local list = lists[f[1]]
         if list and #list > 0 then
@@ -483,7 +548,7 @@ local function onMenu(playerNum, context, worldObjects, test)
                 pm:addOption("Wedge", nil, function() patrolOf(u, x, y, z, "wedge") end)
                 um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
                 um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
-                if building then um:addOption("Clear this building (Alpha 1)", nil, function() clearOf(u, x, y, z) end) end
+                if building then um:addOption("Clear this building (Alpha)", nil, function() clearOf(u, x, y, z) end) end
                 -- Any objective, wherever it is (no need to be near it).
                 local objs = {}
                 for _, o in pairs(LF.Objective.all()) do objs[#objs + 1] = o end
@@ -528,7 +593,12 @@ local function onMenu(playerNum, context, worldObjects, test)
             typeMenu:addOption(t.label, nil, function() fn(key) end)
         end
     end
-    tools:addOption("Machine-gun report (to the log)", nil, function() LF.MG.report() end)
+    tools:addOption("Platoon report (to the log)", nil, function()
+        for _, p in pairs(LF.Units.all()) do
+            if p.kind == "platoon" then LF.log("PLATOON REPORT " .. LF.Platoon.describe(p)) end
+        end
+        LF.Units.report()
+    end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)

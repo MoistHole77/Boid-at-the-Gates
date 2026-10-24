@@ -133,6 +133,7 @@ function LF.Service.died(rec)
     end
     lastHit[rec.id], lastAction[rec.id], current[rec.id] = nil, nil, nil
     if not rec.squad then return end
+    if LF.Morale then LF.guard("morale died", LF.Morale.died, rec) end
     for id, r in pairs(LF.Records.all()) do
         local b = LF.Bodies and LF.Bodies.get(id)
         local rx, ry = r.x, r.y
@@ -149,6 +150,7 @@ end
 
 -- His unit broke (fell back, shot to pieces).
 function LF.Service.unitBroke(squad)
+    if LF.Morale then LF.guard("morale broke", LF.Morale.broke, squad) end
     for _, r in pairs(LF.Records.all()) do
         if r.alive and r.squad == squad.id then
             local s = svcOf(r)

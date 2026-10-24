@@ -83,6 +83,84 @@ local function wearList(body, list)
     end
 end
 
+-- ---- kit by role ---------------------------------------------------------------------------------
+-- The army outfits hand out field radios at random; only a platoon's radio operator carries one.
+-- He wears it on his back in place of his pack. A lieutenant wears an officer's greatcoat (field
+-- grey for the Germans, brown for the Soviets) and a peaked cap instead of a helmet, and no pack.
+local function typeOf(item) return item and item:getType() or "" end
+local BACK_PACKS = { "Bag_ALICEpack", "Bag_HydrationBackpack", "Bag_Military" }
+
+local function isBackPack(t)
+    for _, p in ipairs(BACK_PACKS) do if t:sub(1, #p) == p then return true end end
+    return false
+end
+
+local function strip(body, test)
+    local gone = 0
+    local worn = body:getWornItems()
+    for i = worn:size() - 1, 0, -1 do
+        local item = worn:getItemByIndex(i)
+        if item and test(typeOf(item), item) then
+            pcall(function() body:removeWornItem(item) end)
+            pcall(function() body:getInventory():Remove(item) end)
+            gone = gone + 1
+        end
+    end
+    return gone
+end
+
+local function wears(body, fullType)
+    local worn = body:getWornItems()
+    for i = 0, worn:size() - 1 do
+        local item = worn:getItemByIndex(i)
+        if item and item:getFullType() == fullType then return true end
+    end
+    return false
+end
+
+local function put(body, fullType, locations)
+    if wears(body, fullType) then return true end
+    local item = body:getInventory():AddItem(fullType)
+    if not item then LF.log("KIT couldn't make " .. fullType); return false end
+    local tries = { function() return item:getBodyLocation() end, function() return item:canBeEquipped() end }
+    for _, l in ipairs(locations or {}) do tries[#tries + 1] = function() return l end end
+    for _, loc in ipairs(tries) do
+        local ok = pcall(function()
+            local l = loc()
+            if not l or l == "" then error("no location") end
+            body:setWornItem(l, item)
+        end)
+        if ok and wears(body, fullType) then return true end
+    end
+    LF.log("KIT couldn't put on " .. fullType)
+    return false
+end
+
+-- Returns true if anything changed.
+function LF.Appearance.roleKit(body, rec)
+    local changed = 0
+    local rto = rec.hqRole == "rto"
+    changed = changed + strip(body, function(t) return not rto and (t:find("ManPack") or t:find("Radio")) ~= nil end)
+    if rto then
+        changed = changed + strip(body, function(t) return isBackPack(t) end)
+        if not wears(body, "Base.ManPackRadio") and put(body, "Base.ManPackRadio", { "base:back", "Back" }) then changed = changed + 1 end
+    end
+    if rec.rank == "LT" then
+        local coat, cap = "Base.LF_Greatcoat_" .. rec.faction, "Base.LF_PeakCap_" .. rec.faction
+        changed = changed + strip(body, function(t, item)
+            local full = item:getFullType()
+            if full == coat or full == cap then return false end
+            return t:sub(1, 4) == "Hat_" or t:sub(1, 7) == "Jacket_" or t:sub(1, 11) == "JacketLong_" or isBackPack(t)
+        end)
+        if put(body, coat) then changed = changed + 1 end
+        if put(body, cap) then changed = changed + 1 end
+    end
+    if changed > 0 then
+        pcall(function() body:onWornItemsChanged(); body:resetModelNextFrame() end)
+    end
+    return changed > 0
+end
+
 -- Dress and style a freshly created body. Returns how many items it is wearing.
 function LF.Appearance.dress(body, rec)
     LF.try("body sex", function() body:setFemale(rec.female); return true end)
@@ -109,6 +187,11 @@ function LF.Appearance.dress(body, rec)
                 break
             end
         end
+    end
+
+    -- His place in the unit changes the kit (radio, officer's coat and cap).
+    if rec.faction == "GER" or rec.faction == "SOV" then
+        if LF.guard("role kit", LF.Appearance.roleKit, body, rec) then rec.worn = captureWorn(body) end
     end
 
     -- Outfits can change hair, so the record's look is applied last.

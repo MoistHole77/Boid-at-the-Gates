@@ -28,8 +28,11 @@ local function idOf(body) return body:getModData().LF_id end
 
 -- Earned traits (LF_Service): a veteran shakes suppression off faster and is pinned later; a
 -- shaken man is pinned sooner.
+-- Morale (LF_Morale) moves the pinned level too.
 local function recoverMul(id) return LF.Service and LF.Service.recoverMul(id) or 1 end
-local function pinnedAt(id) return CFG.pinned + (LF.Service and LF.Service.pinShift(id) or 0) end
+local function pinnedAt(id)
+    return CFG.pinned + (LF.Service and LF.Service.pinShift(id) or 0) + (LF.Morale and LF.Morale.pinShift(id) or 0)
+end
 
 local function valueOf(id)
     local l = levels[id]
@@ -55,6 +58,7 @@ function LF.Suppress.add(body, amount)
     if not id or immune[id] then return end
     local was = valueOf(id)
     if LF.Service then amount = amount * LF.Service.suppressMul(id) end
+    if LF.Morale then amount = amount * LF.Morale.suppressMul(id) end
     local v = math.min(CFG.max, was + amount)
     local l = levels[id]
     if not l then l = {}; levels[id] = l end

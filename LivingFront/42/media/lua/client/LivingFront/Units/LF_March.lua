@@ -228,10 +228,11 @@ end
 --   file   - ranger file: single file on the line of the route, ~2.5 tiles apart
 --   column - tactical column: a staggered file, men alternately ~1.5 tiles either side
 --   wedge  - each team a wedge (point man, two men back-left and back-right, one behind); the
---            squad's teams in a wedge too - Alpha 1 at the point, Alpha 2 back-left, Bravo 1
---            back-right, Bravo 2 at the rear, the sergeant in the middle
--- Order of march: Alpha 1 leads; the point man is its first man.
---   ranger file   - Alpha 1, then the sergeant, then the other teams
+--            squad's teams echeloned - Alpha ahead and left, Bravo behind and right (teams that
+--            joined: Charlie back-left, Delta at the rear), the sergeant in the middle
+-- Order of march: Alpha leads; the point man is its first man. (A machine-gun squad: Gun 1, then
+-- Gun 2.) The medic walks at the back of Bravo.
+--   ranger file   - Alpha, then the sergeant, then the other teams
 --   tactical column - the teams down both sides of the road; the sergeant walks in the middle of
 --                   the road, level with the point man
 --   wedge         - the sergeant in the middle of the formation
@@ -241,9 +242,8 @@ end
 
 LF.March.FORMATIONS = { file = "ranger file", column = "tactical column", wedge = "wedge" }
 
-local TEAM_WEDGE = { { 0, 0 }, { -7, -7 }, { -7, 7 }, { -14, 0 } }     -- by team slot: forward, lateral
-local MAN_WEDGE = { { 0, 0 }, { -2, -2 }, { -2, 2 }, { -4, 0 } }       -- by place in the team
-local MG_WEDGE = { 1, 4, 2, 3 }     -- a machine-gun squad: the guns back-left and back-right, Alpha 2 at the rear
+local TEAM_WEDGE = { { 0, -3 }, { -8, 5 }, { -8, -9 }, { -15, 0 } }   -- by team slot: forward, lateral
+local MAN_WEDGE = { { 0, 0 }, { -2, -2 }, { -2, 2 }, { -4, 0 }, { -5.5, 0 } }   -- by place in the team (5th: the medic)
 
 -- The order of march (living men only). In a tactical column the sergeant is last in the list but
 -- not in the file (he walks level with the point man, in the middle of the road - layOut).
@@ -260,9 +260,7 @@ local function columnOrder(squad, form)
             end
         end
     end
-    -- (A machine-gun squad carries its guns in the middle: Alpha 1, Gun 1, the sergeant, Gun 2,
-    -- Alpha 2 at the rear.)
-    local slots = squad.mg and { 1, 3, 4, 2 } or { 1, 2, 3, 4 }
+    local slots = { 1, 2, 3, 4 }
     local sgt = nil
     if squad.leader then
         local r = LF.Records.get(squad.leader)
@@ -303,7 +301,7 @@ local function layOut(squad, M)
                 local team = LF.Units.get(r.team)
                 local slot = squad.teamOnly and 1 or (team and team.slot or 1)
                 k[slot] = (k[slot] or 0) + 1
-                local t, mo = TEAM_WEDGE[squad.mg and MG_WEDGE[slot] or slot], MAN_WEDGE[math.min(k[slot], 4)]
+                local t, mo = TEAM_WEDGE[slot] or TEAM_WEDGE[1], MAN_WEDGE[math.min(k[slot], 5)]
                 f, l = t[1] + mo[1], t[2] + mo[2]
             end
             M.off[rid] = { f = f, l = l }

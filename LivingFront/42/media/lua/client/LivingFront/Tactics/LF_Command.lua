@@ -165,7 +165,7 @@ local function standDown(squad, sq, cid, cmd)
         LF.log("STANDBY " .. squad.name .. ": back where it was, standing by")
         return true
     end
-    local busy = squad.objTask ~= nil or (M ~= nil and not M.arrived) or clearing(squad)
+    local busy = squad.objTask ~= nil or squad.platoonTask ~= nil or (M ~= nil and not M.arrived) or clearing(squad)
         or LF.Stance.get(squad).name == "defensive" or sq.intent ~= nil
         or LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, 60) ~= nil
     if busy then sq.busyAt = LF.tick; return false end
@@ -227,6 +227,8 @@ local function updateSquad(squad)
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     -- Assaulting an objective with nobody in sight: the objective's windows are the target.
     if not c and LF.Objective then c = LF.Objective.fallbackContact(squad) end
+    -- Supporting a platoon attack by fire with nobody in sight: the objective's windows.
+    if not c and squad.sbf and LF.Platoon then c = LF.Platoon.supportContact(squad) end
     -- A machine-gun squad with nothing of its own backs up a friendly unit's fight close by.
     if not c and squad.mg and LF.MG then c = LF.MG.supportContact(squad, cmd) end
     if not c then
@@ -305,7 +307,9 @@ local function updateSquad(squad)
 
     local intent = sq.intent
     local why
-    if total > 0 and fitN / total < CFG.fallbackFit then
+    -- (A squad in good heart hangs on longer before it falls back; a shaken one goes sooner.)
+    local fallbackFit = LF.Morale and LF.Morale.fallbackShare(squad, CFG.fallbackFit) or CFG.fallbackFit
+    if total > 0 and fitN / total < fallbackFit then
         if not sq.broken and LF.Service then LF.guard("service broke", LF.Service.unitBroke, squad) end
         sq.broken = true
         -- Once out of range, he only falls back again if the enemy comes on (6 tiles closer) -
@@ -328,7 +332,7 @@ local function updateSquad(squad)
         end
         if done then intent, why = "HOLD", "flankers in position"
         elseif sq.flank and LF.tick - sq.flank.started > CFG.flankTimeout then intent, why = "HOLD", "flank took too long" end
-    elseif intent == "HOLD" and squad.leader and front <= CFG.advanceResume and not clearing(squad)
+    elseif intent == "HOLD" and squad.leader and not squad.supportOnly and front <= CFG.advanceResume and not clearing(squad)
         and LF.tick - (sq.holdSince or LF.tick) >= CFG.flankMinHold
         and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
         and total > 0 and fitN / total >= CFG.flankFit
@@ -375,10 +379,19 @@ local function updateSquad(squad)
     elseif not intent then
         intent, why = "HOLD", "contact at " .. math.floor(front) .. " tiles"
     end
+    -- A platoon's support squad holds its fire position: it doesn't advance or flank (LF_Platoon).
+    if squad.supportOnly and (intent == "ADVANCE" or intent == "FLANK") then
+        intent, why = "HOLD", "supporting by fire from here"
+    end
+    -- Ordered to withdraw: back by bounds until out of range (then the platoon marches it off).
+    if squad.withdrawTo then
+        if front < CFG.fallbackClear + 4 then intent, why = "FALLBACK", "withdrawing on the lieutenant's order"
+        else intent, why = "HOLD", "out of range - withdrawing" end
+    end
     setIntent(squad, sq, cid, intent, why or "")
 
-    -- A building with only a few of the enemy left in it: send Alpha 1 in.
-    if intent == "HOLD" and fitN > 0 and pinnedN / fitN < CFG.pinnedHold then sergeantClear(squad, sq, cid) end
+    -- A building with only a few of the enemy left in it: send Alpha in.
+    if intent == "HOLD" and not squad.supportOnly and not squad.withdrawTo and fitN > 0 and pinnedN / fitN < CFG.pinnedHold then sergeantClear(squad, sq, cid) end
     -- Pass it on (corporals out of earshot act on their own), then the drills.
     passOrders(squad, sq, cmd)
     chooseShift(squad, sq)

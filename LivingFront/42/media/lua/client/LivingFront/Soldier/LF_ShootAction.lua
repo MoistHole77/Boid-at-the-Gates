@@ -17,6 +17,9 @@
 require "TimedActions/ISBaseTimedAction"
 require "LivingFront/Core/LF_Core"
 
+-- The rifle clips and their handgun counterparts (a lieutenant's pistol).
+local PISTOL_ANIM = { LF_AimRifle = "LF_AimPistol", LF_AimCrouch = "LF_AimPistolCrouch", LF_FireRifle = "LF_FirePistol" }
+
 LF_ShootAction = ISBaseTimedAction:derive("LF_ShootAction")
 
 -- Tracking: rotate the body toward the aiming stance a few degrees per update (a sweep, not a
@@ -115,6 +118,10 @@ function LF_ShootAction:new(character, target, gun, onFire, aimAnim, fireAnim, p
     o.aimAnim = aimAnim or "LF_AimRifle"
     o.fireAnim = fireAnim or "LF_FireRifle"
     o.profile = profile or LF.Weapons.PROFILES.Kar98k
+    if o.profile.kind == "pistol" then          -- (an officer's pistol: the handgun clips)
+        o.aimAnim = PISTOL_ANIM[o.aimAnim] or "LF_AimPistol"
+        o.fireAnim = "LF_FirePistol"
+    end
     o.fired = 0
     o.maxTime = -1               -- ends itself (forceComplete) when the burst and bolt are done
     o.stopOnWalk = false
@@ -175,6 +182,8 @@ function LF_HoldAimAction:perform() ISBaseTimedAction.perform(self) end
 function LF_HoldAimAction:new(character, point, gun, anim, ticks)
     local o = ISBaseTimedAction.new(self, character)
     o.point, o.gun, o.anim = point, gun, anim or "LF_AimCrouch"
+    local prof = LF.Weapons and LF.Weapons.profileOf(character)
+    if prof and prof.kind == "pistol" then o.anim = PISTOL_ANIM[o.anim] or o.anim end
     o.untilTick = ticks and (LF.tick + ticks) or nil
     o.maxTime = -1
     o.stopOnWalk, o.stopOnRun, o.stopOnAim = false, false, false

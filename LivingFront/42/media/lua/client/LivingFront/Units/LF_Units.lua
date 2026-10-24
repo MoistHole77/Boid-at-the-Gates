@@ -1,10 +1,13 @@
 -- Living Front: military units (squads and fire teams).
 --
--- Structure (see the squad tactics design doc): every unit is a leader plus two alpha elements
--- (nearer the front) and two bravo elements (the rear).
---   team  = corporal + 3 privates; its elements are individual soldiers (A A B B)
---   squad = sergeant + 4 teams; its elements are teams (Alpha 1, Alpha 2, Bravo 1, Bravo 2)
--- Platoons and companies come later, with the war layer.
+-- Structure:
+--   team    = corporal + 3 privates; its elements are pairs of soldiers (A A B B)
+--   squad   = sergeant + two teams (Alpha forward, Bravo back) + the squad medic, who goes
+--             with Bravo (10 men). A machine-gun squad's two teams are both gun teams.
+--   platoon = its headquarters (lieutenant, platoon sergeant, radio operator - LF_Platoon) and
+--             two squads.
+-- A squad can still take in lone teams that join it (LF_Join): they fill the Charlie and Delta
+-- slots.
 --
 -- Units are saved alongside the NPC records (global ModData, key "units"). Each soldier's record
 -- carries its place: squad, team, rank, element and slot. Unit membership does not change when a
@@ -15,8 +18,8 @@ require "LivingFront/Core/LF_Records"
 
 LF.Units = LF.Units or {}
 
-LF.Units.RANKS = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant" }
-local RANK_SHORT = { PVT = "Pvt.", CPL = "Cpl.", SGT = "Sgt." }
+LF.Units.RANKS = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant" }
+local RANK_SHORT = { PVT = "Pvt.", CPL = "Cpl.", SGT = "Sgt.", SSG = "SSgt.", LT = "Lt." }
 
 local function units()
     local data = LF.Records.data()
@@ -58,7 +61,7 @@ function LF.Units.pruneDead()
     local data = units()
     local removed = 0
     for id, squad in pairs(data.units) do
-        if squad.kind == "squad" and not squad.joined then     -- (a team away with another unit isn't gone)
+        if (squad.kind == "squad" or squad.kind == "hq") and not squad.joined then     -- (a team away with another unit isn't gone)
             local anyAlive = false
             for _, rid in ipairs(LF.Units.members(id)) do
                 local r = LF.Records.get(rid)
@@ -70,6 +73,16 @@ function LF.Units.pruneDead()
                 memberCache[id] = nil
                 removed = removed + 1
             end
+        end
+    end
+    -- A platoon with nothing left of it.
+    for id, p in pairs(data.units) do
+        if p.kind == "platoon" then
+            local left = data.units[p.hq] ~= nil
+            for i = #(p.squads or {}), 1, -1 do
+                if data.units[p.squads[i]] then left = true else table.remove(p.squads, i) end
+            end
+            if not left then data.units[id] = nil end
         end
     end
     return removed
@@ -107,20 +120,24 @@ local function freeSpot(x, y, z)
 end
 
 -- Formation offsets, in tiles: forward (toward the enemy), lateral (to the right of forward).
--- Teams sit in a box around the sergeant: alphas forward, bravos back, 1s left, 2s right.
+-- Alpha ahead and to the left of the sergeant, Bravo behind and to the right; teams that join
+-- the squad take Charlie (ahead, right) and Delta (behind, left).
 local TEAM_SLOTS = {
-    { name = "Alpha 1", element = "A", fwd = 3, lat = -5 },
-    { name = "Alpha 2", element = "A", fwd = 3, lat = 5 },
-    { name = "Bravo 1", element = "B", fwd = -3, lat = -5 },
-    { name = "Bravo 2", element = "B", fwd = -3, lat = 5 },
+    { name = "Alpha", element = "A", fwd = 3, lat = -4 },
+    { name = "Bravo", element = "B", fwd = -3, lat = 4 },
+    { name = "Charlie", element = "A", fwd = 3, lat = 4 },
+    { name = "Delta", element = "B", fwd = -3, lat = -4 },
 }
--- Inside a team: A A in front, B B behind; the corporal takes the second alpha slot.
+-- Inside a team: A A in front, B B behind; the corporal takes the second alpha slot. The squad
+-- medic is Bravo's fifth man, behind it.
 local MAN_SLOTS = {
     { element = "A", fwd = 1, lat = -1.5 },
     { element = "A", fwd = 1, lat = 1.5, leader = true },
     { element = "B", fwd = -1, lat = -1.5 },
     { element = "B", fwd = -1, lat = 1.5 },
+    { element = "B", fwd = -2.5, lat = 0 },
 }
+local SQUAD_TEAMS = 2       -- teams in a new squad
 
 local function placeSoldier(faction, x, y, z, fields)
     local px, py = freeSpot(x, y, z)
@@ -128,6 +145,9 @@ local function placeSoldier(faction, x, y, z, fields)
     for k, v in pairs(fields) do rec[k] = v end
     return rec
 end
+
+LF.Units.newUnit = newUnit                 -- (LF_Platoon builds its headquarters with these)
+LF.Units.placeSoldier = placeSoldier
 
 -- Who commands this unit: the squad leader, or for a lone fire team, its corporal.
 function LF.Units.commander(squad)
@@ -139,9 +159,9 @@ function LF.Units.commander(squad)
     return nil
 end
 
--- Create a full squad (17 soldiers) centred on (x, y), facing the direction (fx, fy).
--- With teamOnly, a lone fire team (4 soldiers, led by its corporal) instead. With mg, a
--- machine-gun squad (its bravo teams are gun teams - LF_MG).
+-- Create a full squad (10 soldiers: sergeant, Alpha, Bravo and the medic) centred on (x, y),
+-- facing the direction (fx, fy). With teamOnly, a lone fire team (4 soldiers, led by its
+-- corporal) instead. With mg, a machine-gun squad (both its teams are gun teams - LF_MG).
 -- Returns the squad unit (a lone team is stored as a squad with one team and no sergeant).
 function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly, mg)
     local len = math.sqrt(fx * fx + fy * fy)
@@ -161,13 +181,14 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly, mg)
     end
 
     for ti, ts in ipairs(TEAM_SLOTS) do
-        if teamOnly and ti > 1 then break end
+        if (teamOnly and ti > 1) or ti > SQUAD_TEAMS then break end
         local tf, tl = ts.fwd, ts.lat
         if teamOnly then tf, tl = 0, 0 end      -- a lone team is centred on the spot
         local team = newUnit({ kind = "team", faction = faction, squad = squad.id, name = ts.name,
             element = ts.element, slot = ti, members = {} })
         squad.teams[ti] = team.id
         for mi, ms in ipairs(MAN_SLOTS) do
+            if mi > 4 and (teamOnly or ti ~= 2) then break end      -- (the medic: Bravo's fifth man)
             local mx, my = at(tf + ms.fwd, tl + ms.lat)
             local rec = placeSoldier(faction, mx, my, z, { squad = squad.id, team = team.id,
                 rank = ms.leader and "CPL" or "PVT", element = ms.element, slot = mi, grenades = ms.leader and 1 or 0 })
@@ -187,7 +208,7 @@ end
 function LF.Units.report()
     local squads = 0
     for _, squad in pairs(LF.Units.all()) do
-        if squad.kind == "squad" then
+        if squad.kind == "squad" or squad.kind == "hq" then
             squads = squads + 1
             local lead = LF.Records.get(squad.leader)
             local alive, total = 0, squad.leader and 1 or 0
@@ -210,7 +231,8 @@ function LF.Units.report()
             end
             LF.log("UNIT " .. squad.name .. " (#" .. squad.id .. ") " .. (squad.stance or "offensive") .. " stance, "
                 .. (squad.objTask and ("objective task " .. tostring(squad.objTask.kind) .. "/" .. tostring(squad.objTask.phase) .. ", ") or "")
-                .. alive .. "/" .. total .. " alive, leader "
+                .. alive .. "/" .. total .. " alive" .. (LF.Morale and (", morale " .. math.floor(LF.Morale.average(squad.id))) or "")
+                .. ", leader "
                 .. (lead and (LF.Units.title(lead) .. (lead.alive and "" or " (dead)")) or "none"))
             for _, line in ipairs(lines) do LF.log(line) end
         end
@@ -225,7 +247,7 @@ end
 -- Forget the cached member list of a unit (after teams move between units).
 function LF.Units.dirty(squadId) memberCache[squadId] = nil end
 
--- The formation slots a squad's teams can take (Alpha 1, Alpha 2, Bravo 1, Bravo 2).
+-- The formation slots a squad's teams can take (Alpha, Bravo, Charlie, Delta).
 LF.Units.TEAM_SLOTS = TEAM_SLOTS
 
 function LF.Units.members(squadId)
@@ -249,8 +271,16 @@ function LF.Units.members(squadId)
     return list
 end
 
+-- A platoon headquarters on the move: the radio operator at the lieutenant's left shoulder, the
+-- platoon sergeant a little behind on his right.
+local HQ_SLOT = { rto = { -1.5, -1.5 }, ssgt = { -2, 2 } }
+
 -- A soldier's formation slot relative to his squad leader: forward, lateral (tiles).
 function LF.Units.slotOffset(rec)
+    if rec.hqRole and HQ_SLOT[rec.hqRole] then
+        local squad = rec.squad and LF.Units.get(rec.squad)
+        if not (squad and squad.leader == rec.id) then return HQ_SLOT[rec.hqRole][1], HQ_SLOT[rec.hqRole][2] end
+    end
     if rec.rank == "SGT" or not rec.team then return 0, 0 end
     local team = LF.Units.get(rec.team)
     local ts = team and TEAM_SLOTS[team.slot]
@@ -321,6 +351,15 @@ end
 -- Returns false if nobody was fit to take over (a relieved leader then keeps command).
 local function handOver(rec, why)
     if not rec.squad then return true end
+    do
+        local u = LF.Units.get(rec.squad)
+        if u and u.kind == "hq" then           -- a platoon headquarters: its own line (LF_Platoon)
+            if u.leader ~= rec.id then return true end
+            if LF.Platoon then return LF.Platoon.handOver(u, rec, why) end
+            u.leader = nil
+            return true
+        end
+    end
     local team = rec.team and LF.Units.get(rec.team)
     if team and team.leader == rec.id then refillTeam(team, why, rec) end
 

@@ -1,12 +1,12 @@
 -- Living Front: machine guns - the gun teams of a machine-gun squad.
 --
--- A machine-gun squad is a sergeant, two rifle teams (Alpha 1, Alpha 2) and two gun teams in the
--- bravo slots (Gun 1, Gun 2). A gun team is four men:
+-- A machine-gun squad is a sergeant, two gun teams (Gun 1 in the alpha slot, Gun 2 in the bravo
+-- slot) and the squad medic. A gun team is four men:
 --   gunner    - fires the gun (MG34 for the Germans, DP-27 for the Soviets) and nothing else
 --   assistant - its corporal: down beside the gun, feeds the belts (pans), changes the barrel
 --   two men   - security and spare ammunition, with rifles; the next in line to crew the gun
--- Being in the bravo slots, the guns are the squad's base of fire: when the sergeant flanks, the
--- rifle teams go round and the guns keep the enemy's heads down.
+-- With no rifle team, the squad never flanks: it is a base of fire. In a platoon the lieutenant
+-- gives it the supporting task - the guns keep the enemy's heads down while a rifle squad goes in.
 --
 -- The gun:
 --   * It can't be fired on the move. Where the gunner stops he sets it up first (~2.5 s); when he
@@ -28,8 +28,8 @@
 -- Moving: the guns go one at a time (leapfrogging) - one is set up and firing while the other
 -- moves - and they stop short of the enemy (CFG.standoff), out where the rifles can't reach.
 -- In a defence the guns take the front (front-left and front-right in the open; the best windows
--- toward the enemy in a building) and the rifle teams the flanks and the rear. They don't go into a
--- building that is being cleared: they cover it from outside.
+-- toward the enemy in a building) and their riflemen the flanks. They don't go into a building that
+-- is being cleared: they cover it from outside.
 -- The enemy treats a firing gun as the most dangerous thing on the field: he shoots its crew first
 -- (LF_Brain), throws grenades at it (LF_Grenade), and his sergeant flanks it (LF_Command).
 
@@ -108,19 +108,19 @@ end
 
 -- ---- the squad -------------------------------------------------------------------------------
 
--- Make a new squad (LF_Units.createSquad) a machine-gun squad: Bravo 1 and 2 become Gun 1 and 2.
+-- Make a new squad (LF_Units.createSquad) a machine-gun squad: Alpha and Bravo become Gun 1 and 2.
 function LF.MG.outfit(squad)
     squad.mg = true
     squad.name = squad.name:gsub(" squad ", " MG squad ")
     local n = 0
     for _, tid in ipairs(squad.teams) do
         local team = LF.Units.get(tid)
-        if team and team.element == "B" then
+        if team then
             n = n + 1
             team.mg, team.name = true, "Gun " .. n
             for _, rid in ipairs(team.members) do
                 local r = LF.Records.get(rid)
-                if r then
+                if r and r.slot <= 4 then                  -- (not the medic, Bravo's fifth man)
                     if r.slot == 1 then r.mgRole, r.weapon = "gunner", LF.Weapons.MG_OF[r.faction]
                     elseif r.rank == "CPL" then r.mgRole = "assistant"
                     else r.mgRole = "ammo" end
@@ -141,7 +141,7 @@ local function crew(team)
     local g, a, rest = nil, nil, {}
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
-        if r and r.team == team.id and r.alive then
+        if r and r.team == team.id and r.alive and not r.medic then   -- (the medic never crews the gun)
             if r.mgRole == "gunner" and not g then g = r
             elseif r.mgRole == "assistant" and not a then a = r
             else rest[#rest + 1] = r end

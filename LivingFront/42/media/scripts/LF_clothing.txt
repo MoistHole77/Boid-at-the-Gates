@@ -1,0 +1,75 @@
+module Base
+{
+    item LF_Greatcoat_GER
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketLongBlack,
+        BiteDefense = 20,
+        BloodLocation = LongJacket,
+        BodyLocation = base:jacketsuit,
+        ClothingItem = LF_Greatcoat_GER,
+        FabricType = Cotton,
+        Insulation = 0.7,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.45,
+        WindResistance = 0.45,
+        WorldStaticModel = JacketLong_Ground,
+        Tags = base:ripclothingcotton,
+    }
+
+    item LF_PeakCap_GER
+    {
+        DisplayCategory = Accessory,
+        ItemType = base:clothing,
+        Weight = 0.3,
+        Icon = HatBeretArmy,
+        BloodLocation = Head,
+        BodyLocation = base:hat,
+        CanHaveHoles = false,
+        ChanceToFall = 0,
+        ClothingItem = LF_PeakCap_GER,
+        Insulation = 0.15,
+        WindResistance = 0.1,
+    }
+
+    item LF_Greatcoat_SOV
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketLongBlack,
+        BiteDefense = 20,
+        BloodLocation = LongJacket,
+        BodyLocation = base:jacketsuit,
+        ClothingItem = LF_Greatcoat_SOV,
+        FabricType = Cotton,
+        Insulation = 0.7,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.45,
+        WindResistance = 0.45,
+        WorldStaticModel = JacketLong_Ground,
+        Tags = base:ripclothingcotton,
+    }
+
+    item LF_PeakCap_SOV
+    {
+        DisplayCategory = Accessory,
+        ItemType = base:clothing,
+        Weight = 0.3,
+        Icon = HatBeretArmy,
+        BloodLocation = Head,
+        BodyLocation = base:hat,
+        CanHaveHoles = false,
+        ChanceToFall = 0,
+        ClothingItem = LF_PeakCap_SOV,
+        Insulation = 0.15,
+        WindResistance = 0.1,
+    }
+
+}

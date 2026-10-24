@@ -172,7 +172,7 @@ end
 
 -- Does this unit have an objective task (the sergeant doesn't change stance on his own then)?
 function LF.Objective.busy(squad)
-    return squad.objTask ~= nil
+    return squad.objTask ~= nil or squad.platoonTask ~= nil
 end
 
 -- ---- each update ----------------------------------------------------------------------------
@@ -206,13 +206,15 @@ local function startAssault(squad, obj, why, words)
         if d > 1 then squad.facingX, squad.facingY = dx / d, dy / d end
     end
     LF.Tactics.setStance(squad, "offensive")
-    say(squad, words or "Bravo, base of fire on that building! Alpha teams, round the flank - move!")
+    say(squad, words or "Bravo, base of fire on that building! Alpha, round the flank - move!")
     return t
 end
 
 -- The patrol carrying a "take" task has arrived (LF_March calls this the moment the point man
 -- reaches the rally point): straight into the assault. True if the task took over.
 function LF.Objective.onArrived(squad)
+    -- (A squad of a platoon sent to a support-by-fire position or a rally point - LF_Platoon.)
+    if LF.Platoon and LF.Platoon.onArrived(squad) then return true end
     -- Sent to hold an objective from afar: there now - take up the defence.
     if squad.pendingHold then
         local obj = LF.Objective.get(squad.pendingHold)

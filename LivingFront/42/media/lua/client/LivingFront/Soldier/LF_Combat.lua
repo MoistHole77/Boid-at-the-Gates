@@ -90,8 +90,17 @@ local function backSlot(body)
     return (ok and bag) and BACK_SLOTS[1] or BACK_SLOTS[2]
 end
 
+-- (An officer's pistol isn't slung: it goes back in its holster - out of his hands, unseen.)
+local holstered = setmetatable({}, { __mode = "k" })     -- body -> pistol
+
+local function isPistol(gun)
+    local ok, a = pcall(function() return gun:getSwingAnim() end)
+    return ok and a == "Handgun"
+end
+
 -- The rifle on his back, and the slot it's in; nil if none.
 function LF.Combat.slungGun(body)
+    if holstered[body] then return holstered[body], "holster" end
     for _, loc in ipairs(BACK_SLOTS) do
         local ok, g = pcall(function() return body:getAttachedItem(loc) end)
         if ok and g then return g, loc end
@@ -102,6 +111,11 @@ end
 local function doSling(body)
     local gun = body:getPrimaryHandItem()
     if not (gun and instanceof(gun, "HandWeapon")) then return false end
+    if isPistol(gun) then
+        body:setPrimaryHandItem(nil)
+        holstered[body] = gun
+        return true
+    end
     local loc = backSlot(body)
     body:setPrimaryHandItem(nil)
     body:setSecondaryHandItem(nil)
@@ -115,6 +129,11 @@ end
 local function doUnsling(body)
     local gun, loc = LF.Combat.slungGun(body)
     if not gun then return nil end
+    if loc == "holster" then
+        holstered[body] = nil
+        body:setPrimaryHandItem(gun)
+        return gun
+    end
     if not pcall(function() body:removeAttachedItem(gun) end) then body:setAttachedItem(loc, nil) end
     gun:setAttachedSlot(-1)
     gun:setAttachedSlotType(nil)

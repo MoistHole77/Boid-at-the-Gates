@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animNode>
+	<m_Name>LF_FirePistol</m_Name>
+	<m_AnimName>Bob_AttackHandgun</m_AnimName>
+	<m_Looped>false</m_Looped>
+	<m_BlendTime>0.05</m_BlendTime>
+	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
+	<m_Conditions x_name="lf-fire-pistol-0001">
+		<m_Name>PerformingAction</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>LF_FirePistol</m_Value>
+	</m_Conditions>
+</animNode>

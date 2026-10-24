@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<fileGuidTable>
+	<files>
+		<path>media/clothing/clothingItems/LF_Greatcoat_GER.xml</path>
+		<guid>ff629646-d17b-55cc-a1a9-cd440a07e83b</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_Greatcoat_SOV.xml</path>
+		<guid>4750d34c-03fe-5eb3-b788-15320198647a</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_PeakCap_GER.xml</path>
+		<guid>71a7cefa-66de-5ae6-a19a-d995a48092d8</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_PeakCap_SOV.xml</path>
+		<guid>a67b9bc5-e564-5f71-bf0d-9e0e5b1597dc</guid>
+	</files>
+</fileGuidTable>

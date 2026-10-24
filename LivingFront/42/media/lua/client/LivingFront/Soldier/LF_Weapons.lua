@@ -3,6 +3,10 @@
 -- Who carries what:
 --   privates and corporals - bolt-action rifles: Kar98k (German), Mosin-Nagant (Soviet)
 --   sergeants              - submachine guns:    MP40 (German),   PPSh-41 (Soviet)
+--   platoon sergeants      - the same submachine guns
+--   lieutenants            - pistols:            P38 (German),    TT-33 (Soviet) - an officer
+--                            leads his platoon, he doesn't fight it: 8 rounds, quick to aim,
+--                            poor beyond ~10 tiles
 --   armed civilians        - Mosin-Nagant
 -- The game has no WWII guns, so each is drawn and heard as the closest vanilla firearm (the
 -- `item` field); the behaviour is entirely ours.
@@ -65,6 +69,20 @@ local W = {
         accBase = 4.4, accFall = 0.08, accMin = 1.3, zoneHit = 7,
         reload = 240, coolAt = 160,
     },
+    P38 = {
+        name = "P38", item = "Base.Pistol2", sound = "M1911Shoot", kind = "pistol",
+        clip = 8, interval = 55, burst = 1, gap = 0, aimTicks = 30, recover = 25,
+        wound = 32, impact = 0.6, suppress = 0.35,
+        accBase = 60, accFall = 5.0, accMin = 3,
+        reload = 150,
+    },
+    TT33 = {
+        name = "TT-33", item = "Base.Pistol", sound = "M9Shoot", kind = "pistol",
+        clip = 8, interval = 55, burst = 1, gap = 0, aimTicks = 30, recover = 25,
+        wound = 32, impact = 0.6, suppress = 0.35,
+        accBase = 60, accFall = 5.0, accMin = 3,
+        reload = 150,
+    },
     PPSh = {
         name = "PPSh", item = "Base.ShotgunSawnoff", sound = "M16Shoot", kind = "smg",
         clip = 71, interval = 150, burst = 6, gap = 4, aimTicks = 45, recover = 20,
@@ -81,10 +99,11 @@ LF.Weapons.MG_OF = { GER = "MG34", SOV = "DP27" }
 function LF.Weapons.keyFor(rec)
     if rec.weapon and W[rec.weapon] then return rec.weapon end
     local key
+    local smg = rec.rank == "SGT" or rec.rank == "SSG"
     if rec.faction == "GER" then
-        key = rec.rank == "SGT" and "MP40" or "Kar98k"
+        key = rec.rank == "LT" and "P38" or smg and "MP40" or "Kar98k"
     elseif rec.faction == "SOV" then
-        key = rec.rank == "SGT" and "PPSh" or "Mosin"
+        key = rec.rank == "LT" and "TT33" or smg and "PPSh" or "Mosin"
     else
         key = "Mosin"
     end

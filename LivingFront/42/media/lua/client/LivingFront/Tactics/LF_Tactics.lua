@@ -86,7 +86,7 @@ local CFG = {
     flankPushes = 3,
     reformTicks = 2700,
     -- Clearing a building (offensive)
-    clearAt = 3,            -- send Alpha 1 in when the enemy known in a building is down to this many
+    clearAt = 3,            -- send a team in when the enemy known in a building is down to this many
     clearCooldown = 3600,   -- at most one clearing order per ~60 s
     clearStackTimeout = 1200, -- after ~20 s, go in with whoever is stacked (2+ men) or call it off
     clearStackClose = 480,  -- after ~8 s, a man within 2.5 tiles of his stack spot counts as stacked
@@ -133,7 +133,7 @@ function POINT:getZ() return self.z end
 function POINT:isDead() return false end
 function LF.Tactics.point(x, y, z) return setmetatable({ x = x, y = y, z = z or 0 }, POINT) end
 
-local ELEMENT_NAME = { A = "Alpha", B = "Bravo" }
+local ELEMENT_NAME = { A = "First pair", B = "Second pair" }   -- (a team's two pairs)
 local OTHER = { A = "B", B = "A" }
 
 -- ---- shouting -------------------------------------------------------------------------------
@@ -261,7 +261,9 @@ local function placeOf(rec)
 end
 
 -- (A machine gun's crew then go to the gun - LF_MG.)
+-- (The platoon headquarters goes where the lieutenant's plan puts it - LF_Platoon.)
 function LF.Tactics.place(rec)
+    if rec.hqRole and LF.Platoon then return LF.Platoon.place(rec) end
     if rec.mgRole and LF.MG then return LF.MG.place(rec, placeOf(rec)) end
     return placeOf(rec)
 end
@@ -295,8 +297,8 @@ local function setIntent(squad, sq, cid, intent, why)
         local words = INTENT_WORDS[intent]
         if intent == "FLANK" and sq.flank then
             local side = sq.flank.side < 0 and "left" or "right"
-            words = sq.flank.gun and ("Alpha teams, flank that gun - " .. side .. "! Bravo teams, cover!")
-                or ("Alpha teams, flank " .. side .. "! Bravo teams, cover!")
+            words = sq.flank.gun and ("Alpha, flank that gun - " .. side .. "! Bravo, cover!")
+                or ("Alpha, flank " .. side .. "! Bravo, cover!")
         end
         LF.Tactics.shout(cid, words)
     end

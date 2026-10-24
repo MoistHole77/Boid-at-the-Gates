@@ -11,13 +11,14 @@ local CFG, fit, setIntent, squads, teams = I.CFG, I.fit, I.setIntent, I.squads, 
 -- ---- defensive stance: all-round defence ---------------------------------------------------
 --
 -- The sergeant calls it where he stands: that spot is the centre of the perimeter and he stays
--- there. Each team holds a quarter: Alpha 1 north, Alpha 2 west, Bravo 1 south, Bravo 2 east,
--- ~7 tiles out, its four men spread along the arc (a lone fire team: one man per quarter, ~3
--- tiles out). Every man takes cover facing out of his quarter and stays there.
+-- there. Each pair holds a quarter, ~7 tiles out: Alpha's front pair north, its back pair west,
+-- Bravo's front pair south, its back pair (and the medic) east (a squad that has taken in more
+-- teams: a team to a quarter; a lone fire team: one man per quarter, ~3 tiles out). Every man
+-- takes cover facing out of his quarter and stays there.
 -- Facing the threat: with no enemy known, the four quarters follow the compass. Once the
 -- sergeant knows where the enemy is (when he calls it, or when the enemy first shows up), the
--- defence re-forms around him: Alpha 1 faces him, Alpha 2 and Bravo 2 take the front-left and
--- front-right (55 degrees off), and Bravo 1 is rear security, closer in. Every man's cover then
+-- defence re-forms around him: the first quarter faces him, the second and fourth take the
+-- front-left and front-right (55 degrees off), and the third is rear security, closer in. Every man's cover then
 -- faces the enemy's fire, not just out of his quarter. If the attack later comes from a quite
 -- different direction (70+ degrees off), it re-forms again - at most once per ~45 s.
 -- A man fires at any enemy he can see, but he only covers (area fire) and watches his own
@@ -27,7 +28,8 @@ local CFG, fit, setIntent, squads, teams = I.CFG, I.fit, I.setIntent, I.squads, 
 
 local SECTOR_ANGLE = { -math.pi / 2, math.pi, math.pi / 2, 0 }    -- north, west, south, east
 local SECTOR_NAME = { "north", "west", "south", "east" }
-local MAN_OFFSET = { -4.5, -1.5, 1.5, 4.5 }                      -- along the arc, by slot
+local MAN_OFFSET = { -4.5, -1.5, 1.5, 4.5 }                      -- along the arc, by slot (a team per quarter)
+local PAIR_OFFSET = { -1.5, 1.5, -1.5, 1.5, 0 }                  -- ... (a pair per quarter; the medic between)
 
 local function wrapAngle(a)
     while a > math.pi do a = a - 2 * math.pi end
@@ -36,12 +38,12 @@ local function wrapAngle(a)
 end
 
 -- Threat-weighted layout: degrees off the enemy's bearing and radius scale, by quarter.
-local WEIGHTED_DEG = { 0, -55, 180, 55 }       -- Alpha 1 front, Alpha 2 left, Bravo 1 rear, Bravo 2 right
+local WEIGHTED_DEG = { 0, -55, 180, 55 }       -- quarters: front, left, rear, right
 local WEIGHTED_SCALE = { 1, 1, 0.6, 1 }
--- A machine-gun squad: the guns (Bravo slots) front-left and front-right, the rifle teams the
--- flanks and the rear.
-local MG_WEIGHTED_DEG = { -110, 110, -25, 25 }
-local MG_WEIGHTED_SCALE = { 0.8, 0.8, 1, 1 }
+-- A machine-gun squad: each gun (its team's front pair) front-left and front-right, its two
+-- riflemen out on that flank.
+local MG_WEIGHTED_DEG = { -25, -110, 25, 110 }
+local MG_WEIGHTED_SCALE = { 1, 0.8, 1, 0.8 }
 
 local function sectorDir(sq, i)
     local a = sq.perim.ang and sq.perim.ang[i] or SECTOR_ANGLE[i]
@@ -62,12 +64,20 @@ local function faceThreat(sq, tx, ty)
     for i = 1, 4 do P.ang[i] = theta + math.rad(deg[i]) end
 end
 
+-- Does each pair hold a quarter (a squad of two teams), or each team (one that has taken in more)?
+local function byPairs(squad) return not squad.teamOnly and #squad.teams <= 2 end
+I.byPairs = byPairs
+
 -- Which quarter (1-4) a soldier holds; nil for the sergeant.
 local function sectorOf(squad, rec)
     if squad.teamOnly then return rec.slot end
     if rec.id == squad.leader then return nil end
     local team = rec.team and LF.Units.get(rec.team)
-    return team and team.slot
+    if not team then return nil end
+    if byPairs(squad) then
+        return math.min(4, (team.slot - 1) * 2 + (rec.element == "B" and 2 or 1))
+    end
+    return team.slot
 end
 
 local function sectorHasFit(squad, i)
@@ -103,7 +113,7 @@ function LF.Tactics.perimeterPlace(squad, sq, rec)
     local i = sectorOf(squad, rec)
     local sx, sy, dx, dy
     if not i then
-        -- The sergeant, in the middle, faces the enemy (or Alpha 1's way).
+        -- The sergeant, in the middle, faces the enemy (or the first quarter's way).
         sx, sy = P.x, P.y
         if sq.contact then
             dx, dy = sq.contact.x - sx, sq.contact.y - sy
@@ -118,7 +128,7 @@ function LF.Tactics.perimeterPlace(squad, sq, rec)
         if squad.teamOnly then
             sx, sy = P.x + dx * st.loneRadius * r, P.y + dy * st.loneRadius * r
         else
-            local off = (MAN_OFFSET[rec.slot] or 0) * (r < 1 and 0.7 or 1)
+            local off = ((byPairs(squad) and PAIR_OFFSET or MAN_OFFSET)[rec.slot] or 0) * (r < 1 and 0.7 or 1)
             sx, sy = P.x + dx * st.radius * r - dy * off, P.y + dy * st.radius * r + dx * off
         end
     end
@@ -161,9 +171,10 @@ end
 -- ---- defensive stance inside a building ------------------------------------------------------
 --
 -- When the sergeant calls the defence standing in a building, the teams take its walls instead
--- of quarters in the open: by the compass (Alpha 1 north, Alpha 2 west, Bravo 1 south, Bravo 2
--- east) until the enemy is known, then Alpha 1 on the wall facing him, Alpha 2 and Bravo 2 on the
--- walls either side, Bravo 1 on the back wall.
+-- of quarters in the open, a pair (or a team, in a squad that has taken in more) to a wall: by the
+-- compass (Alpha's front pair north, its back pair west, Bravo's south and east) until the enemy is
+-- known, then the first on the wall facing him, the second and fourth on the walls either side,
+-- the third on the back wall.
 -- A team's posts on its wall, in order: covering each door from 2 tiles inside, then each window
 -- (he stands in it to fire, ducking only under fire), then a back line 2 tiles in from the wall.
 -- A wall with no windows or doors gets one man watching it from inside; the rest of that team
@@ -274,6 +285,15 @@ local function dealBuilding(squad, sq, front)
                     local r = LF.Records.get(rid)
                     if able(rid) then groups[#groups + 1] = { slot = r.slot, men = { rid } } end
                 end
+            elseif byPairs(squad) then
+                -- (Two teams: a pair to a wall, so all four walls are held.)
+                local a, b = {}, {}
+                for _, rid in ipairs(team.members) do
+                    local r = LF.Records.get(rid)
+                    if able(rid) then table.insert(r.element == "B" and b or a, rid) end
+                end
+                groups[#groups + 1] = { slot = (team.slot - 1) * 2 + 1, men = a }
+                groups[#groups + 1] = { slot = (team.slot - 1) * 2 + 2, men = b }
             else
                 local men = {}
                 for _, rid in ipairs(team.members) do if able(rid) then men[#men + 1] = rid end end
@@ -372,8 +392,8 @@ local function dealBuilding(squad, sq, front)
         if not (o and o.x == p.x and o.y == p.y) then moved = moved + 1 end
         if p.kind == "window" then wins = wins + 1 end
     end
-    LF.log("BUILDING " .. squad.name .. " holds the building: Alpha 1 " .. WALL_NAME[walls[1]] .. " wall, Alpha 2 "
-        .. WALL_NAME[walls[2]] .. ", Bravo 1 " .. WALL_NAME[walls[3]] .. ", Bravo 2 " .. WALL_NAME[walls[4]]
+    LF.log("BUILDING " .. squad.name .. " holds the building: walls in order " .. WALL_NAME[walls[1]] .. ", "
+        .. WALL_NAME[walls[2]] .. ", " .. WALL_NAME[walls[3]] .. ", " .. WALL_NAME[walls[4]]
         .. "; " .. wins .. " men at windows, " .. #spares .. " spare(s) to the " .. WALL_NAME[busy]
         .. " wall; " .. moved .. " man/men to (new) posts")
 end
@@ -714,7 +734,7 @@ updateDefensiveInner = function(squad, sq, cid, cmd)
             local where = compassOf(c.x - P.x, c.y - P.y)
             LF.log("PERIMETER " .. squad.name .. " re-forms to face the enemy to the " .. where)
             LF.Tactics.shout(cid, squad.teamOnly and ("Enemy " .. where .. "! Face them - one man watch the rear!")
-                or ("Enemy " .. where .. "! Alpha 1 front, Alpha 2 and Bravo 2 the flanks, Bravo 1 the rear!"))
+                or ("Enemy " .. where .. "! Alpha front, Bravo watch the flanks and rear!"))
         end
     end
     -- Quarters with nobody fit left: the teams either side widen their arcs. In a building, a

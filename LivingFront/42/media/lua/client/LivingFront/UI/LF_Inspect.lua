@@ -14,7 +14,7 @@ require "LivingFront/Soldier/LF_Suppress"
 
 LF.Inspect = LF.Inspect or {}
 
-local RANK_NAME = { SGT = "Sergeant", CPL = "Corporal", PVT = "Private" }
+local RANK_NAME = { LT = "Lieutenant", SSG = "Staff Sergeant", SGT = "Sergeant", CPL = "Corporal", PVT = "Private" }
 local STATE_WORDS = {
     idle = "standing by", guard = "on guard", alert = "alert, covering", engage = "firing",
     bound = "moving under fire", file = "on the move", hide = "taking cover (wounded)", down = "down, wounded",
@@ -72,15 +72,25 @@ local function roleOf(rec)
     local squad = rec.squad and LF.Units.get(rec.squad)
     local team = rec.team and LF.Units.get(rec.team)
     if not squad then return "No unit (on his own)" end
+    if squad.kind == "hq" then
+        local p = LF.Units.get(squad.platoon)
+        local pn = p and p.name or squad.name
+        if squad.leader == rec.id then return "Platoon commander, " .. pn end
+        if rec.hqRole == "ssgt" then return "Platoon sergeant, " .. pn end
+        if rec.hqRole == "rto" then return "Radio operator, " .. pn end
+        return "Platoon headquarters, " .. pn
+    end
     if squad.leader == rec.id then return "Squad leader, " .. squad.name end
     if team and team.leader == rec.id then return "Team leader, " .. team.name .. " (" .. squad.name .. ")" end
     if team then return "Rifleman, " .. team.name .. " (" .. squad.name .. ")" end
     return squad.name
 end
 
+local PLATOON_TASK = { support = "supporting by fire", dig = "dug in, covering", withdraw = "withdrawing", hold = "holding",
+                       take = "the assault" }
 local function taskOf(squad)
     local t = squad and squad.objTask
-    if not t then return nil end
+    if not t then return squad and squad.platoonTask and PLATOON_TASK[squad.platoonTask] or nil end
     local obj = LF.Objective and LF.Objective.get(t.obj)
     local name = obj and obj.name or "an objective"
     if t.kind == "hold" then return "holding " .. name end
@@ -140,6 +150,15 @@ function LF_InspectWindow:render()
         if squad then
             local task = taskOf(squad)
             text("Unit stance: " .. LF.Stance.get(squad).name .. (task and ("   Task: " .. task) or ""))
+            local p = LF.Platoon and LF.Units.get(squad.platoon)
+            if p and p.kind == "platoon" then
+                local role = squad.kind == "hq" and "" or (p.mainEffort == squad.id and " - main effort" or "")
+                text("Platoon: " .. LF.Platoon.describe(p) .. role, 0.75, 0.8, 0.9)
+            end
+        end
+        if LF.Morale then
+            local mv = math.floor(LF.Morale.get(rec))
+            text("Morale " .. mv .. " (" .. LF.Morale.word(mv) .. ")", mv < 40 and 0.95 or 0.8, mv < 40 and 0.6 or 0.9, mv < 40 and 0.5 or 0.8)
         end
     end
     gap()

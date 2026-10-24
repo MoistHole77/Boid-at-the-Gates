@@ -3,7 +3,7 @@
 -- When a unit gets an assignment (a patrol, an objective to take, a building to hold), any fire
 -- team of the same side
 -- that is standing by within CFG.radius of its leader joins it: the team becomes one more team of
--- that unit (in a free formation slot - Bravo 1 first, so a lone team that gains a second has a
+-- that unit (in a free formation slot - Bravo first, so a lone team that gains a second has a
 -- base of fire) and goes wherever it goes, under its leader. When the task is over - the unit
 -- stands down, or it has taken its objective and is holding it (a defence keeps its helpers
 -- until it stands down) - the joined teams leave again, walk back to where they were, and stand
@@ -22,7 +22,7 @@ LF.Join = LF.Join or {}
 
 local CFG = {
     radius = 20,            -- a standing-by team this close to the unit's leader joins it
-    slotOrder = { 3, 2, 4, 1 },
+    slotOrder = { 2, 3, 4, 1 },
 }
 LF.Join.CFG = CFG
 
@@ -153,7 +153,7 @@ function LF.Join.release(lead, why)
                 if lead.teams[i] == T.id then table.remove(lead.teams, i) end
             end
             local was = u.joinWas or {}
-            T.squad, T.slot, T.element, T.name = u.id, was.slot or 1, was.element or "A", was.name or "Alpha 1"
+            T.squad, T.slot, T.element, T.name = u.id, was.slot or 1, was.element or "A", was.name or "Alpha"
             for _, rid in ipairs(T.members) do
                 local r = LF.Records.get(rid)
                 if r then r.squad = u.id end
