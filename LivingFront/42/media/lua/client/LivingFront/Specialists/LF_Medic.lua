@@ -114,7 +114,8 @@ function LF.Medic.pick(squad)
         local r = LF.Records.get(rid)
         if r and r.medic and r.alive then return r end
     end
-    local team = LF.Units.get(squad.teams[4]) or LF.Units.get(squad.teams[#squad.teams])
+    -- (A machine-gun squad: a rifle team's man - the gun teams have their hands full.)
+    local team = LF.Units.get(squad.teams[squad.mg and 2 or 4]) or LF.Units.get(squad.teams[#squad.teams])
     if not team then return nil end
     local pick = nil
     for _, rid in ipairs(team.members) do

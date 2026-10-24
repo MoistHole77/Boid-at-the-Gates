@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A machine-gun crewman crouched at the gun, working on it: feeding a belt, fitting a pan,
+     changing the barrel (LF_MG). The rifle-reload clip on the upper body only, so he stays down. -->
+<animNode>
+	<m_Name>LF_MGFeed</m_Name>
+	<m_AnimName>Bob_Reload_Rifle_Load</m_AnimName>
+	<m_Looped>true</m_Looped>
+	<m_BlendTime>0.25</m_BlendTime>
+	<m_BlendOutTime>0.25</m_BlendOutTime>
+	<m_SpeedScale>0.70</m_SpeedScale>
+	<m_SyncTrackingEnabled>false</m_SyncTrackingEnabled>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Spine1</boneName>
+	</m_SubStateBoneWeights>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Prop1</boneName>
+	</m_SubStateBoneWeights>
+	<m_SubStateBoneWeights>
+		<boneName>Bip01_Prop2</boneName>
+	</m_SubStateBoneWeights>
+	<m_Conditions x_name="lf-lf-mgfeed-0001">
+		<m_Name>PerformingAction</m_Name>
+		<m_Type>STRING</m_Type>
+		<m_Value>LF_MGFeed</m_Value>
+	</m_Conditions>
+</animNode>

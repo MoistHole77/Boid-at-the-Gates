@@ -973,7 +973,7 @@ function LF.Tactics.backDoor(squad, team, C, L)
     local free = {}
     for _, tid in ipairs(squad.teams) do
         local tm, tt = LF.Units.get(tid), teams[tid]
-        if tm and tt and tid ~= team.id and not tt.clear then free[#free + 1] = tm end
+        if tm and tt and tid ~= team.id and not tt.clear and not tm.mg then free[#free + 1] = tm end   -- (the guns stay out)
     end
     if #free < 2 then
         LF.log("CLEAR " .. squad.name .. ": a back door, but no team to spare for it (one stays out to cover)")

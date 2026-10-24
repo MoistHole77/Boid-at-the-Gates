@@ -148,6 +148,10 @@ function LF_InspectWindow:render()
         local g = LF.Grenade.count(rec)
         if g > 0 or rec.rank == "SGT" or rec.rank == "CPL" then text("Grenades: " .. g, 0.8, 0.8, 0.8) end
     end
+    if LF.MG and LF.MG.roleName(rec) then
+        local team = rec.team and LF.Units.get(rec.team)
+        text(LF.MG.roleName(rec):gsub("^%l", string.upper) .. (team and (", " .. team.name) or ""), 0.9, 0.8, 0.5)
+    end
     if LF.Medic and LF.Medic.levelOf then
         if rec.medic then
             text("Squad medic (" .. LF.Medic.levelOf(rec) .. ") - dressings " .. (rec.kit or 0) .. "/" .. LF.Medic.CFG2.kit

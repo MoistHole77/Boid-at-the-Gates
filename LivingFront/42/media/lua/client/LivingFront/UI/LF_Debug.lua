@@ -29,6 +29,7 @@ require "LivingFront/Soldier/LF_Weapons"
 require "LivingFront/UI/LF_Inspect"
 require "LivingFront/Units/LF_Join"
 require "LivingFront/Specialists/LF_Medic"
+require "LivingFront/Specialists/LF_MG"
 
 LF.Debug = LF.Debug or {}
 
@@ -307,7 +308,7 @@ local function spawnUnit(faction, x, y, z, size, playerNum)
     local p = getSpecificPlayer(playerNum)
     local fx, fy = 1, 0
     if p then fx, fy = x + 0.5 - p:getX(), y + 0.5 - p:getY() end
-    local unit = LF.Units.createSquad(faction, x + 0.5, y + 0.5, z, fx, fy, size == "team")
+    local unit = LF.Units.createSquad(faction, x + 0.5, y + 0.5, z, fx, fy, size == "team", size == "mg")
     LF.say("Spawned " .. unit.name .. (size == "team" and " (4)" or " (17)"))
 end
 
@@ -417,6 +418,8 @@ local function onMenu(playerNum, context, worldObjects, test)
         fm:addOption("Soldier", nil, function() spawnUnit(key, x, y, z, "soldier", playerNum) end)
         fm:addOption("Fire team (4)", nil, function() spawnUnit(key, x, y, z, "team", playerNum) end)
         fm:addOption("Squad (17)", nil, function() spawnUnit(key, x, y, z, "squad", playerNum) end)
+        fm:addOption("Machine-gun squad (17, " .. (key == "GER" and "2 MG34s" or "2 DP-27s") .. ")", nil,
+            function() spawnUnit(key, x, y, z, "mg", playerNum) end)
     end
     spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 
@@ -492,11 +495,7 @@ local function onMenu(playerNum, context, worldObjects, test)
             typeMenu:addOption(t.label, nil, function() fn(key) end)
         end
     end
-    local tests = sub(main, "Tests")
-    tests:addOption("Knock over the nearest man clearing a building (he stays down; his team drags him out)", nil,
-        function() LF.Tactics.testKnockBack(x + 0.5, y + 0.5) end)
-    tests:addOption("Wound the nearest soldier critically (his squad's medic comes for him)", nil,
-        function() LF.Medic.testCritical(x + 0.5, y + 0.5) end)
+    tools:addOption("Machine-gun report (to the log)", nil, function() LF.MG.report() end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)

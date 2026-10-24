@@ -227,6 +227,8 @@ local function updateSquad(squad)
     local c = LF.Squad.bestContact(squad.id, cmd:getX(), cmd:getY(), CFG.contactMemory, CFG.contactRange)
     -- Assaulting an objective with nobody in sight: the objective's windows are the target.
     if not c and LF.Objective then c = LF.Objective.fallbackContact(squad) end
+    -- A machine-gun squad with nothing of its own backs up a friendly unit's fight close by.
+    if not c and squad.mg and LF.MG then c = LF.MG.supportContact(squad, cmd) end
     if not c then
         if sq.intent then
             setIntent(squad, sq, cid, nil, "no contact")
@@ -325,7 +327,14 @@ local function updateSquad(squad)
         local reason = nil
         local steady = fitN == 0 or pinnedN / fitN < CFG.flankPinned
         local t = squad.objTask
-        if t and t.kind == "take" and t.phase == "assault" and not sq.objFlank then
+        -- An enemy machine gun firing on us: the alpha teams go round and take it.
+        local gun = LF.MG and LF.MG.enemyGunNear(squad.faction, cmd:getX(), cmd:getY(), CFG.stalemateRadius)
+        local flankAt = c
+        if gun and pinnedN > 0 and LF.tick - (sq.lastGunFlank or -100000) >= CFG.flankCooldown then
+            reason = "an enemy machine gun has us pinned (" .. pinnedN .. " men) - flank it"
+            flankAt = LF.Tactics.point(gun.x, gun.y, gun.z or 0)
+            sq.lastGunFlank = LF.tick
+        elseif t and t.kind == "take" and t.phase == "assault" and not sq.objFlank then
             sq.objFlank = true
             reason = "assaulting the objective: alpha teams round the flank, bravo teams the base of fire"
         elseif steady and enemies > 0 and sq.supShare >= CFG.flankSuperiority then
@@ -338,8 +347,9 @@ local function updateSquad(squad)
             end
         end
         if reason then
-            local plan = planFlank(squad, c, sq)
+            local plan = planFlank(squad, flankAt, sq)
             if plan then
+                plan.gun = flankAt ~= c or nil
                 sq.flank = plan
                 sq.flankStartTick = LF.tick
                 sq.shiftsSinceFlank = 0

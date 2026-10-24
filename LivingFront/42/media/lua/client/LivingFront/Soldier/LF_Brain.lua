@@ -216,7 +216,7 @@ local function leavePosition(id, body, m)
 end
 
 -- States between which a soldier keeps his position (seeing / covering / watching).
-local KEEP_POSITION = { engage = true, alert = true, guard = true }
+local KEEP_POSITION = { engage = true, alert = true, guard = true, assist = true }
 
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
@@ -459,6 +459,8 @@ local function chooseTarget(id, body, rec, m, visible)
         if q == LF.Cover.HIGH then score = score + CFG.highCoverPenalty
         elseif q == LF.Cover.LOW then score = score + CFG.lowCoverPenalty end
         if s.id == m.targetId then score = score - CFG.stickyBonus end
+        -- A machine gun firing on us: its crew first.
+        if LF.MG and LF.MG.isFiring(s.id) then score = score - LF.MG.CFG.gunBonus end
         if not bestScore or score < bestScore then best, bestScore = s, score end
     end
     return best
@@ -547,6 +549,24 @@ local function holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPo
     end
 end
 
+-- At his window, once there and not shooting: shove any furniture out of it, then smash the
+-- glass out with his rifle butt.
+local function windowWork(body, rec, m, sz, win, shove, shooting)
+    if not (win and isAt(body, m.cover)) or body:isPerformingAnAction() or shooting then return end
+    local k = win.x .. "," .. win.y
+    if shove then
+        if m.shoved ~= k then
+            m.shoved = k
+            ISTimedActionQueue.add(LF_ShoveAction:new(body, rec, win, LF.Tactics.shoveWindow, LF.Combat.arm(body)))
+        end
+    elseif m.smashed ~= k then
+        m.smashed = k
+        if LF.Building.windowIntact(win, math.floor(sz)) then
+            ISTimedActionQueue.add(LF_SmashAction:new(body, win, math.floor(sz), LF.Combat.arm(body)))
+        end
+    end
+end
+
 -- Defending a building (LF_Tactics.buildingPlace): go to the exact square of his post - in a
 -- window, covering a door from inside, or on the back line - and fight from there. The post is
 -- his cover; he doesn't go looking for anything better. At a window he stands to fire (ducking
@@ -582,22 +602,66 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
     end
     m.cover.stand = stand
     m.cover.loose = not stand
-    -- At his window, once there and not shooting: shove any furniture out of it, then smash the
-    -- glass out with his rifle butt.
-    if win and isAt(body, m.cover) and not body:isPerformingAnAction() and not (pick and dist <= CFG.fireRange) then
-        local k = win.x .. "," .. win.y
-        if shove then
-            if m.shoved ~= k then
-                m.shoved = k
-                ISTimedActionQueue.add(LF_ShoveAction:new(body, rec, win, LF.Tactics.shoveWindow, LF.Combat.arm(body)))
-            end
-        elseif m.smashed ~= k then
-            m.smashed = k
-            if LF.Building.windowIntact(win, math.floor(sz)) then
-                ISTimedActionQueue.add(LF_SmashAction:new(body, win, math.floor(sz), LF.Combat.arm(body)))
-            end
-        end
+    windowWork(body, rec, m, sz, win, shove, pick and dist <= CFG.fireRange)
+end
+
+-- His exact square (a post, the gun's spot, beside the gun): claim it and go there.
+local function exactSpot(id, body, m, sx, sy, sz, label)
+    local px, py, pz = math.floor(sx), math.floor(sy), math.floor(sz)
+    local spot = m.cover
+    if spot and spot.post and spot.x == px and spot.y == py then
+        LF.Cover.reserve(px, py, pz, id)
+        resumeWalk(body, m, spot)
+    else
+        leavePosition(id, body, m)
+        takeSpot(id, body, m, "cover", px, py, pz, label, "run")
+        m.cover.post = true
     end
+end
+
+-- Machine gunner (LF_MG): on the gun's spot - in a window, or behind cover in the open - firing at
+-- what he can see out to the gun's range, or at where the enemy was (area fire); in a defence with
+-- nothing in his arc, watching it. The firing itself is LF.MG.fire (from act).
+local function holdGun(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
+    if m.prevOrder ~= "gun" or not m.gunSince then m.gunSince = LF.tick end
+    m.order, m.point = "gun", point
+    local range = LF.MG.CFG.range
+    if pick and dist <= range then
+        if m.state ~= "engage" then
+            setState(id, body, rec, m, "engage", "on the gun, target #" .. threatId .. " " .. title(pick.rec) .. " at "
+                .. math.floor(dist) .. " tiles")
+        end
+        m.targetId, m.targetDist = threatId, dist
+    elseif watching then
+        setState(id, body, rec, m, "guard", "on the gun, watching toward " .. math.floor(point.x) .. "," .. math.floor(point.y))
+        m.targetId = nil
+    else
+        setState(id, body, rec, m, "alert", "on the gun, firing on " .. math.floor(point.x) .. "," .. math.floor(point.y))
+        m.targetId = nil
+    end
+    exactSpot(id, body, m, sx, sy, sz, stand and "gun in the window" or "gun position")
+    m.cover.stand = stand
+    m.cover.loose = false
+    m.cover.gun = true
+    windowWork(body, rec, m, sz, win, shove, pick and dist <= range)
+end
+
+-- Assistant gunner: down beside the gun, feeding it (LF_MG queues the work), watching what it
+-- fires at. His rifle only for an enemy close by, when the gun doesn't need him.
+local function holdAssist(id, body, rec, m, sx, sy, sz, point, pick, threatId, dist)
+    m.order, m.point = "assist", point
+    if pick and dist <= LF.MG.CFG.assistRange and not LF.MG.needsAssistant(rec) then
+        if m.state ~= "engage" then
+            setState(id, body, rec, m, "engage", "at the gun, enemy close - #" .. threatId .. " at " .. math.floor(dist) .. " tiles")
+        end
+        m.targetId, m.targetDist = threatId, dist
+    else
+        setState(id, body, rec, m, "assist", "at the gun")
+        m.targetId = nil
+    end
+    exactSpot(id, body, m, sx, sy, sz, "beside the gun")
+    m.cover.stand = false
+    m.cover.loose = true
 end
 
 -- Clearing a building (LF_Tactics.clearPlace): walk (or run) to his place in the file - the
@@ -734,6 +798,9 @@ local function decide(id, body, rec, m)
     m.fighter = fighter
     local inSquad = rec.squad ~= nil and LF.Units.get(rec.squad) ~= nil
     local leader = inSquad and isSquadLeader(id, rec)
+    -- A machine gunner fights out to the gun's range, not a rifle's.
+    local gunner = rec.mgRole == "gunner" and LF.MG ~= nil
+    local fireRange = gunner and LF.MG.CFG.range or CFG.fireRange
 
     local visible = LF.Sense.look(id, body, rec, CFG.sightRange)
     if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
@@ -741,7 +808,7 @@ local function decide(id, body, rec, m)
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
     local threat, threatId, dist = nil, nil, nil
     if pick then threat, threatId, dist = pick.body, pick.id, pick.dist end
-    if pick and fighter and dist <= CFG.fireRange then m.lastSight = LF.tick end
+    if pick and fighter and dist <= fireRange then m.lastSight = LF.tick end
     local hp = LF.Combat.health(body)
     -- Legs too badly hurt to walk: he counts as badly wounded - he crawls away (or, in a
     -- defence, stays down where he is).
@@ -762,7 +829,7 @@ local function decide(id, body, rec, m)
             setState(id, body, rec, m, "down", "wounded, health " .. math.floor(hp) .. "; stays where he is")
             if isMoving(body) then ISTimedActionQueue.clear(body) end
         end
-        m.targetId = (pick and dist <= CFG.fireRange) and threatId or nil
+        m.targetId = (pick and dist <= fireRange) and threatId or nil
         return
     end
     -- Badly wounded with the enemy right on top of him: no getting away - he fights back from
@@ -839,7 +906,7 @@ local function decide(id, body, rec, m)
             m.bearX, m.bearY = body:getX(), body:getY()
             if isMoving(body) then ISTimedActionQueue.clear(body) end   -- stop and shoot
         end
-        if pick and dist <= CFG.fireRange then
+        if pick and dist <= fireRange then
             if m.state ~= "engage" then
                 setState(id, body, rec, m, "engage", "returning fire at #" .. threatId .. " " .. title(pick.rec))
             end
@@ -876,11 +943,16 @@ local function decide(id, body, rec, m)
         end
         if role and role ~= "file" and stuckNear(m, sx, sy) then
             -- Can't get there: take the nearest cover around where he got stuck.
+            if role == "gun" then LF.MG.unreachable(rec) end
             sx, sy, leash = m.stuck.fromX, m.stuck.fromY, CFG.stuckLeash
             if role == "move" then role = "hold" end
         end
         if role == "command" then leash = CFG.commandLeash end
-        if role == "post" then
+        if role == "assist" then
+            holdAssist(id, body, rec, m, sx, sy, sz, point, pick, threatId, dist)
+            return
+        end
+        if role == "post" or role == "gun" then
             -- At a window: only what's out of his own wall (or close, or inside the building).
             if pick and LF.Tactics.postCovers and not LF.Tactics.postCovers(rec, pick.body:getX(), pick.body:getY()) then
                 local alt = {}
@@ -891,7 +963,11 @@ local function decide(id, body, rec, m)
                 pick = #alt > 0 and chooseTarget(id, body, rec, m, alt) or nil
                 threatId, dist = pick and pick.id, pick and pick.dist
             end
-            holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
+            if role == "gun" then
+                holdGun(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
+            else
+                holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
+            end
             return
         end
         if role == "sector" then
@@ -912,7 +988,7 @@ local function decide(id, body, rec, m)
                 moveTo(m, body, sx, sy, sz)
                 return
             end
-            if pick and dist <= CFG.fireRange then
+            if pick and dist <= fireRange then
                 if m.state ~= "engage" then
                     setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                         .. math.floor(dist) .. " tiles")
@@ -944,7 +1020,7 @@ local function decide(id, body, rec, m)
         if not m.cover then
             if ax then
                 followSlot(m, body, rec, ax, ay, az)      -- no cover near the slot: fight from the slot
-            elseif dist > CFG.fireRange then
+            elseif dist > fireRange then
                 approach(m, body, threat, dist)           -- squad leader (or a lone fighter) closes in
             end
         end
@@ -963,7 +1039,7 @@ local function decide(id, body, rec, m)
             if not m.cover and leader then
                 -- The squad leader closes in on the contact; his squad follows on its slots.
                 local d = LF.dist(body:getX(), body:getY(), c.x, c.y)
-                if d > CFG.fireRange - 2 then approach(m, body, g, d) end
+                if d > fireRange - 2 then approach(m, body, g, d) end
             end
             if (placed or (not m.cover and not ax)) and not body:isPerformingAnAction() then
                 LF.Combat.readyToFire(body, g)            -- rifle on the last-known position
@@ -1002,9 +1078,14 @@ local function hunkerDown(body)
 end
 
 -- In a lull (nothing in his own sights), top up a magazine that is half empty or worse - or any
--- part-used one when there is no fight at all.
-local function topUp(body, m, full)
+-- part-used one when there is no fight at all. (A machine gunner: a new belt, out of the fight.)
+local function topUp(body, m, full, rec)
     if body:isPerformingAnAction() or LF.tick - (m.lastTopUp or -10000) < 120 then return false end
+    if rec and rec.mgRole == "gunner" and LF.MG then
+        if not full then return false end
+        m.lastTopUp = LF.tick
+        return LF.MG.topUp(body, rec)
+    end
     local profile = LF.Weapons.profileOf(body)
     local left = LF.Weapons.rounds(body)
     if left >= profile.clip or (not full and left > profile.clip * 0.5) then return false end
@@ -1012,9 +1093,22 @@ local function topUp(body, m, full)
     return LF.Weapons.reload(body, LF.Combat.arm(body), "topping up")
 end
 
+-- Firing: a machine gunner works his gun (LF_MG); everyone else, the rifle drill (LF_Combat).
+local function fireAt(body, rec, m, target)
+    if rec.mgRole == "gunner" and LF.MG then return LF.MG.fire(body, rec, m, target, false) end
+    return LF.Combat.engage(body, target, m.combat, m.combatOpts)
+end
+local function fireArea(body, rec, m, p)
+    if rec.mgRole == "gunner" and LF.MG then return LF.MG.fire(body, rec, m, p, true) end
+    return LF.Combat.engageArea(body, p, m.combat)
+end
+
 -- Per-tick behaviour for states that need it.
 local function act(id, body, rec, m)
     local st = m.state
+    local gunner = rec.mgRole == "gunner" and LF.MG ~= nil
+    local fireRange = gunner and LF.MG.CFG.range or CFG.fireRange
+    local areaRange = gunner and LF.MG.CFG.areaRange or CFG.sightRange
     -- A defender at a window stands to fire out of it (ducking only under fire).
     local c = m.cover
     local standing = c ~= nil and c.post and c.stand and isAt(body, c)
@@ -1032,10 +1126,10 @@ local function act(id, body, rec, m)
             if not standing then hunkerDown(body) end
             if m.cover.loose then return end
         end
-        if m.fighter and topUp(body, m, false) then return end
+        if m.fighter and topUp(body, m, false, rec) then return end
         local p = m.point
-        if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= CFG.sightRange * CFG.sightRange then
-            LF.Combat.engageArea(body, p, m.combat)
+        if LF.distSq(body:getX(), body:getY(), p.x, p.y) <= areaRange * areaRange then
+            fireArea(body, rec, m, p)
         end
         return
     end
@@ -1046,20 +1140,27 @@ local function act(id, body, rec, m)
         end
         local target = LF.Bodies.get(m.targetId)
         if target and not target:isDead()
-            and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
-            LF.Combat.engage(body, target, m.combat, m.combatOpts)
+            and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= fireRange * fireRange then
+            fireAt(body, rec, m, target)
         end
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
-        if m.fighter then topUp(body, m, false) end
+        if m.fighter then topUp(body, m, false, rec) end
     elseif m.state == "idle" and m.fighter and LF.Combat.isArmed(body) then
-        topUp(body, m, true)
+        topUp(body, m, true, rec)
     elseif m.state == "guard" then
         -- Watching his quarter: down in cover, facing out.
         if m.cover and isAt(body, m.cover) and not standing then hunkerDown(body) end
         local p = m.point
         if p and LF.tick % 40 == 0 and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
-        if m.fighter then topUp(body, m, false) end
+        if m.fighter then topUp(body, m, false, rec) end
+    elseif m.state == "assist" then
+        -- Down beside the gun, watching what it fires at.
+        if m.cover and isAt(body, m.cover) then hunkerDown(body) end
+        if LF.tick % 30 == 0 and not body:isPerformingAnAction() and LF.MG then
+            local ax, ay = LF.MG.aimOf(rec)
+            if ax then body:faceLocation(ax, ay) end
+        end
     elseif m.state == "file" then
         -- In the stack (kneeling, facing the door) or on his spot in the room (standing, facing on).
         if m.fileThere and not body:isPerformingAnAction() then
@@ -1077,8 +1178,8 @@ local function act(id, body, rec, m)
         end
         local target = m.targetId and LF.Bodies.get(m.targetId)
         if target and not target:isDead()
-            and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= CFG.fireRange * CFG.fireRange then
-            LF.Combat.engage(body, target, m.combat, m.combatOpts)
+            and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= fireRange * fireRange then
+            fireAt(body, rec, m, target)
         end
     elseif m.state == "flee" then
         local safe = (m.hide and isAt(body, m.hide)) or m.atRear

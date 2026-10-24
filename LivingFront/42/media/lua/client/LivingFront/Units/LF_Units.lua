@@ -140,9 +140,10 @@ function LF.Units.commander(squad)
 end
 
 -- Create a full squad (17 soldiers) centred on (x, y), facing the direction (fx, fy).
--- With teamOnly, a lone fire team (4 soldiers, led by its corporal) instead.
+-- With teamOnly, a lone fire team (4 soldiers, led by its corporal) instead. With mg, a
+-- machine-gun squad (its bravo teams are gun teams - LF_MG).
 -- Returns the squad unit (a lone team is stored as a squad with one team and no sergeant).
-function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
+function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly, mg)
     local len = math.sqrt(fx * fx + fy * fy)
     if len < 0.01 then fx, fy, len = 1, 0, 1 end
     fx, fy = fx / len, fy / len
@@ -174,6 +175,7 @@ function LF.Units.createSquad(faction, x, y, z, fx, fy, teamOnly)
             if ms.leader then team.leader = rec.id end
         end
     end
+    if mg and not teamOnly and LF.MG then LF.guard("mg squad", LF.MG.outfit, squad) end
     if not teamOnly and LF.Medic and LF.Medic.pick then LF.guard("pick medic", LF.Medic.pick, squad) end
     LF.log("UNITS created " .. squad.name .. " (#" .. squad.id .. ") at " .. math.floor(x) .. "," .. math.floor(y)
         .. " facing " .. string.format("%.1f,%.1f", fx, fy) .. ", led by "

@@ -197,6 +197,7 @@ local function hitChance(shooter, target, dist, profile)
     end
     return chance
 end
+LF.Combat.hitChance = hitChance
 
 local function wound(target, partName, profile)
     target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(profile.wound)
@@ -318,6 +319,39 @@ local function splash(shooter, x, y, radius, amount, skip)
     return splashCtx.n
 end
 
+-- A round that has hit: the wound, then knocked over, staggered - or just a flinch. Returns the
+-- body part hit.
+local function applyHit(shooter, target, profile, dist)
+    local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
+    local partName = LF.pick(parts or BODY_PARTS)
+    LF.guard("wound", wound, target, partName, profile)
+    local k = KNOCK[partName] or { 0, 0 }
+    -- Point blank, a round is a little more likely to put a man down (+8 points within 3
+    -- tiles, +4 within 5; not for arm hits).
+    local fall = k[1]
+    if fall > 0 then fall = fall + (dist <= 3 and 8 or (dist <= 5 and 4 or 0)) end
+    local roll = ZombRand(100)
+    if roll < fall then
+        LF.guard("knock down", knock, target, shooter, true)
+    elseif roll < fall + k[2] then
+        LF.guard("stagger", knock, target, shooter, false)
+    else
+        LF.guard("flinch", flinch, target)
+    end
+    -- A killing hit may leave him critical instead, if his squad's medic can get to him.
+    if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, target, "shot", partName) end
+    return partName
+end
+LF.Combat.applyHit = applyHit
+LF.Combat.splash = function(...) return splash(...) end
+
+-- Gunfire heard: remembered (civilians flee it, soldiers turn to it) and heard by the world.
+function LF.Combat.noteShot(shooter)
+    recentShots[#recentShots + 1] = { x = shooter:getX(), y = shooter:getY(), tick = LF.tick }
+    if #recentShots > 64 then LF.Combat.nearestRecentShot(0, 0, 1) end
+    shooter:addWorldSoundUnlessInvisible(40, 100, false)
+end
+
 -- Resolve one round: sound, noise, hit roll, and on a hit a wound, impact damage and a flinch.
 -- The target and anyone hostile right next to it are suppressed either way. Returns false (and
 -- fires nothing) if the magazine is empty.
@@ -331,28 +365,7 @@ function LF.Combat.resolveShot(shooter, target, gun)
     local dist = LF.dist(shooter:getX(), shooter:getY(), target:getX(), target:getY())
     local chance = hitChance(shooter, target, dist, profile)
     local result = "MISS"
-    if ZombRand(100) < chance then
-        local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
-        local partName = LF.pick(parts or BODY_PARTS)
-        LF.guard("wound", wound, target, partName, profile)
-        -- Knocked over, staggered - or just a flinch.
-        local k = KNOCK[partName] or { 0, 0 }
-        -- Point blank, a round is a little more likely to put a man down (+8 points within 3
-        -- tiles, +4 within 5; not for arm hits).
-        local fall = k[1]
-        if fall > 0 then fall = fall + (dist <= 3 and 8 or (dist <= 5 and 4 or 0)) end
-        local roll = ZombRand(100)
-        if roll < fall then
-            LF.guard("knock down", knock, target, shooter, true)
-        elseif roll < fall + k[2] then
-            LF.guard("stagger", knock, target, shooter, false)
-        else
-            LF.guard("flinch", flinch, target)
-        end
-        -- A killing hit may leave him critical instead, if his squad's medic can get to him.
-        if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, target, "shot", partName) end
-        result = "HIT " .. partName
-    end
+    if ZombRand(100) < chance then result = "HIT " .. applyHit(shooter, target, profile, dist) end
     LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)
     splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH * profile.suppress, target)
     if LF.Service then

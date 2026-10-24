@@ -35,7 +35,8 @@ Pure Lua. No Java, no ZombieBuddy.
 | Patrolling stance: ranger file, tactical column, wedge; men fall in as the point man passes; halted, everyone crouches and aims outboard; ADS pace and scanning | Working (0.21) |
 | Sergeant chooses the formation from the ground (most men in woods -> file, road -> column, off the road -> wedge); long patrols planned in legs | Built, awaiting in-game test |
 | Objectives: take (patrol in, rally, base of fire + flank, clear, consolidate) and hold; who holds it | Built, awaiting in-game test |
-| Casualty care by others, ammo supply, MG teams, objectives, platoon level | Later |
+| Machine-gun squads: two rifle teams and two gun teams (MG34 / DP-27; gunner, assistant, two security); real rates of fire in ~4 s bursts, beaten zone, heavy suppression; belts, barrel changes (MG34) and cooling (DP-27); the guns take turns; crews replaced as men fall; guns leapfrog, take the front in a defence and the best windows in a building, cover a clearing from outside, support a nearby friendly squad; the enemy targets the crews, grenades and flanks the guns | Built, awaiting in-game test (0.43) |
+| Casualty care by others, ammo supply, platoon level | Later |
 | Ammo, period weapons | Later |
 | Strategic war layer (sectors, front line, off-screen battles) | Planned, after the map is decided |
 
@@ -98,6 +99,7 @@ built on each other: a file only depends on files in its own folder or the ones 
 | **Specialists** - special roles | `LF_Grenade` | Grenades |
 | | `LF_Downed` | Men down on their back, getting up, being dragged |
 | | `LF_Medic` | The squad medic and critical wounds |
+| | `LF_MG` | Machine-gun squads: gun teams, bursts at the real rate of fire, belts and barrels, the guns taking turns, leapfrogging |
 | **UI** | `LF_Inspect` | The inspect window |
 | | `LF_Debug` | Right-click debug menu (tests) |
 

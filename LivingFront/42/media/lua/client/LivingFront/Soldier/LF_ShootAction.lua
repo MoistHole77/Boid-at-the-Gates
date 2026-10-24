@@ -41,6 +41,8 @@ local function trackTarget(character, target)
     return err
 end
 
+LF_ShootAction.track = trackTarget       -- (the machine guns sweep the same way)
+
 function LF_ShootAction:isValid()
     return self.target ~= nil and not self.target:isDead() and not self.character:isDead()
 end

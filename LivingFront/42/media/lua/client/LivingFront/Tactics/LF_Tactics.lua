@@ -202,7 +202,7 @@ end
 --   "command" (the sergeant: stay behind his teams and fight).
 -- Returns role, x, y, z, point (the enemy's last-known position), or nil when the unit has no
 -- intent (no contact): the brain then keeps the plain formation.
-function LF.Tactics.place(rec)
+local function placeOf(rec)
     local sq = rec.squad and squads[rec.squad]
     if not sq then return nil end
     local tc = rec.team and teams[rec.team]
@@ -260,6 +260,12 @@ function LF.Tactics.place(rec)
     return (t.moving == rec.element or t.shifting) and "move" or "hold", x, y, z, point
 end
 
+-- (A machine gun's crew then go to the gun - LF_MG.)
+function LF.Tactics.place(rec)
+    if rec.mgRole and LF.MG then return LF.MG.place(rec, placeOf(rec)) end
+    return placeOf(rec)
+end
+
 function LF.Tactics.intent(squadId)
     local sq = squads[squadId]
     return sq and sq.intent
@@ -288,7 +294,9 @@ local function setIntent(squad, sq, cid, intent, why)
     if intent and cid then
         local words = INTENT_WORDS[intent]
         if intent == "FLANK" and sq.flank then
-            words = "Alpha teams, flank " .. (sq.flank.side < 0 and "left" or "right") .. "! Bravo teams, cover!"
+            local side = sq.flank.side < 0 and "left" or "right"
+            words = sq.flank.gun and ("Alpha teams, flank that gun - " .. side .. "! Bravo teams, cover!")
+                or ("Alpha teams, flank " .. side .. "! Bravo teams, cover!")
         end
         LF.Tactics.shout(cid, words)
     end

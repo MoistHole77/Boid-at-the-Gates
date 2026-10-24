@@ -13,6 +13,12 @@
 --           lighter per round, slower to reload.
 -- Rifles are accurate at range; SMGs spray - deadly close, poor beyond ~12 tiles - and lay down
 -- more suppression per burst.
+-- Machine guns (gunners of a machine-gun squad's gun teams; fired by LF_MG, not the rifle drill):
+--   MG34  (German): 900 rounds a minute, 250-round belts, quick-change barrel every ~250 rounds.
+--   DP-27 (Soviet): 550 rounds a minute, 47-round pan, no quick-change barrel - it has to be
+--                   rested to cool instead.
+-- Each round on its own is unlikely to hit (accBase is per round, not per burst); it's the
+-- number of them, and the suppression they lay down, that counts.
 --
 -- Ammunition is infinite for now (magazines refill on reload); only the magazine is counted.
 -- Timings are in ticks (60 = one second at normal speed).
@@ -45,6 +51,20 @@ local W = {
         accBase = 58, accFall = 4.0, accMin = 4,
         reload = 210,
     },
+    MG34 = {
+        name = "MG34", item = "Base.AssaultRifle", sound = "M14Shoot", kind = "mg",
+        clip = 250, rpm = 900, interval = 240, burst = 1, gap = 0, aimTicks = 20, recover = 20,
+        wound = 50, impact = 1.0, suppress = 1.0,
+        accBase = 4.0, accFall = 0.08, accMin = 1.2, zoneHit = 7,
+        reload = 300, barrelAt = 250, barrel = 480,
+    },
+    DP27 = {
+        name = "DP-27", item = "Base.AssaultRifle2", sound = "L94Shoot", kind = "mg",
+        clip = 47, rpm = 550, interval = 240, burst = 1, gap = 0, aimTicks = 20, recover = 20,
+        wound = 55, impact = 1.1, suppress = 1.0,
+        accBase = 4.4, accFall = 0.08, accMin = 1.3, zoneHit = 7,
+        reload = 240, coolAt = 160,
+    },
     PPSh = {
         name = "PPSh", item = "Base.ShotgunSawnoff", sound = "M16Shoot", kind = "smg",
         clip = 71, interval = 150, burst = 6, gap = 4, aimTicks = 45, recover = 20,
@@ -54,6 +74,8 @@ local W = {
     },
 }
 LF.Weapons.PROFILES = W
+
+LF.Weapons.MG_OF = { GER = "MG34", SOV = "DP27" }
 
 -- Which weapon a record carries (decided once, kept through promotions).
 function LF.Weapons.keyFor(rec)

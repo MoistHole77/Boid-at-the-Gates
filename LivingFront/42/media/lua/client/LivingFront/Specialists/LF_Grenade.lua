@@ -427,6 +427,22 @@ function LF.Grenade.consider(squad, sq)
         if LF.tick - (sq.lastGrenade or -100000) < CFG.unitCooldown then return false end
         if (sq.grenadesThisFight or 0) >= CFG.perFight then return false end
     end
+    -- An enemy machine gun in reach: silence it - whoever can throw to it does.
+    if LF.MG then
+        for _, rid in ipairs(leadersOf(squad)) do
+            local r, b = LF.Records.get(rid), LF.Bodies.get(rid)
+            local gun = b and LF.MG.enemyGunNear(squad.faction, b:getX(), b:getY(), 30)
+            if gun and r and r.alive and not r.wounded then
+                local gz = math.floor(gun.z or 0)
+                if clearOfFriends(squad.faction, gun.x, gun.y) and canThrow(r, b, gun.x, gun.y, gz) then
+                    LF.Grenade.throw(b, gun.x, gun.y, gz, "silencing the machine gun")
+                    sq.lastGrenade = LF.tick
+                    sq.grenadesThisFight = (sq.grenadesThisFight or 0) + 1
+                    return true
+                end
+            end
+        end
+    end
     local stalled = attacking and fightAge >= (takingBuilding and B.stallTicks or CFG.stallTicks)   -- (a defence only throws when losing)
     local t = squad.objTask
     local holdingOut = attacking and t and t.kind == "take" and t.phase == "assault" and #contacts <= 3

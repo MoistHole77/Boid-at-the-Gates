@@ -240,6 +240,7 @@ LF.March.FORMATIONS = { file = "ranger file", column = "tactical column", wedge 
 
 local TEAM_WEDGE = { { 0, 0 }, { -7, -7 }, { -7, 7 }, { -14, 0 } }     -- by team slot: forward, lateral
 local MAN_WEDGE = { { 0, 0 }, { -2, -2 }, { -2, 2 }, { -4, 0 } }       -- by place in the team
+local MG_WEDGE = { 1, 4, 2, 3 }     -- a machine-gun squad: the guns back-left and back-right, Alpha 2 at the rear
 
 -- The order of march (living men only).
 local function columnOrder(squad)
@@ -255,12 +256,15 @@ local function columnOrder(squad)
             end
         end
     end
-    addTeam(1); addTeam(2)
+    -- (A machine-gun squad carries its guns in the middle: Alpha 1, Gun 1, the sergeant, Gun 2,
+    -- Alpha 2 at the rear.)
+    local first, last = squad.mg and { 1, 3 } or { 1, 2 }, squad.mg and { 4, 2 } or { 3, 4 }
+    addTeam(first[1]); addTeam(first[2])
     if squad.leader then
         local r = LF.Records.get(squad.leader)
         if r and r.alive then order[#order + 1] = squad.leader end
     end
-    addTeam(3); addTeam(4)
+    addTeam(last[1]); addTeam(last[2])
     return order
 end
 
@@ -290,7 +294,7 @@ local function layOut(squad, M)
                 local team = LF.Units.get(r.team)
                 local slot = squad.teamOnly and 1 or (team and team.slot or 1)
                 k[slot] = (k[slot] or 0) + 1
-                local t, mo = TEAM_WEDGE[slot], MAN_WEDGE[math.min(k[slot], 4)]
+                local t, mo = TEAM_WEDGE[squad.mg and MG_WEDGE[slot] or slot], MAN_WEDGE[math.min(k[slot], 4)]
                 f, l = t[1] + mo[1], t[2] + mo[2]
             end
             M.off[rid] = { f = f, l = l }

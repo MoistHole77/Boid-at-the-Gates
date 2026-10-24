@@ -38,6 +38,10 @@ end
 -- Threat-weighted layout: degrees off the enemy's bearing and radius scale, by quarter.
 local WEIGHTED_DEG = { 0, -55, 180, 55 }       -- Alpha 1 front, Alpha 2 left, Bravo 1 rear, Bravo 2 right
 local WEIGHTED_SCALE = { 1, 1, 0.6, 1 }
+-- A machine-gun squad: the guns (Bravo slots) front-left and front-right, the rifle teams the
+-- flanks and the rear.
+local MG_WEIGHTED_DEG = { -110, 110, -25, 25 }
+local MG_WEIGHTED_SCALE = { 0.8, 0.8, 1, 1 }
 
 local function sectorDir(sq, i)
     local a = sq.perim.ang and sq.perim.ang[i] or SECTOR_ANGLE[i]
@@ -53,8 +57,9 @@ local function faceThreat(sq, tx, ty)
     local P = sq.perim
     local theta = math.atan2(ty - P.y, tx - P.x)
     P.theta, P.formedAt = theta, LF.tick
-    P.ang, P.scale = {}, WEIGHTED_SCALE
-    for i = 1, 4 do P.ang[i] = theta + math.rad(WEIGHTED_DEG[i]) end
+    P.ang, P.scale = {}, P.mg and MG_WEIGHTED_SCALE or WEIGHTED_SCALE
+    local deg = P.mg and MG_WEIGHTED_DEG or WEIGHTED_DEG
+    for i = 1, 4 do P.ang[i] = theta + math.rad(deg[i]) end
 end
 
 -- Which quarter (1-4) a soldier holds; nil for the sergeant.
@@ -359,6 +364,7 @@ local function dealBuilding(squad, sq, front)
         end
         if best then posts[squad.leader] = { x = best.x, y = best.y, wall = walls[1], stand = false, kind = "centre", any = true } end
     end
+    if LF.MG then LF.guard("mg posts", LF.MG.dealPosts, squad, sq, L, walls, posts, wallPosts) end
     sq.posts = posts
     local moved, wins = 0, 0
     for rid, p in pairs(posts) do
@@ -558,7 +564,7 @@ updateDefensiveInner = function(squad, sq, cid, cmd)
     sq.contacts = LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)
     sq.lost = sq.lost or {}
     if not sq.perim then
-        sq.perim = { x = cmd:getX(), y = cmd:getY(), z = math.floor(cmd:getZ()) }
+        sq.perim = { x = cmd:getX(), y = cmd:getY(), z = math.floor(cmd:getZ()), mg = squad.mg }
         -- In a building? The spot the unit was told to hold, else where its commander stands
         -- (or right next to it: a doorstep).
         local L = nil

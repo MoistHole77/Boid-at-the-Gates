@@ -185,6 +185,7 @@ end
 -- Does this team want to reposition (half its fit men without an open shot)? Returns wants,
 -- average suppression of its fit men.
 local function teamWantsShift(team)
+    if team.mg then return false, 0 end       -- (a gun team moves its gun itself - LF_MG)
     local fitN, blind, supp = 0, 0, 0
     for _, rid in ipairs(team.members) do
         local r = LF.Records.get(rid)
@@ -648,7 +649,7 @@ local function passOrders(squad, sq, cmd)
                     t.alone = true
                     corporalAlone(team, t, squad, sq)
                 end
-                driveTeam(team, t, squad, sq)
+                if team.mg and LF.MG then LF.MG.driveTeam(team, t, squad, sq) else driveTeam(team, t, squad, sq) end
             end
         end
     end
