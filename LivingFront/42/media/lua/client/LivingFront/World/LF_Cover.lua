@@ -161,6 +161,27 @@ local fireCands = {}
 local function byFireScore(a, b) return a.score > b.score end
 local FIRE_CHECKS = 120     -- at most this many candidate squares get the (costly) cover checks
 
+-- Is anyone else's spot within a tile of (x, y)? (Two wounded men don't share a corner.)
+local function crowded(x, y, z, id)
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if isTaken(x + dx, y + dy, z, id) then return true end
+        end
+    end
+    return false
+end
+
+-- Is another soldier standing (not passing) right beside (x, y)?
+local function mateBeside(x, y, z, body)
+    for _, b in pairs(LF.Bodies.all()) do
+        if b ~= body and not b:isDead() and math.abs(b:getZ() - z) < 0.5
+            and math.abs(b:getX() - (x + 0.5)) < 1.5 and math.abs(b:getY() - (y + 0.5)) < 1.5 then
+            return true
+        end
+    end
+    return false
+end
+
 -- Best firing position for a fighter against a threat: LOW cover toward the threat, line of
 -- sight over it, within maxRange of the threat, preferring nearby squares and ones that don't
 -- walk toward the enemy. With an anchor (ax, ay) and leash, only squares within leash tiles of
@@ -215,7 +236,10 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
         if mb and mb:getID() == enemyB then enemyB = nil end
     end
     -- The best spot he can walk straight to; failing that, the best one behind a fence or wall.
+    -- Not right beside another man's spot either, if there's anywhere else (0.47: four men took
+    -- shelter on two squares of the same corner and stood pushing each other about under fire).
     local fallX, fallY, fallQ = nil, nil, nil
+    local packX, packY, packQ = nil, nil, nil
     for i = 1, math.min(n, FIRE_CHECKS) do
         local c = fireCands[i]
         local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
@@ -223,23 +247,19 @@ function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, 
             local sq = cell:getGridSquare(c.x, c.y, bz)
             local sb = sq and enemyB and sq:getBuilding()
             if sq and not (sb and sb:getID() == enemyB) and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
-                if LF.Cover.crossings(bx, by, c.x, c.y, bz, 1) == 0 then return c.x, c.y, bz, q end
-                if not fallX then fallX, fallY, fallQ = c.x, c.y, q end
+                local straight = LF.Cover.crossings(bx, by, c.x, c.y, bz, 1) == 0
+                if crowded(c.x, c.y, bz, id) or mateBeside(c.x, c.y, bz, body) then
+                    if not packX and straight then packX, packY, packQ = c.x, c.y, q end
+                else
+                    if straight then return c.x, c.y, bz, q end
+                    if not fallX then fallX, fallY, fallQ = c.x, c.y, q end
+                end
             end
         end
     end
     if fallX then return fallX, fallY, bz, fallQ end
+    if packX then return packX, packY, bz, packQ end
     return nil
-end
-
--- Is anyone else's spot within a tile of (x, y)? (Two wounded men don't share a corner.)
-local function crowded(x, y, z, id)
-    for dx = -1, 1 do
-        for dy = -1, 1 do
-            if isTaken(x + dx, y + dy, z, id) then return true end
-        end
-    end
-    return false
 end
 
 local hideCands = {}

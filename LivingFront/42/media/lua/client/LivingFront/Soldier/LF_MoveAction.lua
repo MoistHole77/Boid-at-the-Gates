@@ -327,13 +327,14 @@ function LF_MoveAction.jamCheck(self)
     local d = LF.dist(c:getX(), c:getY(), tx, ty)
     if d < 1.0 then return end
     if not self.jamBest or d < self.jamBest - 0.25 then
-        self.jamBest, self.jamT = d, LF.tick            -- making headway
+        self.jamBest, self.jamT, self.headT = d, LF.tick, LF.tick   -- making headway
         return
     end
     if LF.tick - self.jamT < JAM_TICKS or ghosts[c] then return end
     self.jamT = LF.tick
     local other = someoneAgainst(c)
     if not other then
+        LF_MoveAction.stallCheck(self, d)
         -- Nobody in his way, getting nowhere: walking into a locked door?
         if LF.Building and LF.Building.lockedDoorBeside(c:getCurrentSquare()) then
             LF.guard("door detour", LF_MoveAction.doorDetour, self, "walked into a locked door")
@@ -347,6 +348,45 @@ function LF_MoveAction.jamCheck(self)
         LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " jammed against #" .. tostring(other:getModData().LF_id)
             .. " - both slip past (" .. LF.Move.jams .. ")")
     end
+end
+
+-- ---- getting nowhere ----------------------------------------------------------------------------
+-- Nobody against him, no locked door, but no headway for 3 s (0.47: two men stood frozen in front
+-- of a fence, walking on the spot): whatever the game's state is stuck on is cleared and the path
+-- is planned again; still nowhere 3 s later, the spot is given up as unreachable and the brain
+-- picks another.
+local STALL_TICKS = 180
+function LF_MoveAction.stallCheck(self, d)
+    local c = self.character
+    if self.side then self.headT = LF.tick; return end   -- (round to a door: away from the spot for a while)
+    if LF.tick - (self.headT or LF.tick) < STALL_TICKS then return end
+    if LF.Brain and LF.Brain.climbing and LF.Brain.climbing(c) then return end   -- (his own watchdog)
+    local okB, down = pcall(function() return c:isBumped() or c:isOnFloor() end)
+    if okB and down then return end
+    self.headT = LF.tick
+    self.stalls = (self.stalls or 0) + 1
+    local id = tostring(c:getModData().LF_id)
+    local okS, state = pcall(function() return c:getCurrentStateName() end)
+    LF.log("MOVE #" .. id .. " getting nowhere (" .. string.format("%.1f", d) .. " tiles short, at "
+        .. math.floor(c:getX()) .. "," .. math.floor(c:getY()) .. ", state " .. tostring(okS and state)
+        .. ", try " .. self.stalls .. ")")
+    if self.stalls >= 2 then
+        if LF.Move and LF.Move.onFailed then
+            LF.Move.onFailed(c, self.location:getX() + 0.5, self.location:getY() + 0.5)
+        end
+        self:forceStop()
+        return
+    end
+    pcall(function()
+        for _, v in ipairs({ "ClimbFenceFinished", "ClimbWindowFinished", "ClimbWallFinished", "BumpDone" }) do c:setVariable(v, true) end
+        c:setVariable("ClimbFenceStarted", false)
+        c:setBumpType("")
+    end)
+    local pfb = c:getPathFindBehavior2()
+    if pfb then
+        pcall(function() pfb:pathToLocation(self.location:getX(), self.location:getY(), self.location:getZ()) end)
+    end
+    self.result = nil
 end
 
 local function unghost(self) end   -- (ghosts end on their own timer)

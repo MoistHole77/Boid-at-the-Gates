@@ -1371,12 +1371,15 @@ local function stepNpc(id, body, rec)
     -- (Not a man crawling on ruined legs, or one too badly hurt to stand: they're down for good
     -- reason - 0.45 kept "unsticking" a crawling man every 15 s.)
     -- A stagger the game never finished (its animation was cut short): he isn't on the ground,
-    -- just stuck "bumped" - cleared after 3 s (0.46 left a man standing frozen mid-room for good).
+    -- just stuck "bumped" - cleared after about a second, the length of the stagger itself (0.46
+    -- left a man standing frozen mid-room for good; 0.47 cleared it after 3 s, and every stagger
+    -- from a hit ran the full 3 s - men stood frozen in the open under fire).
     local okB, bumped = pcall(function() return body:isBumped() and not body:isOnFloor() end)
     if okB and bumped and not (LF.Medic and LF.Medic.busy(id)) then
         m.bumpSince = m.bumpSince or LF.tick
-        if LF.tick - m.bumpSince > 180 then
-            LF.log("BRAIN #" .. id .. " stuck mid-stagger - back on his feet")
+        if LF.tick - m.bumpSince > 70 then
+            local okS, st = pcall(function() return body:getCurrentStateName() end)
+            LF.log("BRAIN #" .. id .. " stagger over - back on his feet (state " .. tostring(okS and st) .. ")")
             pcall(function() body:setBumpType(""); body:setBumpDone(true); body:setVariable("BumpDone", true) end)
             m.bumpSince = nil
         end
