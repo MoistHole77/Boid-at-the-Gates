@@ -11,8 +11,8 @@
 --              when he stops)
 --   lay      - he lays him down on his back (Bob_LayDown_Person_OnBack / Bob_LaidDown_OnBack)
 -- The geometry is the game's: while dragged, the man is 0.3 tiles in front of the medic, facing
--- the same way (m_GrappleOffsetForward 0.3 on the game's drag nodes); for the lift, the medic
--- stands 1.2 tiles beyond the man's head (-1.2) and the man stays where he lies.
+-- the same way (m_GrappleOffsetForward 0.3 on the game's drag nodes); for the lift (-1.2) the medic
+-- stands 1.2 tiles behind the man's head, looking down him, and the man stays where he lies.
 -- Both are passable (ghosted) while it lasts, and the brain leaves them alone (LF.Medic.busy).
 --
 -- Test: Living Front > Tests > Medic drag (spawns a German fire team: one man goes down, another
@@ -23,18 +23,22 @@ require "LivingFront/LF_Records"
 require "LivingFront/LF_Bodies"
 require "LivingFront/LF_Units"
 require "LivingFront/LF_MoveAction"
+require "LivingFront/LF_Cover"
 
 LF.Medic = LF.Medic or {}
 
 local CFG = {
-    liftOffset = -1.2,      -- the game's pick-up node: the man at the medic + forward x this
+    liftOffset = -1.2,      -- the game's pick-up node: the medic stands at the man + his facing x this
+                            -- (behind his head, looking down the length of him)
     dragOffset = 0.3,       -- the game's drag nodes: the man at the medic + forward x this
     liftTicks = 150,        -- the lift clip (~2.5 s)
     layTicks = 130,         -- the lay-down clip (~2 s)
     tween = 20,             -- ticks to ease the man from where he lay to the medic's feet
     approachTimeout = 1200, -- can't get to him in ~20 s: give up
     dragTimeout = 2400,     -- the drag itself: ~40 s at most
-    arrive = 1.2,           -- the medic is there when this close to the spot
+    arrive = 0.6,           -- the medic is there when this close to the spot
+    stallTicks = 60,        -- no headway for ~1 s: something is in the way, he stops there
+    dragSpeed = 0.45,       -- tiles/s, only if the drag clip doesn't move him by itself (see below)
     dragDist = 8,           -- the test: this far back toward the rear
 }
 LF.Medic.CFG = CFG
@@ -139,7 +143,7 @@ function LF.Medic.drag(mid, mb, pid, pb, tx, ty)
     local z = math.floor(pb:getZ())
     local px, py = pb:getX(), pb:getY()
     -- Where the medic stands to lift him: the game's lift geometry.
-    local sx, sy = px - dx * CFG.liftOffset, py - dy * CFG.liftOffset
+    local sx, sy = px + dx * CFG.liftOffset, py + dy * CFG.liftOffset
     local J = { mid = mid, mb = mb, pid = pid, pb = pb, phase = "approach", at = LF.tick, started = LF.tick,
                 px = px, py = py, z = z, dx = dx, dy = dy, sx = sx, sy = sy, tx = tx, ty = ty }
     if not walk(mb, sx, sy, z, "walk") then return false end
@@ -179,20 +183,43 @@ local function step(J)
         place(pb, J.px, J.py)                    -- he stays where he lies while he's lifted
         face(pb, J.dx, J.dy)
         if age >= CFG.liftTicks then
-            local fx, fy = fwdOf(mb)
             J.fromX, J.fromY = pb:getX(), pb:getY()
-            setDrag(mb, "hold")
-            setLie(pb, "draggedIdle")
-            local ok = walk(mb, J.tx, J.ty, J.z, "drag")
-            if ok then
-                local q = ISTimedActionQueue.getTimedActionQueue(mb)
-                local a = q and q.queue and q.queue[1]
-                if a then a.faceX, a.faceY = fx, fy end
-            end
-            J.phase, J.at = "drag", LF.tick
-            LF.log("MEDIC #" .. J.mid .. " drags #" .. J.pid .. " back")
+            J.liftMoved = LF.dist(mb:getX(), mb:getY(), J.sx, J.sy)
+            setDrag(mb, "pull")
+            setLie(pb, "dragged")
+            J.lastX, J.lastY, J.bestD, J.bestAt = mb:getX(), mb:getY(), math.huge, LF.tick
+            J.phase, J.at, J.dragStart = "drag", LF.tick, LF.tick
+            J.startX, J.startY = mb:getX(), mb:getY()
+            LF.log(string.format("MEDIC #%d drags #%d back (the lift moved him %.2f tiles)", J.mid, J.pid, J.liftMoved))
         end
     elseif J.phase == "drag" then
+        -- He walks backward toward the spot: facing away from it (at the man), and the drag clip
+        -- itself carries him - the way the game moves a player dragging a corpse, at the clip's
+        -- own pace. (0.35 walked him there on the pathfinder: NPC paths go at walking pace
+        -- whatever the clip, so he dragged at a trot.)
+        local mx, my = mb:getX(), mb:getY()
+        local tx, ty = J.tx - mx, J.ty - my
+        local d = math.sqrt(tx * tx + ty * ty)
+        if d > 0.05 then
+            local fx, fy = -tx / d, -ty / d
+            local ox, oy = fwdOf(mb)
+            fx, fy = ox * 0.8 + fx * 0.2, oy * 0.8 + fy * 0.2
+            local l = math.max(0.0001, math.sqrt(fx * fx + fy * fy))
+            face(mb, fx / l, fy / l)
+        end
+        -- If the clip doesn't carry an NPC by itself, he is moved at the drag pace by hand.
+        if J.manual == nil and age >= 60 then
+            local moved = LF.dist(mx, my, J.startX, J.startY)
+            J.manual = moved < 0.1
+            LF.log(string.format("MEDIC drag: the clip %s (%.2f tiles in the first second)",
+                J.manual and "doesn't move him - moving him at the drag pace by hand" or "moves him itself", moved))
+        end
+        if J.manual and d > 0.05 then
+            local k = math.min(d, CFG.dragSpeed / 60)
+            local nx, ny = mx + tx / d * k, my + ty / d * k
+            local sq = getCell():getGridSquare(math.floor(nx), math.floor(ny), J.z)
+            if sq and sq:isFree(false) and LF.Cover.crossings(mx, my, nx, ny, J.z, 1) == 0 then place(mb, nx, ny) end
+        end
         local fx, fy = fwdOf(mb)
         local wx, wy = mb:getX() + fx * CFG.dragOffset, mb:getY() + fy * CFG.dragOffset
         if age < CFG.tween then                  -- eased in from where he lay
@@ -201,12 +228,14 @@ local function step(J)
         end
         place(pb, wx, wy)
         face(pb, fx, fy)
-        local m = moving(mb)
-        setLie(pb, m and "dragged" or "draggedIdle")
-        if not m then setDrag(mb, "hold") end
-        local there = LF.dist(mb:getX(), mb:getY(), J.tx, J.ty) <= CFG.arrive
-        if there or (not m and age > 90) or age > CFG.dragTimeout then
-            ISTimedActionQueue.clear(mb)
+        if d < J.bestD - 0.1 then J.bestD, J.bestAt = d, LF.tick end
+        local there = d <= CFG.arrive
+        local stuck = LF.tick - J.bestAt > CFG.stallTicks
+        if there or stuck or age > CFG.dragTimeout then
+            local secs = (LF.tick - J.dragStart) / 60
+            local dist = LF.dist(mb:getX(), mb:getY(), J.startX, J.startY)
+            LF.log(string.format("MEDIC drag: %.1f tiles in %.1f s = %.2f tiles/s%s", dist, secs, dist / math.max(0.1, secs),
+                there and "" or (stuck and " (stopped: something in the way)" or " (took too long)")))
             J.layX, J.layY = pb:getX(), pb:getY()
             setDrag(mb, "lay")
             setLie(pb, "laid")
