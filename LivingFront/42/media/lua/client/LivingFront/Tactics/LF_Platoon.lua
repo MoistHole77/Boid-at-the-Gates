@@ -65,6 +65,8 @@ local CFG = {
     withdrawBack = 35,      -- with no rally point, it withdraws this far back from the enemy
     clearOfEnemy = 28,      -- a withdrawing squad marches once no enemy is known this close
     arriveDist = 8,
+    abreast = 7,            -- a platoon patrol: each squad this far out from the line of march
+    hqBehind = 4,           -- ... the headquarters this far behind the rearmost man
 }
 LF.Platoon.CFG = CFG
 
@@ -596,6 +598,75 @@ function LF.Platoon.withdraw(p, x, y, z, why)
     return true
 end
 
+-- Patrol to (x, y): the two squads abreast (~7 tiles either side of the line of march), each
+-- with its sergeant leading at the front; the headquarters follows in the centre, behind them.
+function LF.Platoon.patrol(p, x, y, z)
+    local squads = squadsOf(p)
+    if #squads == 0 then return false, "it has no squads" end
+    local cx, cy, n = 0, 0, 0
+    for _, sq in ipairs(squads) do
+        local sx, sy = posOf(sq)
+        if sx then cx, cy, n = cx + sx, cy + sy, n + 1 end
+    end
+    if n == 0 then return false, "none of its squads is here" end
+    cx, cy = cx / n, cy / n
+    local dx, dy = x - cx, y - cy
+    local d = math.sqrt(dx * dx + dy * dy)
+    if d < 4 then return false, "already there" end
+    dx, dy = dx / d, dy / d
+    local rx, ry = -dy, dx
+    -- Left squad left, right squad right (as they stand now).
+    local side = {}
+    for _, sq in ipairs(squads) do
+        local sx, sy = posOf(sq)
+        side[sq.id] = sx and ((sx - cx) * rx + (sy - cy) * ry) or 0
+    end
+    table.sort(squads, function(a, b) return side[a.id] < side[b.id] end)
+    local lat = #squads > 1 and { -CFG.abreast, CFG.abreast } or { 0 }
+    p.mission = { kind = "patrol", x = math.floor(x), y = math.floor(y), z = z or 0, phase = "moving", since = LF.tick }
+    p.facingX, p.facingY = dx, dy
+    S(p).queue, S(p).runner = {}, nil
+    setHQStance(p, "offensive")
+    for i, sq in ipairs(squads) do
+        clearTask(sq)
+        sq.objTask = nil
+        local l = lat[i] or 0
+        local ok, why = LF.March.order(sq, math.floor(x + rx * l), math.floor(y + ry * l), z or 0, "auto",
+            { noGather = true, platoonPatrol = true })
+        if ok then sq.platoonTask = "patrol"
+        else LF.log("PLATOON " .. sq.name .. " can't patrol: " .. tostring(why)) end
+    end
+    local cmd = commander(p)
+    if cmd then shout(cmd.id, "Platoon - move out! Squads abreast, sergeants lead!") end
+    LF.log("PLATOON " .. p.name .. " patrols to " .. math.floor(x) .. "," .. math.floor(y) .. " (" .. math.floor(d) .. " tiles)")
+    return true
+end
+
+-- Where the headquarters walks on a platoon patrol: centred between the squads, just behind their
+-- rearmost men. x, y and whether the squads are on the move.
+local function patrolSpot(p)
+    local fx, fy = p.facingX or 1, p.facingY or 0
+    local sx, sy, n, rear = 0, 0, 0, math.huge
+    local moving = false
+    for _, sq in ipairs(squadsOf(p)) do
+        local M = LF.March.get(sq.id)
+        if M and not M.arrived and not M.halted then moving = true end
+        for _, rid in ipairs(LF.Units.members(sq.id)) do
+            local r = LF.Records.get(rid)
+            local b = r and r.alive and bodyOf(rid)
+            if b then
+                local x, y = b:getX(), b:getY()
+                sx, sy, n = sx + x, sy + y, n + 1
+                rear = math.min(rear, x * fx + y * fy)
+            end
+        end
+    end
+    if n == 0 then return nil end
+    sx, sy = sx / n, sy / n
+    local back = (sx * fx + sy * fy) - rear + CFG.hqBehind
+    return sx - fx * back, sy - fy * back, moving
+end
+
 -- Where to pull back to: the platoon's start point, or straight back from the enemy.
 local function rallyPoint(p)
     if p.home then return p.home.x, p.home.y, p.home.z end
@@ -793,6 +864,33 @@ function LF.Platoon.place(rec)
     local z = math.floor(body:getZ())
     local m = p.mission
     local isCmd = hq.leader == rec.id
+    -- On a platoon patrol, with no enemy close: the centre rear, in step with the squads.
+    if m and m.kind == "patrol" and not platoonContact(p, body:getX(), body:getY(), 35) then
+        local px, py, moving = patrolSpot(p)
+        if px then
+            local fx, fy = p.facingX or 1, p.facingY or 0
+            local f, l = 0, 0
+            if not isCmd then
+                local o = rec.hqRole == "rto" and { -1.5, -1.5 } or { -2, 2 }
+                f, l = o[1], o[2]
+            end
+            local x, y = px + fx * f - fy * l, py + fy * f + fx * l
+            local st = S(p)
+            st.patrolFaces = st.patrolFaces or {}
+            local face = st.patrolFaces[rec.id]
+            if not face then
+                face = LF.Tactics.point(0, 0, z)
+                st.patrolFaces[rec.id] = face
+            end
+            -- Moving: eyes ahead. Halted: the lieutenant forward, his men out to the flanks and rear.
+            local hx, hy = fx, fy
+            if not moving and not isCmd then
+                if rec.hqRole == "rto" then hx, hy = fy, -fx else hx, hy = -fx, -fy end
+            end
+            face.x, face.y, face.z = x + hx * 6, y + hy * 6, z
+            return "file", x, y, z, face, moving and "march" or "halt"
+        end
+    end
     local point = focus(p, body:getX(), body:getY())
         or LF.Tactics.point(body:getX() + (p.facingX or 1) * 10, body:getY() + (p.facingY or 0) * 10, z)
     local s = S(p)

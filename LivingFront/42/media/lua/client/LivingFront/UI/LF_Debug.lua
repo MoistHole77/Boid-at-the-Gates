@@ -359,7 +359,8 @@ local function platoonList(x, y)
     for _, p in pairs(LF.Units.all()) do
         if p.kind == "platoon" then
             local hq = LF.Units.get(p.hq)
-            local px, py = hq and unitPos(hq)
+            local px, py = nil, nil
+            if hq then px, py = unitPos(hq) end       -- (both values: "hq and unitPos(hq)" keeps only the first)
             if not px then
                 for _, sid in ipairs(p.squads or {}) do
                     local s = LF.Units.get(sid)
@@ -493,85 +494,93 @@ local function onMenu(playerNum, context, worldObjects, test)
     -- Orders: pick any unit in the game (nearest the click first), then what it does here.
     local building = LF.Building.idAt(x, y, z) ~= nil
     local orders = sub(main, "Give orders to")
-    local lists = unitList(x, y)
+    -- (Each part of the menu is built on its own: a slip in one - 0.49.0 broke on the platoon list -
+    -- doesn't take the rest of the menu, the tools included, with it.)
     local any = false
-    local plists = platoonList(x, y)
-    for _, f in ipairs({ { "GER", "German platoons" }, { "SOV", "Soviet platoons" } }) do
-        local list = plists[f[1]]
-        if list and #list > 0 then
-            any = true
-            local fm = sub(orders, f[2])
-            for _, e in ipairs(list) do
-                local plt = e.p
-                local pm = sub(fm, LF.Platoon.describe(plt) .. string.format(" (%d tiles)", math.floor(e.d)))
+    LF.guard("menu: orders", function()
+        local lists = unitList(x, y)
+        local plists = platoonList(x, y)
+        for _, f in ipairs({ { "GER", "German platoons" }, { "SOV", "Soviet platoons" } }) do
+            local list = plists[f[1]]
+            if list and #list > 0 then
+                any = true
+                local fm = sub(orders, f[2])
+                for _, e in ipairs(list) do
+                    local plt = e.p
+                    local pm = sub(fm, LF.Platoon.describe(plt) .. string.format(" (%d tiles)", math.floor(e.d)))
+                    pm:addOption("Patrol here (squads abreast, HQ centre rear)", nil, function()
+                    local ok, why = LF.Platoon.patrol(plt, x, y, z)
+                    LF.say(ok and (plt.name .. " patrols there") or ("Can't: " .. tostring(why)))
+                end)
                 pm:addOption(building and "Take this building" or "Take this spot", nil, function()
-                    local obj = objectiveAt(x, y, z)
-                    local ok, why = LF.Platoon.take(plt, obj)
-                    LF.say(ok and (plt.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
-                end)
-                pm:addOption(building and "Hold this building" or "Hold this spot", nil, function()
-                    local obj = objectiveAt(x, y, z)
-                    local ok, why = LF.Platoon.hold(plt, obj)
-                    LF.say(ok and (plt.name .. " holds " .. obj.name) or ("Can't: " .. tostring(why)))
-                end)
-                pm:addOption("Withdraw to here", nil, function()
-                    LF.Platoon.withdraw(plt, x, y, z, "debug order")
-                    LF.say(plt.name .. " withdraws")
-                end)
-                local cmd = LF.Platoon.commander(plt)
-                if cmd then
-                    local cid = cmd.id
-                    pm:addOption("Inspect " .. LF.Units.title(cmd), nil, function() LF.Inspect.open(cid) end)
+                        local obj = objectiveAt(x, y, z)
+                        local ok, why = LF.Platoon.take(plt, obj)
+                        LF.say(ok and (plt.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
+                    end)
+                    pm:addOption(building and "Hold this building" or "Hold this spot", nil, function()
+                        local obj = objectiveAt(x, y, z)
+                        local ok, why = LF.Platoon.hold(plt, obj)
+                        LF.say(ok and (plt.name .. " holds " .. obj.name) or ("Can't: " .. tostring(why)))
+                    end)
+                    pm:addOption("Withdraw to here", nil, function()
+                        LF.Platoon.withdraw(plt, x, y, z, "debug order")
+                        LF.say(plt.name .. " withdraws")
+                    end)
+                    local cmd = LF.Platoon.commander(plt)
+                    if cmd then
+                        local cid = cmd.id
+                        pm:addOption("Inspect " .. LF.Units.title(cmd), nil, function() LF.Inspect.open(cid) end)
+                    end
                 end
             end
         end
-    end
-    for _, f in ipairs({ { "GER", "German units" }, { "SOV", "Soviet units" }, { "CIV", "Civilian units" } }) do
-        local list = lists[f[1]]
-        if list and #list > 0 then
-            any = true
-            local fm = sub(orders, f[2])
-            for _, e in ipairs(list) do
-                local u = e.u
-                local st = LF.Stance.get(u).name
-                local task = u.objTask and (" - " .. u.objTask.kind) or ""
-                local um = sub(fm, string.format("%s  (%d/%d, %s%s, %d tiles)", u.name, e.n, e.total, st, task, math.floor(e.d)))
-                local sm = sub(um, "Stance (now " .. st .. ")")
-                sm:addOption("Stand by (rest where it is)", nil, function() setStanceOf(u, x, y, z, "standby") end)
-                sm:addOption("Offensive", nil, function() setStanceOf(u, x, y, z, "offensive") end)
-                sm:addOption(building and "Defensive - hold this building" or "Defensive - all-round, where it is",
-                    nil, function() setStanceOf(u, x, y, z, "defensive") end)
-                local pm = sub(um, "Patrol here")
-                pm:addOption("Sergeant's choice of formation", nil, function() patrolOf(u, x, y, z, "auto") end)
-                pm:addOption("Ranger file", nil, function() patrolOf(u, x, y, z, "file") end)
-                pm:addOption("Tactical column", nil, function() patrolOf(u, x, y, z, "column") end)
-                pm:addOption("Wedge", nil, function() patrolOf(u, x, y, z, "wedge") end)
-                um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
-                um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
-                if building then um:addOption("Clear this building (Alpha)", nil, function() clearOf(u, x, y, z) end) end
-                -- Any objective, wherever it is (no need to be near it).
-                local objs = {}
-                for _, o in pairs(LF.Objective.all()) do objs[#objs + 1] = o end
-                table.sort(objs, function(a, b) return a.id < b.id end)
-                if #objs > 0 then
-                    local ux, uy = unitPos(u)
-                    local function label(o)
-                        local holder = o.holder and (", held by the " .. (o.holder == "GER" and "Germans" or o.holder == "SOV" and "Soviets" or o.holder)) or ""
-                        return o.name .. " (" .. math.floor(LF.dist(ux or o.x, uy or o.y, o.x, o.y)) .. " tiles" .. holder .. ")"
+        for _, f in ipairs({ { "GER", "German units" }, { "SOV", "Soviet units" }, { "CIV", "Civilian units" } }) do
+            local list = lists[f[1]]
+            if list and #list > 0 then
+                any = true
+                local fm = sub(orders, f[2])
+                for _, e in ipairs(list) do
+                    local u = e.u
+                    local st = LF.Stance.get(u).name
+                    local task = u.objTask and (" - " .. u.objTask.kind) or ""
+                    local um = sub(fm, string.format("%s  (%d/%d, %s%s, %d tiles)", u.name, e.n, e.total, st, task, math.floor(e.d)))
+                    local sm = sub(um, "Stance (now " .. st .. ")")
+                    sm:addOption("Stand by (rest where it is)", nil, function() setStanceOf(u, x, y, z, "standby") end)
+                    sm:addOption("Offensive", nil, function() setStanceOf(u, x, y, z, "offensive") end)
+                    sm:addOption(building and "Defensive - hold this building" or "Defensive - all-round, where it is",
+                        nil, function() setStanceOf(u, x, y, z, "defensive") end)
+                    local pm = sub(um, "Patrol here")
+                    pm:addOption("Sergeant's choice of formation", nil, function() patrolOf(u, x, y, z, "auto") end)
+                    pm:addOption("Ranger file", nil, function() patrolOf(u, x, y, z, "file") end)
+                    pm:addOption("Tactical column", nil, function() patrolOf(u, x, y, z, "column") end)
+                    pm:addOption("Wedge", nil, function() patrolOf(u, x, y, z, "wedge") end)
+                    um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
+                    um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
+                    if building then um:addOption("Clear this building (Alpha)", nil, function() clearOf(u, x, y, z) end) end
+                    -- Any objective, wherever it is (no need to be near it).
+                    local objs = {}
+                    for _, o in pairs(LF.Objective.all()) do objs[#objs + 1] = o end
+                    table.sort(objs, function(a, b) return a.id < b.id end)
+                    if #objs > 0 then
+                        local ux, uy = unitPos(u)
+                        local function label(o)
+                            local holder = o.holder and (", held by the " .. (o.holder == "GER" and "Germans" or o.holder == "SOV" and "Soviets" or o.holder)) or ""
+                            return o.name .. " (" .. math.floor(LF.dist(ux or o.x, uy or o.y, o.x, o.y)) .. " tiles" .. holder .. ")"
+                        end
+                        local am = sub(um, "Attack an objective")
+                        local hm = sub(um, "Hold an objective")
+                        for _, o in ipairs(objs) do
+                            local obj = o
+                            am:addOption(label(obj), nil, function() takeOf(u, x, y, z, obj) end)
+                            hm:addOption(label(obj), nil, function() holdOf(u, x, y, z, obj) end)
+                        end
                     end
-                    local am = sub(um, "Attack an objective")
-                    local hm = sub(um, "Hold an objective")
-                    for _, o in ipairs(objs) do
-                        local obj = o
-                        am:addOption(label(obj), nil, function() takeOf(u, x, y, z, obj) end)
-                        hm:addOption(label(obj), nil, function() holdOf(u, x, y, z, obj) end)
-                    end
+                    local cid = LF.Units.commander(u)
+                    if cid then um:addOption("Inspect its leader", nil, function() LF.Inspect.open(cid) end) end
                 end
-                local cid = LF.Units.commander(u)
-                if cid then um:addOption("Inspect its leader", nil, function() LF.Inspect.open(cid) end) end
             end
         end
-    end
+    end)
     if not any then orders:addOption("(no units yet - spawn some)") end
 
     main:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
@@ -581,6 +590,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     end)
 
     -- Tools.
+    LF.guard("menu: tools", function()
     local tools = sub(main, "Tools")
     for _, m in ipairs({
         { "Move nearest here", function(k) moveNearest(k, x, y, z) end },
@@ -603,6 +613,7 @@ local function onMenu(playerNum, context, worldObjects, test)
     tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
+    end)
 end
 
 Events.OnFillWorldObjectContextMenu.Add(onMenu)

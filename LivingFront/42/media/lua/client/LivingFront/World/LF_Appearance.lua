@@ -122,15 +122,17 @@ local function put(body, fullType, locations)
     if wears(body, fullType) then return true end
     local item = body:getInventory():AddItem(fullType)
     if not item then LF.log("KIT couldn't make " .. fullType); return false end
-    local tries = { function() return item:getBodyLocation() end, function() return item:canBeEquipped() end }
-    for _, l in ipairs(locations or {}) do tries[#tries + 1] = function() return l end end
-    for _, loc in ipairs(tries) do
-        local ok = pcall(function()
-            local l = loc()
-            if not l or l == "" then error("no location") end
-            body:setWornItem(l, item)
-        end)
-        if ok and wears(body, fullType) then return true end
+    -- (No error() inside pcall for a missing location: the game logs every caught error with a
+    -- full stack trace.)
+    local tries = {}
+    pcall(function() tries[#tries + 1] = item:getBodyLocation() end)
+    pcall(function() tries[#tries + 1] = item:canBeEquipped() end)
+    for _, l in ipairs(locations or {}) do tries[#tries + 1] = l end
+    for _, l in ipairs(tries) do
+        if l and l ~= "" then
+            pcall(function() body:setWornItem(l, item) end)
+            if wears(body, fullType) then return true end
+        end
     end
     LF.log("KIT couldn't put on " .. fullType)
     return false

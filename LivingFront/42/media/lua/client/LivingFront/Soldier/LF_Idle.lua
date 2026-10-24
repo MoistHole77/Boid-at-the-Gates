@@ -7,6 +7,9 @@
 -- gear; standing: smokes, looks at a photograph from home, checks his rifle, looks around. If it
 -- needs his hands, he slings his rifle on his back first and takes it back afterwards.
 --
+-- Where there is something to sit on - a chair or a couch in the house his unit holds, a bench in
+-- a park - he takes it (the game's own sit-on-furniture: he walks to it, sits, and gets up again
+-- the same way as the player), within a few tiles of his place; each seat one man.
 -- Sitting is the game's own: the "sit on ground" event puts him in the game's sitting state
 -- (the whole body, rifle across his lap) and "forceGetUp" stands him up with the game's clip.
 -- (Up to 0.26.0 the sitting was a clip of ours played as an action - but actions only drive the
@@ -27,6 +30,8 @@ local CFG = {
     gapTicks = { 3600, 5400 },               -- between activities: 1 min + up to 1.5 min more
     actTicks = { 1200, 2400 },               -- an activity: 20 s + up to 40 s more
     sitFailTicks = 180,                      -- not down after ~3 s: the game wouldn't sit him; stand instead
+    seatRange = 5,                           -- a seat this close to his place
+    seatFailTicks = 900,                     -- not sitting on it after ~15 s: the ground instead
 }
 LF.Idle.CFG = CFG
 
@@ -106,9 +111,90 @@ end
 
 -- ---- sitting down and getting up -----------------------------------------------------------------
 
+function LF.Idle.onFurniture(body)
+    local ok, s = pcall(function() return body:isSittingOnFurniture() end)
+    return ok and s or false
+end
+
 function LF.Idle.isSitting(body)
     local ok, s = pcall(function() return body:isSitOnGround() end)
-    return ok and s or false
+    return (ok and s) or LF.Idle.onFurniture(body)
+end
+
+-- ---- seats ------------------------------------------------------------------------------------
+
+local seatOf = {}           -- seat object -> body using it (runtime)
+
+local function hasSeat(obj)
+    local ok, n = pcall(function() return SeatingManager.getInstance():getTilePositionCount(obj) end)
+    return ok and n and n > 0
+end
+
+local function buildingIdOf(sq)
+    local b = sq and sq:getBuilding()
+    return b and b:getID() or nil
+end
+
+-- The nearest free seat within range of his place (same building, or both out of doors).
+local function findSeat(body, range)
+    if not SeatingManager then return nil end
+    local cell = getCell()
+    local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
+    local here = buildingIdOf(body:getCurrentSquare())
+    local best, bd = nil, math.huge
+    for x = bx - range, bx + range do
+        for y = by - range, by + range do
+            local sq = cell:getGridSquare(x, y, bz)
+            if sq and buildingIdOf(sq) == here then
+                local objs = sq:getObjects()
+                for i = 0, objs:size() - 1 do
+                    local o = objs:get(i)
+                    local user = seatOf[o]
+                    if user and (user:isDead() or not LF.Idle.onFurniture(user) and not user:getModData().LF_seatGoing) then
+                        seatOf[o], user = nil, nil
+                    end
+                    if not user and hasSeat(o) then
+                        local free = true
+                        pcall(function() free = not o:isFurnitureOccupied(body) end)
+                        local d = LF.dist(body:getX(), body:getY(), x + 0.5, y + 0.5)
+                        if free and d < bd then best, bd = o, d end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function seatPathFound(body, action)
+    local seat = action.goalFurnitureObject
+    local after = ISRestAction:new(body, seat, true)
+    if action:addAfter(after) == nil then ISTimedActionQueue.add(after) end
+end
+
+local function seatPathFailed(body, seat)
+    body:getModData().LF_seatGoing = nil
+    if seatOf[seat] == body then seatOf[seat] = nil end
+end
+
+-- Walk to the seat and sit on it. True if he set off.
+local function takeSeat(body, seat)
+    if not (ISPathFindAction and ISPathFindAction.pathToSitOnFurniture and ISRestAction) then return false end
+    local ok = pcall(function()
+        local action = ISPathFindAction:pathToSitOnFurniture(body, seat, true)
+        action:setOnComplete(seatPathFound, body, action)
+        action:setOnFail(seatPathFailed, body, seat)
+        ISTimedActionQueue.add(action)
+    end)
+    if not ok then return false end
+    seatOf[seat] = body
+    body:getModData().LF_seatGoing = true
+    return true
+end
+
+local function leaveSeat(body)
+    body:getModData().LF_seatGoing = nil
+    for o, b in pairs(seatOf) do if b == body then seatOf[o] = nil end end
 end
 
 local function sitDown(body)
@@ -118,6 +204,7 @@ end
 
 -- Get up (the game's stand-up clip). True if he was sitting.
 function LF.Idle.standUp(body)
+    leaveSeat(body)
     if not LF.Idle.isSitting(body) then return false end
     body:setVariable("forceGetUp", true)
     return true
@@ -127,7 +214,7 @@ end
 function LF.Idle.stop(body, m)
     local q = ISTimedActionQueue.getTimedActionQueue(body)
     local a = q and q.queue and q.queue[1]
-    if a and a.Type == "LF_IdleAction" then ISTimedActionQueue.clear(body) end
+    if a and (a.Type == "LF_IdleAction" or a.Type == "ISPathFindAction" or a.Type == "ISRestAction") then ISTimedActionQueue.clear(body) end
     LF.Idle.standUp(body)
     if LF.Combat and LF.Combat.slungGun(body) then LF.Combat.unsling(body) end
     if m then m.rest = nil end
@@ -152,12 +239,34 @@ function LF.Idle.tick(body, m, keep)
         R = { seated = seated, start = now, endAt = now + (seated and rnd(CFG.sitTicks) or rnd(CFG.standTicks)),
               nextAct = now + math.floor(rnd(CFG.gapTicks) / 2) }
         m.rest = R
-        if seated then LF.guard("sit down", sitDown, body) end
+        if seated then
+            -- Something to sit on nearby: that, rather than the floor.
+            local seat = LF.guard("find seat", findSeat, body, CFG.seatRange)
+            if seat and LF.guard("take seat", takeSeat, body, seat) then
+                R.seat = true
+                R.nextAct = math.max(R.nextAct, now + 600)
+                m.detail = "going to sit down"
+                return
+            end
+            LF.guard("sit down", sitDown, body)
+        end
         m.detail = seated and "sitting down" or "standing easy"
         return
     end
+    -- A seat he couldn't get to: the ground instead.
+    if R.seat and not body:getModData().LF_seatGoing and not LF.Idle.onFurniture(body) and not body:isPerformingAnAction() then
+        R.seat = nil
+        LF.guard("sit down", sitDown, body)
+        R.start = now
+    end
+    if R.seat and now - R.start > CFG.seatFailTicks and not LF.Idle.onFurniture(body) then
+        R.seat = nil
+        LF.Idle.stop(body, nil)
+        LF.guard("sit down", sitDown, body)
+        R.start = now
+    end
     -- The game wouldn't sit him down (on stairs, mid-turn...): he stands easy instead.
-    if R.seated and now - R.start > CFG.sitFailTicks and not LF.Idle.isSitting(body) then R.seated = false end
+    if R.seated and not R.seat and now - R.start > CFG.sitFailTicks and not LF.Idle.isSitting(body) then R.seated = false end
     if now >= R.endAt then
         if not body:isPerformingAnAction() then
             LF.Idle.stop(body, m)

@@ -266,6 +266,9 @@ local function columnOrder(squad, form)
         local r = LF.Records.get(squad.leader)
         if r and r.alive then sgt = squad.leader end
     end
+    -- (A squad of a platoon on the move: its sergeant leads from the front - LF_Platoon. In a
+    -- tactical column he is level with the point man already.)
+    if squad.platoonPatrol and sgt and form ~= "column" then order[1] = sgt; sgt = nil end
     for i, slot in ipairs(slots) do
         addTeam(slot)
         if i == 1 and sgt and form == "file" then order[#order + 1] = sgt; sgt = nil end   -- behind the first team
@@ -297,6 +300,7 @@ local function layOut(squad, M)
             local f, l
             if rid == squad.leader then
                 f, l = -7, 0
+                if squad.platoonPatrol then f, l = 2, -3 end      -- (leading his squad)
             else
                 local team = LF.Units.get(r.team)
                 local slot = squad.teamOnly and 1 or (team and team.slot or 1)
@@ -494,6 +498,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     -- teams nearby join the unit first (LF_Join).
     if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad, "patrol") end
     if not (opts and opts.continuing) then squad.pendingHold = nil end    -- a new order replaces a pending one
+    if not (opts and opts.continuing) then squad.platoonPatrol = (opts and opts.platoonPatrol) or nil end
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end

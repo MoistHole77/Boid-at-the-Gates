@@ -59,6 +59,7 @@ local CFG = {
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
+    quietRest = 3600,       -- a man off the windows in a held building rests after ~60 s with no enemy known
     holdLeash = 4,          -- ... and within this of their spot while their unit has orders
     commandLeash = 7,       -- the sergeant looks this far from his spot for cover (his teams don't move)
     moveReissueTicks = 60,  -- a bounding soldier re-paths at most this often
@@ -222,6 +223,9 @@ local function leavePosition(id, body, m)
     m.cover, m.hide = nil, nil
     LF.Posture.set(body, false)
 end
+
+-- Posts whose men may rest when it has been quiet for a while (not windows or doors).
+local REST_POSTS = { back = true, reserve = true, centre = true, watch = true }
 
 -- States between which a soldier keeps his position (seeing / covering / watching).
 local KEEP_POSITION = { engage = true, alert = true, guard = true, assist = true }
@@ -601,6 +605,7 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
             end
         end
         if job then
+            if m.rest and LF.Idle then LF.Idle.stop(body, m) end
             setState(id, body, rec, m, "guard", "shutting the door at " .. job.o.x .. "," .. job.o.y)
             m.targetId = nil
             if LF.dist(body:getX(), body:getY(), job.o.x + 0.5, job.o.y + 0.5) <= 1.4 then
@@ -620,6 +625,24 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
     elseif m.doorJob then
         LF.Tactics.doorDone(rec, m.doorJob.o)
         m.doorJob = nil
+    end
+    -- All quiet for a good while in the building his unit holds: a man who isn't at a window or a
+    -- door takes his ease near his post - a chair or a couch if there's one (LF_Idle).
+    local unit = LF.Units.get(rec.squad)
+    local post = unit and LF.Tactics.state(unit)
+    post = post and post.posts and post.posts[id]
+    local quiet = not pick and post and REST_POSTS[post.kind]
+        and not LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.quietRest, 80)
+    if quiet and LF.Idle and (m.rest or LF.dist(body:getX(), body:getY(), sx, sy) <= 2) then
+        if not m.keepPost then
+            m.keepPost = function() local mm = minds[id]; return mm ~= nil and mm.rest ~= nil end
+        end
+        if m.state ~= "guard" then setState(id, body, rec, m, "guard", "resting near his post") end
+        m.targetId = nil
+        LF.guard("rest at post", LF.Idle.tick, body, m, m.keepPost)
+        return
+    elseif m.rest and LF.Idle then
+        LF.Idle.stop(body, m)
     end
     local where = stand and "at his window" or "at his post"
     if pick and dist <= CFG.fireRange then
@@ -1149,7 +1172,8 @@ local function decide(id, body, rec, m)
     m.targetId = nil
     if inSquad then
         local placed = true
-        if ax then placed = followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
+        -- (A man going to, or on, a seat near his place stays there - LF_Idle.)
+        if ax and not (m.rest and m.rest.seat) then placed = followSlot(m, body, rec, ax, ay, az) end   -- the leader holds; the squad keeps formation
         -- Standing by: on his spot, he passes the time (sits, smokes, checks his rifle...).
         if placed and fighter and LF.Idle and LF.Stance.of(rec).idle and not isMoving(body) then
             if not m.keepIdle then
