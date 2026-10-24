@@ -467,9 +467,12 @@ local function chooseTarget(id, body, rec, m, visible)
         if q == LF.Cover.HIGH then score = score + CFG.highCoverPenalty
         elseif q == LF.Cover.LOW then score = score + CFG.lowCoverPenalty end
         if s.id == m.targetId then score = score - CFG.stickyBonus end
+        -- (Behind a wall from here - the sight line only grazes a corner: not a target. Up to
+        -- 0.46 a man could spend half a minute firing into the wall in front of one.)
+        if q == LF.Cover.HIGH and s.dist > 2 then score = math.huge end
         -- A machine gun firing on us: its crew first.
         if LF.MG and LF.MG.isFiring(s.id) then score = score - LF.MG.CFG.gunBonus end
-        if not bestScore or score < bestScore then best, bestScore = s, score end
+        if score < math.huge and (not bestScore or score < bestScore) then best, bestScore = s, score end
     end
     return best
 end
@@ -692,6 +695,9 @@ local function holdGun(id, body, rec, m, sx, sy, sz, point, watching, stand, win
         sx, sy = body:getX(), body:getY()
     end
     exactSpot(id, body, m, sx, sy, sz, stand and "gun in the window" or "gun position")
+    -- Over low cover the gun is rested on it, and he stands behind it (as at a window).
+    local over = point and LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, point.x, point.y) == LF.Cover.LOW
+    stand = stand or over or false
     m.cover.stand = stand
     m.cover.loose = false
     m.cover.gun = true
@@ -1203,12 +1209,15 @@ local function act(id, body, rec, m)
     local areaRange = gunner and LF.MG.CFG.areaRange or CFG.sightRange
     -- A defender at a window stands to fire out of it (ducking only under fire).
     local c = m.cover
-    local standing = c ~= nil and c.post and c.stand and isAt(body, c)
-    if standing and not LF.Suppress.isSuppressed(body) and LF.Posture.crouched(body) and not body:isPerformingAnAction() then
+    local standing = c ~= nil and c.post and c.stand and onSpot(body, c)
+    -- (A machine gunner on his gun - at a window, or over low cover - stays up behind it between
+    -- bursts, under fire or not: the gun is rested on the sill or the wall, and so is he.)
+    local gunUp = standing and c.gun
+    if standing and (gunUp or not LF.Suppress.isSuppressed(body)) and LF.Posture.crouched(body) and not body:isPerformingAnAction() then
         LF.Posture.set(body, false)
     end
     -- Under fire, soldiers keep their heads down between shots (and pinned men stay down).
-    if (st == "engage" or st == "alert") and LF.Suppress.isSuppressed(body) then hunkerDown(body) end
+    if (st == "engage" or st == "alert") and LF.Suppress.isSuppressed(body) and not gunUp then hunkerDown(body) end
     -- Holding with no cover at all: crouch rather than stand in the open.
     if (st == "engage" or st == "alert") and not m.cover and m.order and not isMoving(body) then hunkerDown(body) end
     if st == "alert" and m.point then
@@ -1334,6 +1343,7 @@ local function unstick(id, body, m, why)
         for _, v in ipairs({ "ClimbFenceFinished", "ClimbWindowFinished", "ClimbWallFinished", "BumpDone" }) do body:setVariable(v, true) end
         body:setVariable("ClimbFenceStarted", false)
         body:setBumpDone(true)
+        body:setBumpType("")
         body:setOnFloor(false)
         body:setKnockedDown(false)
     end)
@@ -1360,6 +1370,19 @@ local function stepNpc(id, body, rec)
     m.climbSince = nil
     -- (Not a man crawling on ruined legs, or one too badly hurt to stand: they're down for good
     -- reason - 0.45 kept "unsticking" a crawling man every 15 s.)
+    -- A stagger the game never finished (its animation was cut short): he isn't on the ground,
+    -- just stuck "bumped" - cleared after 3 s (0.46 left a man standing frozen mid-room for good).
+    local okB, bumped = pcall(function() return body:isBumped() and not body:isOnFloor() end)
+    if okB and bumped and not (LF.Medic and LF.Medic.busy(id)) then
+        m.bumpSince = m.bumpSince or LF.tick
+        if LF.tick - m.bumpSince > 180 then
+            LF.log("BRAIN #" .. id .. " stuck mid-stagger - back on his feet")
+            pcall(function() body:setBumpType(""); body:setBumpDone(true); body:setVariable("BumpDone", true) end)
+            m.bumpSince = nil
+        end
+    else
+        m.bumpSince = nil
+    end
     if LF.Combat.knockedDown(body) and not (LF.Medic and LF.Medic.isCritical(id)) and not m.crawl
         and LF.Combat.health(body) >= 20 and not (LF.Combat.legsOut and LF.Combat.legsOut(body)) then
         m.downSince = m.downSince or LF.tick

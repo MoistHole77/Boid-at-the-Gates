@@ -264,6 +264,52 @@ local function topUpFile(file)
     end
 end
 
+-- Getting to his stack spot from outside: round the building, never through it. The way straight
+-- there crossing the building, he goes by a corner of it first (3 tiles out). (Up to 0.46 a team
+-- sent round to the back door walked in at the front, through the house, before anyone had called
+-- the go - and was shot inside.)
+local function bboxOf(L)
+    if L.bbox then return L.bbox end
+    local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+    for _, q in ipairs(L.inside) do
+        x0, y0 = math.min(x0, q.x), math.min(y0, q.y)
+        x1, y1 = math.max(x1, q.x + 1), math.max(y1, q.y + 1)
+    end
+    L.bbox = { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }
+    return L.bbox
+end
+local function crosses(B, ax, ay, bx, by, pad)
+    local d = LF.dist(ax, ay, bx, by)
+    local n = math.max(1, math.ceil(d / 0.5))
+    for i = 1, n - 1 do
+        local x, y = ax + (bx - ax) * i / n, ay + (by - ay) * i / n
+        if x > B.x0 - pad and x < B.x1 + pad and y > B.y0 - pad and y < B.y1 + pad then return true end
+    end
+    return false
+end
+local function viaCorner(C, rid, body, tx, ty)
+    C.via = C.via or {}
+    local v = C.via[rid]
+    local bx, by = body:getX(), body:getY()
+    if v then
+        if LF.dist(bx, by, v.x, v.y) > 2.5 then return v end
+        C.via[rid] = nil
+    end
+    local L = C.L
+    if LF.Building.isInside(L, bx, by) then return nil end
+    local B = bboxOf(L)
+    if not crosses(B, bx, by, tx, ty, 0.3) then return nil end
+    local best, bd = nil, math.huge
+    for _, c in ipairs({ { B.x0 - 3, B.y0 - 3 }, { B.x1 + 3, B.y0 - 3 }, { B.x0 - 3, B.y1 + 3 }, { B.x1 + 3, B.y1 + 3 } }) do
+        if not crosses(B, bx, by, c[1], c[2], 0.3) then
+            local d = LF.dist(bx, by, c[1], c[2]) + LF.dist(c[1], c[2], tx, ty) * (crosses(B, c[1], c[2], tx, ty, 0.3) and 3 or 1)
+            if d < bd then best, bd = { x = c[1], y = c[2] }, d end
+        end
+    end
+    C.via[rid] = best
+    return best
+end
+
 function LF.Tactics.clearPlace(C, rec)
     if C.halted then
         -- A man down: everyone holds where he is until he has been dragged clear.
@@ -311,6 +357,8 @@ function LF.Tactics.clearPlace(C, rec)
         return "file", h.x, h.y, z, C.face, "walk"
     end
     local far = body and LF.dist(body:getX(), body:getY(), sp.x + 0.5, sp.y + 0.5) > 3
+    local v = body and far and viaCorner(C, rec.id, body, sp.x + 0.5, sp.y + 0.5)
+    if v then return "file", v.x, v.y, z, C.face, "run" end
     return "file", sp.x + 0.5, sp.y + 0.5, z, C.face, far and "run" or "walk"
 end
 

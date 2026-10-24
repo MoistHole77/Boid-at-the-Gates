@@ -199,7 +199,17 @@ local function hitChance(shooter, target, dist, profile)
 end
 LF.Combat.hitChance = hitChance
 
+-- Down critical, calling for the medic (LF_Medic): nothing more can hurt him, or knock him about,
+-- until his clock runs out. (The game's own god mode can't be relied on for an NPC: 0.46 still
+-- lost men to grenades and stray rounds while they lay waiting.)
+local function untouchable(target)
+    local id = target:getModData().LF_id
+    return id ~= nil and LF.Medic ~= nil and LF.Medic.isCritical(id)
+end
+LF.Combat.untouchable = untouchable
+
 local function wound(target, partName, profile)
+    if untouchable(target) then return end
     target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(profile.wound)
     target:getBodyDamage():ReduceGeneralHealth((IMPACT[partName] or 15) * profile.impact)
 end
@@ -207,6 +217,7 @@ end
 -- A shrapnel / blast wound: severity like a rifle wound's (0-100), plus a general health loss.
 function LF.Combat.blastWound(target, partName, severity, impact)
     return LF.guard("blast wound", function()
+        if untouchable(target) then return end
         target:getBodyDamage():getBodyPart(BodyPartType[partName]):damageFromFirearm(severity)
         target:getBodyDamage():ReduceGeneralHealth(impact)
     end)
@@ -223,6 +234,7 @@ local KNOCK = {     -- part -> { fall %, stagger % }
 
 -- Knock him over (fall) or stagger him, from a hit or blast coming from (sx, sy).
 local function knockFrom(target, sx, sy, fall)
+    if untouchable(target) then return end
     -- From the front, he goes over backwards; from behind, forwards.
     local fx, fy = target:getForwardDirection():getX(), target:getForwardDirection():getY()
     local front = (sx - target:getX()) * fx + (sy - target:getY()) * fy > 0
@@ -289,6 +301,7 @@ function LF.Combat.updateCrawl(body)
 end
 
 local function flinch(target)
+    if untouchable(target) then return end
     ISTimedActionQueue.clear(target)
     ISTimedActionQueue.add(LF_FlinchAction:new(target))
 end

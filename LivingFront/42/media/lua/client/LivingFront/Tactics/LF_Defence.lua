@@ -532,6 +532,11 @@ function LF.Tactics.doorDuty(rec, body)
     local L = P and P.layout
     local p = L and sq.posts and sq.posts[rec.id]
     if not (p and DOOR_DUTY[p.kind]) then return nil end
+    -- Only while the enemy isn't at the building: once he's coming in, the doors are his business
+    -- and the men fight (up to 0.46 a man kept going to shut the door the enemy was coming through).
+    for _, c in ipairs(sq.contacts or {}) do
+        if LF.dist(c.x, c.y, body:getX(), body:getY()) <= 30 then return nil end
+    end
     sq.doorClaims = sq.doorClaims or {}
     local best, bd, bdoor = nil, math.huge, nil
     for _, o in ipairs(L.openings) do

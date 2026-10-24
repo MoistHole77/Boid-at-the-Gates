@@ -279,9 +279,14 @@ local function finishTreat(mid, J)
     if J.kind == "stabilise" then
         mrec.kit = math.max(0, (mrec.kit or 0) - CFG2.stabiliseCost)
         crit[J.pid] = nil
-        -- Out of god mode, and badly hurt (the god mode healed him): a dressed wound, low health.
+        -- Out of god mode, and badly hurt: a dressed wound, low health - brought to a set level, not
+        -- knocked down by a fixed amount (up to 0.46 a man the god mode hadn't healed lost 55 more
+        -- and died the moment he was saved).
         pcall(function() pb:setGodMod(false, true) end)
-        pcall(function() pb:getBodyDamage():ReduceGeneralHealth(55) end)
+        local now = hp(pb)
+        if now > CFG2.stableFloor + 10 then
+            pcall(function() pb:getBodyDamage():ReduceGeneralHealth(now - (CFG2.stableFloor + 10)) end)
+        end
         pcall(function() pb:getBodyDamage():getBodyPart(BodyPartType.Torso_Upper):setBandaged(true, 10) end)
         stable[J.pid] = { squad = prec.squad, quietSince = nil }      -- (stepStable: up, limp to cover)
         setBusy(J.pid, "lying")
@@ -426,6 +431,13 @@ local function stepCrit(id, c)
     local b = LF.Bodies.get(id)
     local rec = LF.Records.get(id)
     if not b or b:isDead() or not (rec and rec.alive) then crit[id] = nil; setBusy(id, nil); return end
+    -- Held above death every tick (his bleeding can't take him before the clock does), and kept
+    -- down on his back - nothing gets him up or out of it.
+    if hp(b) < CFG2.floor + 3 then healTo(b, CFG2.floor + 6) end
+    if LF.tick % 30 == 0 and not busyAs(id) then
+        LF.log("CRITICAL #" .. id .. " wasn't lying down - back down")
+        LF.Medic.holdDown(id, b)
+    end
     -- Being worked on: the clock stops.
     local treating = false
     for _, J in pairs(jobs2) do if J.pid == id and J.phase == "treat" then treating = true end end

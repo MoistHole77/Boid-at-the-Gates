@@ -234,7 +234,7 @@ LF_MGSetupAction = ISBaseTimedAction:derive("LF_MGSetupAction")
 function LF_MGSetupAction:isValid() return not self.character:isDead() end
 function LF_MGSetupAction:waitToStart() return false end
 function LF_MGSetupAction:start()
-    if not self.stand then LF.Posture.set(self.character, true) end
+    LF.Posture.set(self.character, not self.stand)
     self:setActionAnim(self.stand and "LF_AimRifle" or "LF_AimCrouch")
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
 end
@@ -506,7 +506,7 @@ function LF.MG.fire(body, rec, m, target, area)
     g.wantAt = LF.tick
     g.x, g.y, g.z = body:getX(), body:getY(), body:getZ()
     if body:isPerformingAnAction() then return end
-    local stand = m.cover ~= nil and m.cover.stand == true and not LF.Posture.crouched(body)
+    local stand = m.cover ~= nil and m.cover.stand == true          -- (at a window or over low cover: standing to it)
     -- (Not the exact square: a man jostled half a tile by the man beside him hasn't moved the
     -- gun - up to 0.43 that set it up again and again without ever firing.)
     if not g.set or LF.dist(body:getX(), body:getY(), g.setX or -1000, g.setY or -1000) > CFG.driftTiles then
