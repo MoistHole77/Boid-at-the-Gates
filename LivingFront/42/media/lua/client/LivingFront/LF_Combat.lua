@@ -324,10 +324,14 @@ function LF.Combat.resolveShot(shooter, target, gun)
         LF.guard("wound", wound, target, partName, profile)
         -- Knocked over, staggered - or just a flinch.
         local k = KNOCK[partName] or { 0, 0 }
+        -- Point blank, a round is a little more likely to put a man down (+8 points within 3
+        -- tiles, +4 within 5; not for arm hits).
+        local fall = k[1]
+        if fall > 0 then fall = fall + (dist <= 3 and 8 or (dist <= 5 and 4 or 0)) end
         local roll = ZombRand(100)
-        if roll < k[1] then
+        if roll < fall then
             LF.guard("knock down", knock, target, shooter, true)
-        elseif roll < k[1] + k[2] then
+        elseif roll < fall + k[2] then
             LF.guard("stagger", knock, target, shooter, false)
         else
             LF.guard("flinch", flinch, target)

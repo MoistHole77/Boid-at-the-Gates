@@ -83,7 +83,7 @@ local CFG = {
     clearStackTimeout = 1200, -- after ~20 s, go in with whoever is stacked (2+ men) or call it off
     clearStackClose = 480,  -- after ~8 s, a man within 2.5 tiles of his stack spot counts as stacked
     clearManTimeout = 600,  -- the next man goes after ~10 s even if the one ahead is held up
-    clearTimeout = 9000,    -- give up on a clearing after ~2.5 min
+    clearTimeout = 5400,    -- give up on a room after ~90 s (each room, and each regroup, starts the clock again)
     clearRooms = 6,
     clearPartnerWait = 900, -- a team stacked on one door waits up to ~15 s for the team at the other
     backDoorMin = 6,        -- a back door: at least this far from the front one         -- clear at most this many rooms one after another
@@ -199,6 +199,10 @@ function LF.Tactics.place(rec)
     if tc and tc.clear then
         local role, x, y, z, face, gait = LF.Tactics.clearPlace(tc.clear, rec)
         if role then return role, x, y, z, face, gait end
+    end
+    if tc and tc.inside then
+        local sp = tc.inside.spots[rec.id]
+        if sp then return "file", sp.x, sp.y, tc.inside.L.z, sp.face, "halt" end
     end
     -- On the march: his place in the column.
     do
@@ -1546,8 +1550,8 @@ local function passOrders(squad, sq, cmd)
         local t = teams[tid]
         if team and t then
             local cpl = team.leader and LF.Bodies.get(team.leader)
-            if t.clear then
-                -- busy clearing a building (runs on its own)
+            if t.clear or t.inside then
+                -- busy clearing a building, or holding the part of it it has cleared (on its own)
             elseif cpl and not cpl:isDead() then
                 if cmd and sq.intent and LF.dist(cpl:getX(), cpl:getY(), cmd:getX(), cmd:getY()) <= CFG.earshot then
                     if t.alone then LF.log("CORPORAL " .. team.name .. " of " .. squad.name .. " back under his commander") end
@@ -1868,9 +1872,10 @@ local function updateClear(team, t, squad)
             t.pos.A.x, t.pos.A.y, t.pos.B.x, t.pos.B.y = sx / n, sy / n, sx / n, sy / n
         end
         t.clear, t.order, t.heard, t.moving, t.shifting = nil, "HOLD", "HOLD", nil, nil
+        LF.Tactics.holdInside(team, t, squad, C, live)
     end
     if #live == 0 then finish(nil, "the whole file is down"); return false end
-    if LF.tick - C.started > CFG.clearTimeout then finish("Pull back to cover!", "took too long"); return false end
+    if LF.tick - C.started > CFG.clearTimeout then finish("Hold here! Hold what we've got!", "took too long"); return false end
     local function at(rid, x, y)
         local b = LF.Bodies.get(rid)
         if not b then return false end
@@ -1980,7 +1985,7 @@ local function updateClear(team, t, squad)
                 rooms[rk] = true
                 local count = (C.roomCount or 1)
                 local nextC = count < CFG.clearRooms
-                    and planRoom(squad, team, C.L, live, C.started, rooms, { x = lb:getX(), y = lb:getY() })
+                    and planRoom(squad, team, C.L, live, LF.tick, rooms, { x = lb:getX(), y = lb:getY() })
                 if nextC then
                     nextC.roomCount = count + 1
                     t.clear = nextC
@@ -2024,7 +2029,7 @@ local function updateClear(team, t, squad)
                 local rooms = C.rooms or {}
                 if C.room then rooms[C.room] = true end
                 local count = (C.roomCount or 1)
-                local nextC = count < CFG.clearRooms and planRoom(squad, team, C.L, live, C.started, rooms)
+                local nextC = count < CFG.clearRooms and planRoom(squad, team, C.L, live, LF.tick, rooms)
                 if nextC then
                     nextC.roomCount = count + 1
                     t.clear = nextC
@@ -2040,6 +2045,61 @@ local function updateClear(team, t, squad)
     return true
 end
 
+
+
+-- ---- holding inside ---------------------------------------------------------------------------
+--
+-- A clearing that ends with the team inside the building (it ran out of time, or cleared what it
+-- could) holds what it has: each man stays on his spot, down and aiming into the rest of the
+-- building, until the sergeant sends it on again, the unit stops attacking, or no enemy has been
+-- seen in the building for ~45 s. (Up to 0.36 such a team went back under the squad's orders -
+-- which sent it round the flank, straight out of the building it was in.)
+
+function LF.Tactics.holdInside(team, t, squad, C, live)
+    local spots, inside = {}, 0
+    local known = {}
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        if math.floor(c.z or 0) == C.L.z and LF.Building.isInside(C.L, c.x, c.y) then known[#known + 1] = c end
+    end
+    for _, rid in ipairs(live) do
+        local b = LF.Bodies.get(rid)
+        if b and math.floor(b:getZ()) == C.L.z and LF.Building.isInside(C.L, b:getX(), b:getY()) then
+            inside = inside + 1
+            local fx, fy = C.L.cx, C.L.cy
+            local bd = math.huge
+            for _, c in ipairs(known) do
+                local d = LF.dist(b:getX(), b:getY(), c.x, c.y)
+                if d < bd then bd, fx, fy = d, c.x, c.y end
+            end
+            spots[rid] = { x = b:getX(), y = b:getY(), face = LF.Tactics.point(fx, fy, C.L.z) }
+        end
+    end
+    if inside == 0 or inside * 2 < #live then return end
+    t.inside = { L = C.L, spots = spots, since = LF.tick, lastSeen = LF.tick }
+    LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": holds inside the building (" .. inside .. " men)")
+end
+
+function LF.Tactics.updateInside(team, t, squad)
+    local I = t.inside
+    for _, c in ipairs(LF.Squad.contactPoints(squad.id, CFG.contactMemory, 24)) do
+        if math.floor(c.z or 0) == I.L.z and LF.Building.isInside(I.L, c.x, c.y) then I.lastSeen = LF.tick; break end
+    end
+    local why = nil
+    if LF.Stance.get(squad).maneuvers ~= true then why = "the unit isn't attacking any more"
+    elseif LF.tick - I.lastSeen > 2700 then why = "no enemy seen in the building for 45 s" end
+    if why then
+        t.inside = nil
+        LF.log("CLEAR " .. team.name .. " of " .. squad.name .. ": stops holding inside (" .. why .. ")")
+    end
+end
+
+-- Is this man in a team clearing (or holding) a building, and inside it?
+function LF.Tactics.clearingInside(rec, body)
+    local t = rec and rec.team and teams[rec.team]
+    if not t then return false end
+    local L = (t.clear and t.clear.L) or (t.inside and t.inside.L)
+    return L ~= nil and math.floor(body:getZ()) == L.z and LF.Building.isInside(L, body:getX(), body:getY())
+end
 
 -- ---- a man knocked down while clearing ---------------------------------------------------------
 --
@@ -2071,7 +2131,7 @@ function LF.Tactics.onKnockedBack(body)
     if math.floor(body:getZ()) ~= C.L.z or not LF.Building.isInside(C.L, body:getX(), body:getY()) then return end
     local squad = LF.Units.get(rec.squad)
     if not squad or LF.Stance.get(squad).maneuvers ~= true then return end
-    casualties[id] = { team = rec.team, squad = rec.squad, phase = "falling", at = LF.tick }
+    casualties[id] = { id = id, team = rec.team, squad = rec.squad, phase = "falling", at = LF.tick }
     casualtyCount = casualtyCount + 1
     LF.log("CASUALTY #" .. id .. " " .. LF.Units.title(rec) .. " knocked down on his back while clearing - stays down")
 end
@@ -2151,8 +2211,8 @@ local function dragRoute(C, px, py, z)
     return route, not cleared
 end
 
--- The team goes on clearing from where he was dragged to.
-local function regroup(cas, ok, J)
+-- The team goes on clearing from where he was dragged to (once he is back on his feet).
+local function regroupPlan(cas, J)
     local team, squad = LF.Units.get(cas.team), LF.Units.get(cas.squad)
     local t = team and teams[cas.team]
     local C = t and t.clear
@@ -2170,7 +2230,7 @@ local function regroup(cas, ok, J)
         else
             local mb = J and J.mb
             local anchor = mb and { x = mb:getX(), y = mb:getY() } or nil
-            C2 = planRoom(squad, team, C.L, live, C.started, C.rooms, anchor)
+            C2 = planRoom(squad, team, C.L, live, LF.tick, C.rooms, anchor)
         end
     end
     if C2 then
@@ -2184,6 +2244,21 @@ local function regroup(cas, ok, J)
         t.clear, t.order = nil, "HOLD"
         LF.log("CASUALTY " .. team.name .. " can't go on clearing (" .. #live .. " fit) - holds")
     end
+end
+
+-- Put down where he's safe: he gets straight back up, and the team goes again with him in it.
+local function regroup(cas, ok, J)
+    cas.phase, cas.at = "rising", LF.tick
+    local body = J and J.pb
+    LF.Medic.getUp(cas.id, body, function()
+        if casualties[cas.id] then
+            casualties[cas.id] = nil
+            casualtyCount = casualtyCount - 1
+        end
+        LF.log("CASUALTY #" .. cas.id .. " is back on his feet")
+        if body and not body:isDead() then LF.Tactics.shout(cas.id, "I'm all right - let's go!") end
+        regroupPlan(cas, J)
+    end)
 end
 
 local function dragHim(id, cas, body)
@@ -2261,11 +2336,14 @@ local function casualtyStep(id, cas)
         end
     elseif cas.phase == "down" then
         if age % 30 == 0 and dragHim(id, cas, body) then return end
-        if age > 900 then cas.phase, cas.at = "out", LF.tick end   -- nobody to drag him: he lies there
+        if age > 900 then                          -- nobody to drag him: he gets up by himself
+            cas.phase, cas.at = "rising", LF.tick
+            LF.Medic.getUp(id, body, function()
+                if casualties[id] then casualties[id] = nil; casualtyCount = casualtyCount - 1 end
+            end)
+        end
     elseif cas.phase == "out" then
-        -- Left lying until his team's clearing is over (or a few minutes); then he's himself again.
-        local t = teams[cas.team]
-        if not (t and t.clear) or age > 10800 then drop() end
+        drop()
     end
 end
 
@@ -2316,7 +2394,7 @@ function LF.Tactics.orderClear(squad, team, L, why)
         LF.log("CLEAR " .. squad.name .. ": can't clear the building - " .. tostring(reason))
         return nil
     end
-    t.clear, t.order, t.moving, t.shifting = C, "CLEAR", nil, nil
+    t.clear, t.order, t.moving, t.shifting, t.inside = C, "CLEAR", nil, nil, nil
     LF.log("CLEAR " .. team.name .. " of " .. squad.name .. " ordered to clear the building "
         .. (C.room and "room by room from inside" or ("by the door at " .. C.door.x .. "," .. C.door.y)) .. " (" .. why .. ")")
     if team.leader and LF.Bodies.get(team.leader) then
@@ -2367,7 +2445,7 @@ function LF.Tactics.backDoor(squad, team, C, L)
             C.rooms, C2.rooms = rooms, rooms
             C.partner, C2.partner = tm.id, team.id
             C2.stackTimeout = CFG.clearStackTimeout * 2       -- it has further to go
-            tt.clear, tt.order, tt.moving, tt.shifting = C2, "CLEAR", nil, nil
+            tt.clear, tt.order, tt.moving, tt.shifting, tt.inside = C2, "CLEAR", nil, nil, nil
             LF.log("CLEAR " .. tm.name .. " of " .. squad.name .. " goes round the back: the door at " .. best.x .. "," .. best.y)
             if tm.leader and LF.Bodies.get(tm.leader) then LF.Tactics.shout(tm.leader, "Round the back! Stack on the back door!") end
             return tm
@@ -2590,6 +2668,7 @@ local function updateSquad(squad)
     for _, tid in ipairs(squad.teams) do
         local t, team = teams[tid], LF.Units.get(tid)
         if t and t.clear and team then LF.guard("clear", updateClear, team, t, squad) end
+        if t and t.inside and team then LF.guard("hold inside", LF.Tactics.updateInside, team, t, squad) end
     end
     -- Teams that joined this unit for a task go back once it's over.
     if squad.attached and LF.Join and LF.Join.taskOver(squad) then

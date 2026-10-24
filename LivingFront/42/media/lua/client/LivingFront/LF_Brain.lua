@@ -753,7 +753,10 @@ local function decide(id, body, rec, m)
 
     -- Defensive stance: a badly wounded man goes down where he is (no pulling back), patches
     -- himself up and fires at what comes into view. A leader hands over command.
-    if fighter and inSquad and hp < CFG.fleeHealth and not LF.Stance.of(rec).woundedWithdraw then
+    -- (So does a man of a team clearing a building, inside it: running out through the rooms
+    -- they've just cleared and across the yard under the enemy's windows is no way out.)
+    if fighter and inSquad and hp < CFG.fleeHealth and (not LF.Stance.of(rec).woundedWithdraw
+        or (LF.Tactics and LF.Tactics.clearingInside and LF.Tactics.clearingInside(rec, body))) then
         if LF.Units.relieve(rec) then leader = false end
         if m.state ~= "down" then
             setState(id, body, rec, m, "down", "wounded, health " .. math.floor(hp) .. "; stays where he is")

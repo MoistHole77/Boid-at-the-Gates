@@ -30,7 +30,8 @@ LF.Medic = LF.Medic or {}
 local CFG = {
     liftOffset = -1.2,      -- the game's pick-up node: the medic stands at the man + his facing x this
                             -- (behind his head, looking down the length of him)
-    dragOffset = 0.3,       -- the game's drag nodes: the man at the medic + forward x this
+    dragOffset = 0.3,
+    getUpTicks = 75,        -- the get-up clip (~1.2 s)       -- the game's drag nodes: the man at the medic + forward x this
     liftTicks = 150,        -- the lift clip (~2.5 s)
     layTicks = 130,         -- the lay-down clip (~2 s)
     tween = 20,             -- ticks to ease the man from where he lay to the medic's feet
@@ -118,6 +119,22 @@ function LF.Medic.holdDown(id, body)
     pcall(function() body:setKnockedDown(false) end)
     pcall(function() body:setOnFloor(false) end)
     LF.Medic.lieDown(id, body)
+end
+
+-- He gets up off his back (the game's get-up clip, Bob_GetUp_Back) and is himself again after
+-- ~1.2 s. onUp() is called then.
+function LF.Medic.getUp(id, body, onUp)
+    if not body or body:isDead() then busy[id] = nil; if onUp then onUp() end; return end
+    busy[id] = "rising"
+    setLie(body, "getup")
+    local t0 = LF.tick
+    local function tick()
+        if LF.tick - t0 < CFG.getUpTicks and not body:isDead() then return end
+        Events.OnTick.Remove(tick)
+        LF.Medic.standUp(id, body)
+        if onUp then LF.guard("got up", onUp) end
+    end
+    Events.OnTick.Add(tick)
 end
 
 function LF.Medic.standUp(id, body)
