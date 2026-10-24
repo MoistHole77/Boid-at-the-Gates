@@ -170,9 +170,88 @@ function LF_MoveAction:update()
     LF.guard("jam check", self.jamCheck, self)
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
     -- stops retrying the same unreachable spot.
-    if self.result == BehaviorResult.Failed and LF.Move and LF.Move.onFailed then
-        LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
+    if self.result == BehaviorResult.Failed then
+        -- (A locked door in the way: round to another door first - LF_MoveAction.doorDetour.)
+        if LF.guard("door detour", LF_MoveAction.doorDetour, self, "no way through") then return end
+        if LF.Move and LF.Move.onFailed then
+            LF.Move.onFailed(self.character, self.location:getX() + 0.5, self.location:getY() + 0.5)
+        end
     end
+end
+
+-- ---- locked doors ----------------------------------------------------------------------------------
+-- A man who can't get where he's going because of a locked door:
+--   inside the building (its inner doors, or going out): he turns the latch - the inner doors of
+--     the building are unlocked, a locked door beside him is opened;
+--   outside, going in: he goes round to a door of the building that isn't locked; if every door
+--     is locked, to the nearest one, and kicks it in.
+-- Returns true if he's doing something about it (the walk goes on).
+local function sideTo(self, x, y, z, kick, why)
+    local c = self.character
+    local pfb = c:getPathFindBehavior2()
+    if not (pfb and pcall(function() pfb:pathToLocation(x, y, z) end)) then return false end
+    self.side = { x = x + 0.5, y = y + 0.5, untilTick = LF.tick + 900, kick = kick,
+                  resume = { x = self.location:getX(), y = self.location:getY(), z = self.location:getZ() } }
+    self.result, self.jamBest = nil, nil
+    LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " " .. why)
+    return true
+end
+
+function LF_MoveAction.doorDetour(self, why)
+    if (self.detours or 0) >= 3 then return false end
+    local c = self.character
+    local dest = self.location
+    local here = c:getCurrentSquare()
+    local hb, db = here and here:getBuilding(), dest and dest:getBuilding()
+    local id = tostring(c:getModData().LF_id)
+    -- Right beside a locked door: inside, open it; outside and it's the way in, kick it in.
+    local door = LF.Building.lockedDoorBeside(here)
+    if door and (hb or db) then
+        self.detours = (self.detours or 0) + 1
+        LF.Building.unlock(door, c, true)
+        LF.log("MOVE #" .. id .. (hb and " unlocks the door beside him and goes through" or " kicks in the locked door"))
+        pcall(function() c:playSound(hb and "WoodDoorUnlock" or "ZombieThumpWood") end)
+        local pfb = c:getPathFindBehavior2()
+        if pfb then pcall(function() pfb:pathToLocation(dest:getX(), dest:getY(), dest:getZ()) end) end
+        self.result, self.jamBest = nil, nil
+        return true
+    end
+    if not db then return false end
+    local L = LF.Building.at(dest:getX(), dest:getY(), dest:getZ())
+    if not L then return false end
+    -- Inside the same building: its inner doors are unlocked and he tries again.
+    if hb and hb:getID() == db:getID() then
+        if self.unlockedInside then return false end
+        self.unlockedInside = true
+        self.detours = (self.detours or 0) + 1
+        if LF.Building.unlockInside(L) == 0 then return false end
+        local pfb = c:getPathFindBehavior2()
+        if pfb then pcall(function() pfb:pathToLocation(dest:getX(), dest:getY(), dest:getZ()) end) end
+        self.result, self.jamBest = nil, nil
+        return true
+    end
+    -- Outside, going in: an unlocked door, else the nearest locked one to kick in.
+    local best, bd, bestLocked, bdl = nil, math.huge, nil, math.huge
+    for _, o in ipairs(L.openings) do
+        if o.kind == "door" then
+            local d = LF.Building.doorOf(L, o)
+            local ox, oy = o.x + o.dx, o.y + o.dy
+            local dist = LF.dist(c:getX(), c:getY(), ox + 0.5, oy + 0.5)
+            if d and not (self.triedDoors and self.triedDoors[ox .. "," .. oy]) then
+                if LF.Building.isLocked(d) and not LF.Building.isOpen(d) then
+                    if dist < bdl then bestLocked, bdl = { o = o, d = d, x = ox, y = oy }, dist end
+                elseif dist < bd then best, bd = { o = o, d = d, x = ox, y = oy }, dist end
+            end
+        end
+    end
+    local pick = best or bestLocked
+    if not pick then return false end
+    self.triedDoors = self.triedDoors or {}
+    self.triedDoors[pick.x .. "," .. pick.y] = true
+    self.detours = (self.detours or 0) + 1
+    return sideTo(self, pick.x, pick.y, L.z, pick == bestLocked and pick.d or nil,
+        (pick == best and "finds the way in locked - goes round to the door at " or "finds every door locked - goes to kick in the one at ")
+        .. pick.x .. "," .. pick.y .. " (" .. why .. ")")
 end
 
 -- ---- jams -----------------------------------------------------------------------------------------
@@ -254,7 +333,13 @@ function LF_MoveAction.jamCheck(self)
     if LF.tick - self.jamT < JAM_TICKS or ghosts[c] then return end
     self.jamT = LF.tick
     local other = someoneAgainst(c)
-    if not other then return end
+    if not other then
+        -- Nobody in his way, getting nowhere: walking into a locked door?
+        if LF.Building and LF.Building.lockedDoorBeside(c:getCurrentSquare()) then
+            LF.guard("door detour", LF_MoveAction.doorDetour, self, "walked into a locked door")
+        end
+        return
+    end
     ghost(c)
     ghost(other)
     LF.Move.jams = (LF.Move.jams or 0) + 1
@@ -304,8 +389,13 @@ function LF_MoveAction.steer(self)
     if self.side then
         -- Stepping aside: on to the side point, then back on the way.
         local sd = self.side
-        if LF.dist(px, py, sd.x, sd.y) < 0.6 or LF.tick > sd.untilTick then
+        if LF.dist(px, py, sd.x, sd.y) < (sd.kick and 1.2 or 0.6) or LF.tick > sd.untilTick then
             self.side = nil
+            if sd.kick and LF.dist(px, py, sd.x, sd.y) < 1.6 then
+                LF.Building.unlock(sd.kick, c, true)
+                pcall(function() c:playSound("ZombieThumpWood") end)
+                LF.log("MOVE #" .. tostring(c:getModData().LF_id) .. " kicks in the locked door")
+            end
             local o = sd.resume
             local pfb = c:getPathFindBehavior2()
             if pfb then pcall(function() pfb:pathToLocation(o.x, o.y, o.z) end) end

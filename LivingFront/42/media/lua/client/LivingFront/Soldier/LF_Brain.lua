@@ -581,6 +581,43 @@ end
 -- only under fire); elsewhere he stays down and doesn't fire blind through the walls.
 local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, win, shove, pick, threatId, dist)
     m.order, m.point = "post", point
+    -- Nothing to shoot at: a man without a window shuts the building's open doors first.
+    if not (pick and dist <= CFG.fireRange) and LF.Tactics.doorDuty then
+        local job = m.doorJob
+        if job and (LF.tick - job.at > 900 or not LF.Building.isOpen(job.d)) then
+            LF.Tactics.doorDone(rec, job.o)
+            m.doorJob, job = nil, nil
+        end
+        if not job and LF.tick - (m.doorCheck or -1000) >= 60 then
+            m.doorCheck = LF.tick
+            local o, d, z = LF.Tactics.doorDuty(rec, body)
+            if o then
+                job = { o = o, d = d, z = z, at = LF.tick }
+                m.doorJob = job
+                LF.log("BUILDING #" .. id .. " " .. title(rec) .. " goes to shut the door at " .. o.x .. "," .. o.y)
+            end
+        end
+        if job then
+            setState(id, body, rec, m, "guard", "shutting the door at " .. job.o.x .. "," .. job.o.y)
+            m.targetId = nil
+            if LF.dist(body:getX(), body:getY(), job.o.x + 0.5, job.o.y + 0.5) <= 1.4 then
+                if not body:isPerformingAnAction() then
+                    if isMoving(body) then ISTimedActionQueue.clear(body) end
+                    pcall(function() job.d:ToggleDoor(body) end)
+                    LF.Tactics.doorDone(rec, job.o)
+                    m.doorJob = nil
+                    m.lastPath = -10000
+                end
+            elseif not isMoving(body) and LF.tick - m.lastPath > 60 then
+                walkTo(body, job.o.x, job.o.y, job.z, "walk")
+                m.lastPath = LF.tick
+            end
+            return
+        end
+    elseif m.doorJob then
+        LF.Tactics.doorDone(rec, m.doorJob.o)
+        m.doorJob = nil
+    end
     local where = stand and "at his window" or "at his post"
     if pick and dist <= CFG.fireRange then
         if m.state ~= "engage" then
@@ -705,7 +742,10 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
     local range = gait == "aim" and CFG.clearFireRange
         or ((gait == "halt" or gait == "wait") and CFG.fireRange or CFG.stackFireRange)
     if pick and dist <= range then
-        if isMoving(body) or holdingAim(body) then ISTimedActionQueue.clear(body) end
+        local q = ISTimedActionQueue.getTimedActionQueue(body)
+        local a = q and q.queue and q.queue[1]
+        local charging = a ~= nil and a.charging == true            -- (rushing an enemy, empty: let him)
+        if (isMoving(body) and not charging) or holdingAim(body) then ISTimedActionQueue.clear(body) end
         if m.state ~= "engage" then
             setState(id, body, rec, m, "engage", "clearing - target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
@@ -970,6 +1010,12 @@ local function decide(id, body, rec, m)
         if role == "file" then
             -- (place returns the face point and gait in the point / watching slots)
             holdFile(id, body, rec, m, sx, sy, sz, point, watching, pick, threatId, dist, scanDir)
+            return
+        end
+        if (role == "post" or (role == "gun" and stand)) and stuckNear(m, sx, sy) and not LF.Tactics.postUnreachable(rec)
+            and LF.Tactics.repostInside and LF.Tactics.repostInside(rec, body) then
+            -- (His window can't be reached at all: a square of his own inside, not the yard.)
+            m.stuck = nil
             return
         end
         if (role == "post" or (role == "gun" and stand)) and stuckNear(m, sx, sy) and LF.Tactics.postUnreachable(rec) then
@@ -1312,7 +1358,10 @@ local function stepNpc(id, body, rec)
         return
     end
     m.climbSince = nil
-    if LF.Combat.knockedDown(body) and not (LF.Medic and LF.Medic.isCritical(id)) then
+    -- (Not a man crawling on ruined legs, or one too badly hurt to stand: they're down for good
+    -- reason - 0.45 kept "unsticking" a crawling man every 15 s.)
+    if LF.Combat.knockedDown(body) and not (LF.Medic and LF.Medic.isCritical(id)) and not m.crawl
+        and LF.Combat.health(body) >= 20 and not (LF.Combat.legsOut and LF.Combat.legsOut(body)) then
         m.downSince = m.downSince or LF.tick
         if LF.tick - m.downSince > STUCK_DOWN then
             unstick(id, body, m, "on the ground for " .. math.floor((LF.tick - m.downSince) / 60) .. " s")

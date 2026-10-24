@@ -459,6 +459,14 @@ local function chargeIfEmpty(shooter, target)
     if math.abs(target:getZ() - shooter:getZ()) >= 0.5 then return false end
     local d = LF.dist(shooter:getX(), shooter:getY(), target:getX(), target:getY())
     if d > MELEE.charge or not LF.Sense.canSee(shooter, target) then return false end
+    -- Not across a building's wall line: a man outside (on the stack, say) doesn't charge in
+    -- through the door at a man inside, or out of it.
+    local function bid(b)
+        local q = getCell():getGridSquare(math.floor(b:getX()), math.floor(b:getY()), math.floor(b:getZ()))
+        local bl = q and q:getBuilding()
+        return bl and bl:getID() or -1
+    end
+    if bid(shooter) ~= bid(target) then return false end
     local q = ISTimedActionQueue.getTimedActionQueue(shooter)
     local a = q and q.queue and q.queue[1]
     if a and a.Type == "LF_MoveAction" and a.charging then return true end

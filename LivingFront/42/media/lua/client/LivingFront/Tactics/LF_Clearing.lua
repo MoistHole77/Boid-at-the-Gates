@@ -682,8 +682,19 @@ end
 -- to a square of a room the team has cleared (not the one he's in), or - with none - out of the
 -- building, a couple of tiles clear of it. Returns the waypoints (square centres where the way
 -- turns, ending at the spot) and whether it leads outside; or nil.
-local function dragRoute(C, px, py, z)
+-- The spot must be out of the room he fell in, a few tiles from it, and out of sight of every
+-- enemy the squad knows of (up to 0.45 the first square past the doorstep would do: "dragged out of
+-- the building, 2 tiles" - still in the doorway, in the enemy's view). Failing a hidden one, the
+-- furthest-back spot within reach.
+local DRAG_MIN = 3
+local function dragRoute(C, px, py, z, contacts)
     local L = C.L
+    local function hidden(x, y)
+        for _, c in ipairs(contacts or {}) do
+            if math.floor(c.z or z) == z and LF.Cover.canSeeFrom(x, y, z, c) then return false end
+        end
+        return true
+    end
     local cell = getCell()
     local sx, sy = math.floor(px), math.floor(py)
     local here = roomKeyAt(L, px, py)
@@ -707,18 +718,25 @@ local function dragRoute(C, px, py, z)
     if not start then return nil end
     local key = function(x, y) return x .. "," .. y end
     local from, depth, open, head = { [key(sx, sy)] = false }, { [key(sx, sy)] = 0 }, { { sx, sy, start } }, 1
-    local goal, firstOut = nil, nil
-    while head <= #open and head < 900 do
+    local goal, firstOut, fallback, fallD = nil, nil, nil, -1
+    local checks = 0
+    while head <= #open and head < 1500 do
         local c = open[head]; head = head + 1
         local ck = key(c[1], c[2])
         local dd = depth[ck]
         local inside = L.insideSet[ck] ~= nil
+        local good = false
         if cleared then
             local rk = inside and roomKeyAt(L, c[1] + 0.5, c[2] + 0.5)
-            if rk and rk ~= here and C.rooms[rk] and dd >= 2 then goal = c; break end
+            good = rk and rk ~= here and C.rooms[rk] and dd >= DRAG_MIN
         elseif not inside then
             firstOut = firstOut or dd
-            if dd >= firstOut + 2 then goal = c; break end
+            good = dd >= firstOut + DRAG_MIN
+        end
+        if good then
+            if dd > fallD then fallback, fallD = c, dd end
+            checks = checks + 1
+            if checks <= 60 and hidden(c[1], c[2]) then goal = c; break end
         end
         for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
             local nx, ny = c[1] + d[1], c[2] + d[2]
@@ -732,6 +750,7 @@ local function dragRoute(C, px, py, z)
             end
         end
     end
+    goal = goal or fallback
     if not goal then return nil end
     -- Back from the goal to the start, then keep only the turns.
     local pts = {}
@@ -819,7 +838,7 @@ local function dragHim(id, cas, body)
     end
     if not best then return false end
     local z = math.floor(body:getZ())
-    local route, outside = dragRoute(C, body:getX(), body:getY(), z)
+    local route, outside = dragRoute(C, body:getX(), body:getY(), z, LF.Squad.contactPoints(cas.squad, CFG.contactMemory, 8))
     if not route or #route == 0 then
         LF.log("CASUALTY #" .. id .. ": no way to drag him out - he stays where he is")
         return false
@@ -920,8 +939,27 @@ end)
 
 -- Order a team to clear building L (Alpha 1, or the next team with enough fit men if it is
 -- shot up). Returns the team that goes, or nil.
+local function bidOf(L)
+    local q = L and L.inside and L.inside[1]
+    return q and LF.Building.idAt(q.x, q.y, L.z)
+end
+
 function LF.Tactics.orderClear(squad, team, L, why)
     initTeams(squad)
+    -- One unit clears a building at a time: another squad already going in through its doors, this
+    -- one covers it (up to 0.45 two squads stacked on the same doors at once, crowding each other
+    -- off the stack, and men went in without one).
+    local bid = bidOf(L)
+    for tid, tt in pairs(teams) do
+        local tm = LF.Units.get(tid)
+        if tt.clear and tm and tm.squad ~= squad.id and bidOf(tt.clear.L) == bid then
+            if LF.tick - (squad.clearWaitLogged or -100000) > 1800 then
+                squad.clearWaitLogged = LF.tick
+                LF.log("CLEAR " .. squad.name .. ": " .. tm.name .. " of another squad is already clearing that building - covering it")
+            end
+            return nil
+        end
+    end
     local C, reason = nil, "no team positions yet"
     -- A team already holding inside this building goes on with it first.
     local order = {}
@@ -934,7 +972,7 @@ function LF.Tactics.orderClear(squad, team, L, why)
     for _, tid in ipairs(squad.teams) do if not has(tid) then order[#order + 1] = tid end end
     for _, tid in ipairs(order) do
         local tm, t = LF.Units.get(tid), teams[tid]
-        if tm and t and not t.clear then
+        if tm and t and not t.clear and not tm.mg then
             C, reason = planClear(squad, tm, t, L)
             if C then team = tm; break end
         end

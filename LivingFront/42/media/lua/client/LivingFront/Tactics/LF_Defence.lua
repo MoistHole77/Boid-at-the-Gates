@@ -520,6 +520,69 @@ function LF.Tactics.buildingPlace(squad, sq, rec)
     return "post", sx, sy, P.z, wp, true, cp, p.stand, win, p.shove
 end
 
+-- ---- the doors -------------------------------------------------------------------------------------
+-- While the windows are got ready, the men without a window (the back line, the reserves, the
+-- men covering the doors) go round the building's outside doors and shut every one that's open,
+-- one man to a door.
+local DOOR_DUTY = { back = true, reserve = true, door = true, watch = true }
+
+function LF.Tactics.doorDuty(rec, body)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local L = P and P.layout
+    local p = L and sq.posts and sq.posts[rec.id]
+    if not (p and DOOR_DUTY[p.kind]) then return nil end
+    sq.doorClaims = sq.doorClaims or {}
+    local best, bd, bdoor = nil, math.huge, nil
+    for _, o in ipairs(L.openings) do
+        if o.kind == "door" then
+            local d = LF.Building.doorOf(L, o)
+            local k = o.x .. "," .. o.y
+            local cl = sq.doorClaims[k]
+            local claimed = cl and cl.by ~= rec.id and LF.tick - cl.at < 900
+            if d and not claimed and LF.Building.isOpen(d) then
+                local dist = LF.dist(body:getX(), body:getY(), o.x + 0.5, o.y + 0.5)
+                if dist < bd then best, bd, bdoor = o, dist, d end
+            end
+        end
+    end
+    if best then sq.doorClaims[best.x .. "," .. best.y] = { by = rec.id, at = LF.tick } end
+    return best, bdoor, L.z
+end
+
+function LF.Tactics.doorDone(rec, o)
+    local sq = rec.squad and squads[rec.squad]
+    if sq and sq.doorClaims and o then sq.doorClaims[o.x .. "," .. o.y] = nil end
+end
+
+-- He can't get to his post in the building: his post becomes the square he's on, if that's
+-- inside, or the free inside square nearest his post (never somewhere outside - up to 0.45 he
+-- went out of the door to "the nearest cover"). Returns true if he has one.
+function LF.Tactics.repostInside(rec, body)
+    local sq = rec.squad and squads[rec.squad]
+    local P = sq and sq.perim
+    local L = P and P.layout
+    local p = L and sq.posts and sq.posts[rec.id]
+    if not p then return false end
+    local bx, by = math.floor(body:getX()), math.floor(body:getY())
+    local nx, ny = nil, nil
+    if LF.Building.isInside(L, bx, by) then
+        nx, ny = bx, by
+    else
+        local taken = {}
+        for _, q in pairs(sq.posts) do taken[q.x .. "," .. q.y] = true end
+        local bd = math.huge
+        for _, q in ipairs(L.inside) do
+            local d = LF.dist(q.x, q.y, p.x, p.y)
+            if d < bd and not taken[q.x .. "," .. q.y] then nx, ny, bd = q.x, q.y, d end
+        end
+    end
+    if not nx then return false end
+    sq.posts[rec.id] = { x = nx, y = ny, wall = p.wall, stand = false, kind = "reserve", any = true }
+    LF.log("BUILDING #" .. rec.id .. " " .. LF.Units.title(rec) .. " can't get to his post - takes " .. nx .. "," .. ny .. " inside instead")
+    return true
+end
+
 -- His unit holds a building, he has a post in it, and he's outside the building: the post (x, y, z)
 -- to get back to. nil otherwise.
 function LF.Tactics.insidePost(rec, body)
@@ -592,6 +655,7 @@ updateDefensiveInner = function(squad, sq, cid, cmd)
         end
         if L then
             sq.perim.layout = L
+            LF.guard("unlock inner doors", LF.Building.unlockInside, L)
             local front = c and threatWall(L, c.x, c.y) or 1
             sq.perim.faced = c ~= nil
             dealBuilding(squad, sq, front)

@@ -327,6 +327,69 @@ function LF.Building.shove(L, x, y, dx, dy, avoid)
     return false
 end
 
+-- ---- doors ----------------------------------------------------------------------------------------
+
+-- The door in an opening (between its inside square and the square outside), or nil.
+function LF.Building.doorOf(L, o)
+    local cell = getCell()
+    local a = cell:getGridSquare(o.x, o.y, L.z)
+    local b = cell:getGridSquare(o.x + o.dx, o.y + o.dy, L.z)
+    return a and b and a:getDoorTo(b) or nil
+end
+
+local function isLocked(door)
+    local ok, v = pcall(function() return door:isLocked() or door:isLockedByKey() end)
+    return ok and v or false
+end
+LF.Building.isLocked = isLocked
+
+function LF.Building.isOpen(door)
+    local ok, v = pcall(function() return door:IsOpen() end)
+    return ok and v or false
+end
+
+-- Unlock a door (and open it, with `open`): a man inside turns the latch; one outside kicks it in.
+function LF.Building.unlock(door, body, open)
+    pcall(function() door:setLockedByKey(false) end)
+    pcall(function() door:setLocked(false) end)
+    if open and not LF.Building.isOpen(door) then pcall(function() door:ToggleDoor(body) end) end
+end
+
+-- Unlock every door between two rooms of the building (the men holding or clearing it can open
+-- those from inside; up to 0.45 a locked inner door left defenders unable to reach their windows -
+-- they went out of the building looking for "the nearest cover" instead). Returns how many.
+function LF.Building.unlockInside(L)
+    local cell = getCell()
+    local n = 0
+    for _, q in ipairs(L.inside) do
+        local sq = cell:getGridSquare(q.x, q.y, L.z)
+        if sq then
+            for _, d in ipairs({ { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } }) do
+                local nb = cell:getGridSquare(q.x + d[1], q.y + d[2], L.z)
+                local door = nb and nb:getBuilding() and sq:getDoorTo(nb)
+                if door and isLocked(door) then
+                    LF.Building.unlock(door, nil, false)
+                    n = n + 1
+                end
+            end
+        end
+    end
+    if n > 0 then LF.log("BUILDING " .. n .. " locked inner door(s) unlocked") end
+    return n
+end
+
+-- A closed, locked door on an edge of square sq (the way he's trying to go), or nil.
+function LF.Building.lockedDoorBeside(sq)
+    if not sq then return nil end
+    local cell = getCell()
+    for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+        local nb = cell:getGridSquare(sq:getX() + d[1], sq:getY() + d[2], sq:getZ())
+        local door = nb and sq:getDoorTo(nb)
+        if door and not LF.Building.isOpen(door) and isLocked(door) then return door, nb end
+    end
+    return nil
+end
+
 -- The inside square d tiles in from (x, y) against direction (dx, dy), if it is inside: x, y.
 function LF.Building.inward(L, x, y, dx, dy, d)
     for k = d, 1, -1 do
@@ -345,7 +408,9 @@ end
 -- takes longer.
 LF_ShoveAction = ISBaseTimedAction:derive("LF_ShoveAction")
 
-local PUSH_SOUNDS = { start = "LogRemoveFromStack", scrape = "LogRemoveFromStack", done = "LogAddToStack" }
+-- (No furniture-dragging sound in the game: a door grinding against what's blocking it is the
+-- nearest - a heavy wooden scrape.)
+local PUSH_SOUNDS = { start = "WoodDoorBlocked", scrape = "WoodDoorBlocked", done = "LogAddToStack" }
 
 function LF_ShoveAction:isValid() return not self.character:isDead() end
 function LF_ShoveAction:waitToStart() return false end

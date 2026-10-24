@@ -78,6 +78,7 @@ local CFG = {
     splashAmount = 9,
     suppressMiss = 6, suppressHit = 15,   -- on the man he's firing at, per round
     noiseEvery = 10,        -- rounds between world-noise / gunfire-memory updates
+    voices = 4,             -- reports of one gun sounding at once (older ones are stopped)
     standoff = 22,          -- moving up, the guns stop this far short of the enemy
     bound = 10,             -- tiles a gun moves at a time
     settle = 360,           -- a gun fires at least ~6 s from a new spot before it moves again
@@ -315,7 +316,19 @@ local function round(self)
     g.belt = g.belt - 1
     g.heat, g.heatAt = g.heat + 1, LF.tick
     self.fired = self.fired + 1
-    s:playSound(P.sound)
+    -- At 900 rounds a minute the reports overlap: each gun keeps only its last few sounding, so a
+    -- burst doesn't take every sound voice the game has (and cut off other sounds - a grenade's
+    -- bang - in the middle of a fire fight).
+    local ok, h = pcall(function() return s:playSound(P.sound) end)
+    if ok and h then
+        self.voices = self.voices or {}
+        local v = self.voices
+        v[#v + 1] = h
+        if #v > CFG.voices then
+            local old = table.remove(v, 1)
+            pcall(function() s:getEmitter():stopSoundDelayRelease(old) end)
+        end
+    end
     if self.fired % CFG.noiseEvery == 1 then LF.Combat.noteShot(s) end
     local tx, ty = t:getX(), t:getY()
     local dx, dy = tx - s:getX(), ty - s:getY()

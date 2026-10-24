@@ -157,10 +157,11 @@ local function explode(g)
     local cell = getCell()
     local sq = cell:getGridSquare(math.floor(g.x), math.floor(g.y), g.z)
     if sq then
-        if not g.engineBang then      -- (the game's own explosion has already made the bang)
-            if not pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", sq, 0, 60, 1.0, false) end) then
-                pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", false, sq, 0, 60, 1.0, false) end)
-            end
+        -- The bang always comes from the square itself, even when the game's own explosion has
+        -- made one: that one is tied to the thrown object, which the game removes as it goes off,
+        -- and the sound was often cut off with it (0.45).
+        if not pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", sq, 0, 60, 1.0, false) end) then
+            pcall(function() getSoundManager():PlayWorldSound("PipeBombExplode", false, sq, 0, 60, 1.0, false) end)
         end
         pcall(function() addSound(nil, sq:getX(), sq:getY(), g.z, 60, 60) end)   -- (zombies hear it)
         local ok, light = pcall(function() return cell:addLamppost(sq:getX(), sq:getY(), g.z, 1.0, 0.75, 0.4, 8) end)
