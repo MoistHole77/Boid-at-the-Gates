@@ -14,7 +14,12 @@
 --                          it (stack on the door, in one at a time)
 --          3. consolidate: once no enemy is left inside and his men are in it, the defensive
 --                          stance in the building - men to the windows - and the objective is held
--- Who holds an objective: the faction with the only living soldiers in it.
+-- Who holds an objective: the faction with the only living soldiers in it; both sides in it at
+-- once, it is contested.
+-- Objectives are buildings (for now). Each remembers its footprint (the rooms of its ground floor,
+-- from the building's map definition) and what kind of building it is, so it can be drawn on the
+-- map and the minimap (LF_Map) wherever you are; and an inside square (its anchor), so the
+-- building is found again after a reload (the game numbers buildings afresh each time).
 -- Objectives and tasks are saved (task progress is kept on the unit: squad.objTask).
 
 require "LivingFront/Core/LF_Core"
@@ -57,20 +62,132 @@ function LF.Objective.clear()
     for _, u in pairs(LF.Units.all()) do u.objTask = nil end
 end
 
+-- ---- the building ----------------------------------------------------------------------------
+
+-- What a building is, from its rooms' names (the map's room types): the first special room type
+-- found, by how distinctive it is; rooms of a home -> "house".
+local KINDS = {
+    { "church", "church" }, { "school", "classroom" }, { "police station", "police" },
+    { "fire station", "firestorage" }, { "hospital", "hospital" }, { "clinic", "medical" },
+    { "gas station", "gasstore" }, { "grocery", "grocery" }, { "bar", "bar" }, { "restaurant", "restaurant" },
+    { "diner", "diner" }, { "motel", "motel" }, { "warehouse", "warehouse" }, { "factory", "factory" },
+    { "office", "office" }, { "bank", "bank" }, { "shop", "store" }, { "shop", "shop" }, { "barn", "barn" },
+    { "garage", "garage" }, { "storage", "storage" },
+}
+local HOME = { kitchen = true, bedroom = true, livingroom = true, bathroom = true, hall = true, laundry = true,
+               diningroom = true, empty = true, closet = true }
+
+local function call(o, m) local ok, v = pcall(function() return o[m](o) end); if ok then return v end end
+
+-- The building's map definition at a square, or nil.
+local function defAt(x, y, z)
+    local sq = getCell():getGridSquare(math.floor(x), math.floor(y), math.floor(z))
+    local b = sq and sq:getBuilding()
+    return b and call(b, "getDef")
+end
+
+-- Fill in the footprint (ground-floor room rectangles), the bounds and the kind, from the def.
+local function survey(obj, def)
+    local rooms = call(def, "getRooms")
+    if not rooms then return false end
+    local rects, names = {}, {}
+    local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
+    for i = 0, rooms:size() - 1 do
+        local room = rooms:get(i)
+        local rz = call(room, "getZ") or 0
+        local name = call(room, "getName")
+        if name then names[name] = (names[name] or 0) + 1 end
+        local rr = call(room, "getRects")
+        if rz == obj.z and rr then
+            for j = 0, rr:size() - 1 do
+                local r = rr:get(j)
+                local rx, ry = call(r, "getX"), call(r, "getY")
+                local rw = call(r, "getW") or ((call(r, "getX2") or rx) - rx)
+                local rh = call(r, "getH") or ((call(r, "getY2") or ry) - ry)
+                if rx and ry and rw and rh and rw > 0 and rh > 0 then
+                    rects[#rects + 1] = { rx, ry, rw, rh }
+                    x1, y1 = math.min(x1, rx), math.min(y1, ry)
+                    x2, y2 = math.max(x2, rx + rw), math.max(y2, ry + rh)
+                end
+            end
+        end
+    end
+    if #rects == 0 then
+        -- (No room rectangles: the building's own bounds.)
+        local bx, by, bx2, by2 = call(def, "getX"), call(def, "getY"), call(def, "getX2"), call(def, "getY2")
+        if not (bx and by and bx2 and by2) then return false end
+        rects[1] = { bx, by, bx2 - bx, by2 - by }
+        x1, y1, x2, y2 = bx, by, bx2, by2
+    end
+    obj.rects, obj.bounds = rects, { x1, y1, x2, y2 }
+    local kind = nil
+    for _, k in ipairs(KINDS) do
+        for name in pairs(names) do
+            if name:lower():find(k[2], 1, true) then kind = k[1]; break end
+        end
+        if kind then break end
+    end
+    if not kind then
+        local home = false
+        for name in pairs(names) do if HOME[name:lower()] then home = true end end
+        kind = home and "house" or "building"
+    end
+    obj.kind = kind
+    return true
+end
+
+-- The building's id this session (re-found from its anchor square when that is loaded), and its
+-- footprint if it hasn't got one yet. Called when made and every couple of seconds.
+local function refresh(obj)
+    if not obj.anchor then return end
+    local a = obj.anchor
+    local sq = getCell():getGridSquare(a[1], a[2], obj.z)
+    if not sq then return end                       -- (not loaded: keep what we had)
+    local b = sq:getBuilding()
+    obj.building = b and b:getID() or nil
+    if b and not obj.rects then
+        local def = call(b, "getDef")
+        if def then LF.guard("objective survey", survey, obj, def) end
+    end
+end
+LF.Objective.refresh = refresh
+
+-- Make (x, y) an objective - it must be in a building. Returns the objective, or nil and why.
 function LF.Objective.create(x, y, z, name)
+    z = math.floor(z or 0)
+    if not LF.Building.idAt(x, y, z) then return nil, "objectives are buildings - that's open ground" end
     local data = store()
     local id = data.nextObjectiveId
     data.nextObjectiveId = id + 1
-    z = math.floor(z or 0)
     local obj = { id = id, x = math.floor(x) + 0.5, y = math.floor(y) + 0.5, z = z, name = name or ("Objective " .. id),
-                  building = LF.Building.idAt(x, y, z), holder = nil }
+                  anchor = { math.floor(x), math.floor(y) }, holder = nil }
+    refresh(obj)
     local L = obj.building and LF.Building.at(x, y, z)
-    if L then obj.x, obj.y = L.cx, L.cy end
+    if L then obj.x, obj.y = L.cx, L.cy
+    elseif obj.bounds then obj.x, obj.y = (obj.bounds[1] + obj.bounds[3]) / 2, (obj.bounds[2] + obj.bounds[4]) / 2 end
     data.objectives[id] = obj
     LF.log("OBJECTIVE created " .. obj.name .. " (#" .. id .. ") at " .. math.floor(obj.x) .. "," .. math.floor(obj.y)
-        .. (obj.building and " (a building)" or " (open ground)"))
+        .. " - " .. (obj.kind or "a building") .. ", " .. (obj.rects and #obj.rects or 0) .. " room areas on the map")
     return obj
 end
+
+-- The units with a task on an objective, and what: { { unit, words } }.
+function LF.Objective.tasked(obj)
+    local out = {}
+    for _, u in pairs(LF.Units.all()) do
+        local t = u.kind == "squad" and u.objTask
+        if t and t.obj == obj.id then
+            local words = t.kind == "hold" and "holding" or ("taking it (" .. tostring(t.phase) .. ")")
+            out[#out + 1] = { unit = u, words = words }
+        elseif u.kind == "platoon" and u.mission and u.mission.obj == obj.id then
+            out[#out + 1] = { unit = u, words = (u.mission.kind == "take" and "taking it" or "holding") .. " (" .. tostring(u.mission.phase) .. ")" }
+        end
+    end
+    table.sort(out, function(a, b) return a.unit.id < b.unit.id end)
+    return out
+end
+
+LF.Objective.FACTION = FACTION
 
 -- Is (x, y) at the objective (in its building, or within 8 tiles of its point)?
 local function atObjective(obj, x, y, z)
@@ -282,10 +399,16 @@ local function updateTake(squad, obj)
 end
 
 local function updateHolder(obj)
+    refresh(obj)
     local c = whoIsThere(obj)
     local only, n = nil, 0
     for f, k in pairs(c) do
-        if k > 0 then only = f; n = n + 1 end
+        if k > 0 and f ~= "CIV" then only = f; n = n + 1 end
+    end
+    local contested = n > 1
+    if contested ~= (obj.contested == true) then
+        obj.contested = contested or nil
+        LF.log("OBJECTIVE " .. obj.name .. (contested and " is contested" or " is no longer contested"))
     end
     if n == 1 and only ~= obj.holder then
         local was = obj.holder

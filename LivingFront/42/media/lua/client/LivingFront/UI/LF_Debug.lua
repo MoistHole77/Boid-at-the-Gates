@@ -392,6 +392,7 @@ local function objectiveAt(x, y, z)
         end
     end
     if near then return near end
+    if not bid then return nil end          -- (objectives are buildings)
     local n = 0
     for _ in pairs(LF.Objective.all()) do n = n + 1 end
     return LF.Objective.create(x, y, z, "Objective " .. string.char(65 + n % 26))
@@ -415,6 +416,7 @@ end
 
 local function holdOf(u, x, y, z, given)
     local obj = given or objectiveAt(x, y, z)
+    if not obj then LF.say("Objectives are buildings - right-click on one"); return end
     -- A friendly unit already holds it: help that unit hold it (one objective, one defence).
     for _, other in pairs(LF.Units.all()) do
         local t = other.objTask
@@ -439,6 +441,7 @@ end
 
 local function takeOf(u, x, y, z, given)
     local obj = given or objectiveAt(x, y, z)
+    if not obj then LF.say("Objectives are buildings - right-click on one"); return end
     local ok, why = LF.Objective.take(u, obj)
     LF.say(ok and (u.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
 end
@@ -514,11 +517,13 @@ local function onMenu(playerNum, context, worldObjects, test)
                 end)
                 pm:addOption(building and "Take this building" or "Take this spot", nil, function()
                         local obj = objectiveAt(x, y, z)
+                        if not obj then LF.say("Objectives are buildings - right-click on one"); return end
                         local ok, why = LF.Platoon.take(plt, obj)
                         LF.say(ok and (plt.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
                     end)
                     pm:addOption(building and "Hold this building" or "Hold this spot", nil, function()
                         local obj = objectiveAt(x, y, z)
+                        if not obj then LF.say("Objectives are buildings - right-click on one"); return end
                         local ok, why = LF.Platoon.hold(plt, obj)
                         LF.say(ok and (plt.name .. " holds " .. obj.name) or ("Can't: " .. tostring(why)))
                     end)

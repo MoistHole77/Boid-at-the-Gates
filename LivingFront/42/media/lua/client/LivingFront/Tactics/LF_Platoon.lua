@@ -621,12 +621,13 @@ function LF.Platoon.hold(p, obj)
             end
             if o2 then break end
         end
-        if not o2 then
-            local fx, fy = p.facingX or 1, p.facingY or 0
-            o2 = LF.Objective.create(obj.x - fy * 12, obj.y + fx * 12, obj.z, obj.name .. " (flank)")
+        if o2 then
+            p.mission.second = o2.id
+            issue(p, { squad = second.id, kind = "hold", obj = o2.id, words = short(second) .. ", hold " .. o2.name .. " - cover their flank!" })
+        else
+            -- (No other building near: it digs in where it is, covering the objective.)
+            issue(p, { squad = second.id, kind = "dig", words = short(second) .. ", dig in where you are - cover the building!" })
         end
-        p.mission.second = o2.id
-        issue(p, { squad = second.id, kind = "hold", obj = o2.id, words = short(second) .. ", hold " .. o2.name .. " - cover their flank!" })
     end
     return true
 end

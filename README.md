@@ -35,6 +35,7 @@ Pure Lua. No Java, no ZombieBuddy.
 | Patrolling stance: ranger file, tactical column, wedge; men fall in as the point man passes; halted, everyone crouches and aims outboard; ADS pace and scanning | Working (0.21) |
 | Sergeant chooses the formation from the ground (most men in woods -> file, road -> column, off the road -> wedge); long patrols planned in legs | Built, awaiting in-game test |
 | Objectives: take (patrol in, rally, base of fire + flank, clear, consolidate) and hold; who holds it | Built, awaiting in-game test |
+| Objectives are buildings: each keeps its ground-floor footprint and kind (house, church...) and is drawn on the world map and minimap, tinted by who holds it (contested when both sides are inside), named when zoomed in; hovering shows a street-name style label with its holder and the units taking or holding it | Built, awaiting in-game test (0.52) |
 | Machine-gun squads: two gun teams and the medic (MG34 / DP-27; gunner, assistant, two security); real rates of fire in ~4 s bursts, beaten zone, heavy suppression; belts, barrel changes (MG34) and cooling (DP-27); the guns take turns; crews replaced as men fall; guns leapfrog, take the front in a defence and the best windows in a building, cover a clearing from outside, support a nearby friendly squad; the enemy targets the crews, grenades and flanks the guns | Built, awaiting in-game test (0.43) |
 | Platoons: lieutenant (pistol, greatcoat and peaked cap), platoon sergeant, radio operator (the only radio in the platoon) and two squads. The lieutenant gives each squad its task and watches from cover behind the main effort: take (main effort assaults, the other squad - the MG squad if there is one - supports by fire from a flank; a failed assault is taken over or the platoon withdraws), hold (the main effort holds the objective, the other squad the nearest building), withdraw (break contact by bounds, march to the rally point, dig in). Orders by voice; out of earshot the platoon sergeant runs them over, then goes back to the main effort. Succession: the platoon sergeant takes over | Built, awaiting in-game test (0.49) |
 | Platoon movement: in a ranger file or tactical column the platoon is one file (lead squad, the other squad behind it with its sergeant at its head, the headquarters at the rear); in a wedge the squads go abreast, sergeants leading, the headquarters in the centre rear. Taking an objective from afar, the platoon moves up together to an assembly area ~40 tiles short of it, then deploys. Orders to squads whose men aren't spawned wait for them | Built, awaiting in-game test (0.51) |
@@ -107,6 +108,7 @@ built on each other: a file only depends on files in its own folder or the ones 
 | | `LF_Medic` | The squad medic and critical wounds |
 | | `LF_MG` | Machine-gun squads: gun teams, bursts at the real rate of fire, belts and barrels, the guns taking turns, leapfrogging |
 | **UI** | `LF_Inspect` | The inspect window |
+| | `LF_Map` | Objectives drawn on the world map and minimap |
 | | `LF_Debug` | Right-click debug menu (tests) |
 
 Conventions:
