@@ -55,10 +55,24 @@ end
 function LF.Objective.get(id) return id and store().objectives[id] or nil end
 function LF.Objective.all() return store().objectives end
 
+-- No longer an objective: forget it, and the squads' tasks on it.
+function LF.Objective.remove(id)
+    local data = store()
+    local obj = data.objectives[id]
+    if not obj then return end
+    data.objectives[id] = nil
+    for _, u in pairs(LF.Units.all()) do
+        if u.objTask and u.objTask.obj == id then u.objTask = nil end
+        if u.pendingHold == id then u.pendingHold = nil end
+    end
+    LF.log("OBJECTIVE " .. obj.name .. " (#" .. id .. ") removed")
+end
+
 function LF.Objective.clear()
     local data = store()
     data.objectives = {}
     data.nextObjectiveId = 1
+    data.nextLetter = 0
     for _, u in pairs(LF.Units.all()) do u.objTask = nil end
 end
 
@@ -152,15 +166,97 @@ local function refresh(obj)
 end
 LF.Objective.refresh = refresh
 
--- Make (x, y) an objective - it must be in a building. Returns the objective, or nil and why.
+-- ---- names ------------------------------------------------------------------------------------
+-- Each objective has a letter (A, B, C... in the order they are made). It is called by that
+-- letter in the spelling alphabet of the side holding it - Objective Ivan to the Soviets is
+-- Objective Ida to the Germans - and by the plain letter while nobody holds it.
+local ALPHABET = {
+    GER = { "Anton", "Berta", "Caesar", "Dora", "Emil", "Friedrich", "Gustav", "Heinrich", "Ida", "Julius",
+            "Kaufmann", "Ludwig", "Martha", "Nordpol", "Otto", "Paula", "Quelle", "Richard", "Siegfried",
+            "Theodor", "Ulrich", "Viktor", "Wilhelm", "Xanthippe", "Ypsilon", "Zacharias" },
+    SOV = { "Anna", "Boris", "Tsaplya", "Dmitri", "Elena", "Fyodor", "Grigory", "Khariton", "Ivan", "Zhenya",
+            "Konstantin", "Leonid", "Mikhail", "Nikolai", "Olga", "Pavel", "Kvadrat", "Roman", "Semyon",
+            "Tatyana", "Ulyana", "Vasily", "Vladimir", "Kseniya", "Yakov", "Zinaida" },
+}
+
+-- Its name now (also kept in obj.name for the logs and the shouted orders).
+local function nameOf(obj)
+    local n = obj.letter or obj.id
+    local idx = (n - 1) % 26 + 1
+    local word = obj.holder and ALPHABET[obj.holder] and ALPHABET[obj.holder][idx] or string.char(64 + idx)
+    if n > 26 then word = word .. " " .. (math.floor((n - 1) / 26) + 1) end
+    return "Objective " .. word
+end
+LF.Objective.nameOf = nameOf
+
+local function rename(obj)
+    local new = nameOf(obj)
+    if new ~= obj.name then
+        if obj.name then LF.log("OBJECTIVE " .. obj.name .. " is now " .. new) end
+        obj.name = new
+    end
+end
+
+-- The map's definition of the building at (x, y) anywhere in the world, loaded or not, or nil.
+local function metaDefAt(x, y)
+    local ok, def = pcall(function() return getWorld():getMetaGrid():getBuildingAt(math.floor(x), math.floor(y)) end)
+    return ok and def or nil
+end
+LF.Objective.metaDefAt = metaDefAt
+
+-- Is (x, y) on an objective's footprint (or, with no footprint, within 4 tiles of it)?
+local function onFootprint(obj, x, y)
+    if obj.rects then
+        for _, r in ipairs(obj.rects) do
+            if x >= r[1] and x < r[1] + r[3] and y >= r[2] and y < r[2] + r[4] then return true end
+        end
+        return false
+    end
+    return math.abs(x - obj.x) <= 4 and math.abs(y - obj.y) <= 4
+end
+
+-- The objective whose building is at (x, y), or nil.
+function LF.Objective.atPoint(x, y)
+    for _, o in pairs(store().objectives) do
+        if onFootprint(o, x, y) then return o end
+    end
+    local def = metaDefAt(x, y)
+    if def then
+        local bx, by = call(def, "getX"), call(def, "getY")
+        for _, o in pairs(store().objectives) do
+            local od = o.anchor and metaDefAt(o.anchor[1], o.anchor[2])
+            if od and call(od, "getX") == bx and call(od, "getY") == by then return o end
+        end
+    end
+    return nil
+end
+
+-- Make (x, y) an objective - it must be in a building (one nearby, or anywhere on the map: a far
+-- one is surveyed from the map's definition and found properly when you get near it). Returns
+-- the objective, or nil and why. (name: ignored - objectives are named by their letter and holder.)
 function LF.Objective.create(x, y, z, name)
     z = math.floor(z or 0)
-    if not LF.Building.idAt(x, y, z) then return nil, "objectives are buildings - that's open ground" end
+    local def = nil
+    if not LF.Building.idAt(x, y, z) then
+        def = metaDefAt(x, y)
+        if not def then return nil, "objectives are buildings - that's open ground" end
+    end
     local data = store()
     local id = data.nextObjectiveId
     data.nextObjectiveId = id + 1
-    local obj = { id = id, x = math.floor(x) + 0.5, y = math.floor(y) + 0.5, z = z, name = name or ("Objective " .. id),
+    data.nextLetter = (data.nextLetter or 0) + 1
+    local obj = { id = id, letter = data.nextLetter, x = math.floor(x) + 0.5, y = math.floor(y) + 0.5, z = z,
                   anchor = { math.floor(x), math.floor(y) }, holder = nil }
+    obj.name = nameOf(obj)
+    if def then
+        -- Not loaded: the footprint from the map; the anchor in its biggest ground-floor room.
+        LF.guard("objective survey", survey, obj, def)
+        local big, ba = nil, 0
+        for _, r in ipairs(obj.rects or {}) do
+            if r[3] * r[4] > ba then big, ba = r, r[3] * r[4] end
+        end
+        if big then obj.anchor = { big[1] + math.floor(big[3] / 2), big[2] + math.floor(big[4] / 2) } end
+    end
     refresh(obj)
     local L = obj.building and LF.Building.at(x, y, z)
     if L then obj.x, obj.y = L.cx, L.cy
@@ -388,6 +484,7 @@ local function updateTake(squad, obj)
         -- A building is only taken once a team has cleared it (LF_Clearing sets t.cleared).
         if theirs == 0 and ours > 0 and (not obj.building or t.cleared) then
             obj.holder = squad.faction
+            rename(obj)
             setPhase(squad, "hold", "no enemy left at " .. obj.name)
             t.kind = "hold"
             LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
@@ -400,6 +497,7 @@ end
 
 local function updateHolder(obj)
     refresh(obj)
+    rename(obj)                         -- (objectives from before 0.53 get their new names)
     local c = whoIsThere(obj)
     local only, n = nil, 0
     for f, k in pairs(c) do
@@ -413,6 +511,7 @@ local function updateHolder(obj)
     if n == 1 and only ~= obj.holder then
         local was = obj.holder
         obj.holder = only
+        rename(obj)
         LF.log("OBJECTIVE " .. obj.name .. " now held by the " .. (FACTION[only] or only)
             .. (was and (" (was the " .. (FACTION[was] or was) .. ")") or ""))
     end

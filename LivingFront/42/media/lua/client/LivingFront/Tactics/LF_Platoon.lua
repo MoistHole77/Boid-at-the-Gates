@@ -1,7 +1,7 @@
--- Living Front: the platoon - a lieutenant and his two squads.
+-- Living Front: the platoon - a lieutenant and his four squads.
 --
--- A platoon is its headquarters (LF_Units kind "hq") and two squads (kind "squad", each with
--- squad.platoon set):
+-- A platoon is its headquarters (LF_Units kind "hq") and four squads (kind "squad", each with
+-- squad.platoon set; a machine-gun platoon has three rifle squads and a machine-gun squad):
 --   lieutenant        - commands. A pistol, an officer's greatcoat and peaked cap. He gives each
 --                       squad its task and then lets its sergeant run it, watching from cover
 --                       behind the main effort. He changes a squad's task only for something its
@@ -16,19 +16,21 @@
 -- carry on with their last tasks on their own.
 --
 -- Missions (from the debug menu for now):
---   take (a building, or a spot) - the main effort (the fitter rifle squad) takes it as a squad
+--   take (a building, or a spot) - the main effort (the fittest rifle squad) takes it as a squad
 --          objective (LF_Objective: approach, assault, clear, consolidate). The other squad - the
 --          machine-gun squad if there is one - is the support: it goes to a support-by-fire
 --          position ~22 tiles off the objective, out to a flank of the assault, and from there
 --          keeps the building's windows under fire (it doesn't advance, flank or clear).
+--          The rest are the reserve: they wait in cover behind the main effort, ~20 tiles short.
 --          Objective taken: the main effort holds it, the support digs in where it is to cover
---          it, and both are told they did well (morale).
---          The assault breaks: if the support is a rifle squad in good shape, it takes over the
---          assault and the broken squad covers it; otherwise, or if the platoon is down to under
---          45% fit, the lieutenant pulls the platoon out.
---   hold (a building, or a spot) - the main effort holds it; the other squad holds the nearest
---          other building within 25 tiles (or a spot ~12 tiles off it). Withdraws when the platoon
---          is down to under 30% fit.
+--          it, and all are told they did well (morale).
+--          The assault breaks: the lieutenant commits the reserve - a rifle squad in good shape
+--          takes over the assault and the broken squad covers it (failing a reserve, a rifle
+--          support squad does); with nobody left to send, or the platoon down to under 45% fit,
+--          he pulls the platoon out.
+--   hold (a building, or a spot) - the main effort holds it; each other squad holds one of the
+--          nearest other buildings within 25 tiles (or digs in where it is). Withdraws when the
+--          platoon is down to under 30% fit.
 --   withdraw (to a point) - every squad breaks contact (falls back by bounds until out of range),
 --          then marches to the point and digs in there.
 -- Orders are spoken: a squad sergeant within earshot (30 tiles) of the lieutenant gets his at
@@ -58,7 +60,8 @@ local CFG = {
     rtoBeside = 1.8,
     sbfRange = 22,          -- the support-by-fire position: this far from the objective ...
     sbfAngles = { 65, 85, 45 },   -- ... this many degrees off the assault's line
-    holdNear = 25,          -- holding: the second squad takes a building within this
+    holdNear = 25,
+    reserveBack = 20,       -- the reserve waits this far short of the objective, behind the main effort          -- holding: the second squad takes a building within this
     takeOverFit = 0.6,      -- the support takes over a failed assault if this share of it is fit
     withdrawTake = 0.45,    -- the platoon is pulled out of an attack below this share fit
     withdrawHold = 0.30,    -- ... out of a defence below this
@@ -66,7 +69,8 @@ local CFG = {
     clearOfEnemy = 28,      -- a withdrawing squad marches once no enemy is known this close
     arriveDist = 8,
     assembly = 40,          -- taking an objective from afar: the platoon moves up together to this far short of it
-    abreast = 7,            -- a platoon patrol: each squad this far out from the line of march
+    abreast = 7,            -- a platoon patrol, two squads: each this far out from the line of march
+    abreastGap = 10,        -- ... more squads: this far apart, side by side
     hqBehind = 4,           -- ... the headquarters this far behind the rearmost man
 }
 LF.Platoon.CFG = CFG
@@ -189,8 +193,8 @@ local function nextNumber(faction)
     return n + 1
 end
 
--- A platoon at (x, y) facing (fx, fy): its headquarters in the middle, 1 squad ahead-left and 2
--- squad (the machine-gun squad, with mg) ahead-right.
+-- A platoon at (x, y) facing (fx, fy): its headquarters centre rear, its four squads in a line
+-- ahead of it, 1 squad on the left to 4 squad (the machine-gun squad, with mg) on the right.
 function LF.Platoon.create(faction, x, y, z, fx, fy, mg)
     local len = math.sqrt(fx * fx + fy * fy)
     if len < 0.01 then fx, fy, len = 1, 0, 1 end
@@ -215,16 +219,19 @@ function LF.Platoon.create(faction, x, y, z, fx, fy, mg)
     local rto = LF.Units.placeSoldier(faction, ox, oy, z, { squad = hq.id, team = team.id, rank = "PVT", element = "B",
         slot = 2, hqRole = "rto" })
     team.members = { ssgt.id, rto.id }
-    local ax, ay = at(6, -9)
-    local s1 = LF.Units.createSquad(faction, ax, ay, z, fx, fy, false, false)
-    local bx, by = at(6, 9)
-    local s2 = LF.Units.createSquad(faction, bx, by, z, fx, fy, false, mg)
-    s1.platoon, s2.platoon = p.id, p.id
-    s1.name = p.name .. " / 1 squad"
-    s2.name = p.name .. (mg and " / 2 MG squad" or " / 2 squad")
-    p.squads = { s1.id, s2.id }
+    local SPOTS = { { 5, -15 }, { 8, -5 }, { 8, 5 }, { 5, 15 } }
+    local names = {}
+    for i, sp in ipairs(SPOTS) do
+        local isMG = mg and i == #SPOTS
+        local qx, qy = at(sp[1], sp[2])
+        local sq = LF.Units.createSquad(faction, qx, qy, z, fx, fy, false, isMG)
+        sq.platoon = p.id
+        sq.name = p.name .. " / " .. i .. (isMG and " MG squad" or " squad")
+        p.squads[#p.squads + 1] = sq.id
+        names[#names + 1] = sq.name
+    end
     LF.log("PLATOON created " .. p.name .. " (#" .. p.id .. "): " .. title(lt) .. ", " .. title(ssgt) .. " (platoon sergeant), "
-        .. title(rto) .. " (radio), " .. s1.name .. ", " .. s2.name)
+        .. title(rto) .. " (radio), " .. table.concat(names, ", "))
     return p
 end
 
@@ -361,7 +368,7 @@ end
 
 -- Clear whatever platoon task a squad had.
 local function clearTask(squad)
-    squad.platoonTask, squad.supportOnly, squad.sbf, squad.withdrawTo = nil, nil, nil, nil
+    squad.platoonTask, squad.supportOnly, squad.sbf, squad.withdrawTo, squad.reserveAt = nil, nil, nil, nil, nil
 end
 
 -- Carry out an order (the squad's sergeant has it now).
@@ -410,6 +417,17 @@ local function apply(p, o)
         local x, y, z = posOf(squad)
         squad.sbf = { obj = obj.id, x = x and math.floor(x) or obj.x, y = y and math.floor(y) or obj.y, z = z or obj.z, inPlace = true }
         LF.Tactics.setStance(squad, "offensive")
+    elseif o.kind == "reserve" then
+        -- Behind the main effort, out of the fight until the lieutenant sends it in.
+        clearTask(squad)
+        squad.objTask = nil
+        squad.platoonTask = "reserve"
+        squad.reserveAt = { x = o.x, y = o.y, z = o.z }
+        local x, y = posOf(squad)
+        if x and LF.dist(x, y, o.x, o.y) > CFG.arriveDist and LF.March.order(squad, o.x, o.y, o.z, "auto", { noGather = true }) then
+            return
+        end
+        LF.Platoon.onArrived(squad)
     elseif o.kind == "dig" then
         clearTask(squad)
         squad.platoonTask = "dig"
@@ -523,6 +541,7 @@ local function setHQStance(p, stance)
 end
 
 -- The rifle squads, fittest first, and the machine-gun squad.
+-- (Main effort rifles[1]; support the machine-gun squad, else rifles[2]; the rest the reserve.)
 local function rolesFor(p)
     local rifles, mg = {}, nil
     for _, s in ipairs(squadsOf(p)) do
@@ -540,7 +559,12 @@ function LF.Platoon.take(p, obj)
     local main = rifles[1]
     if not main then return false, "it has no rifle squad left to make the assault" end
     local sup = mg or rifles[2]
-    p.mission = { kind = "take", obj = obj.id, phase = "approach", since = LF.tick, main = main.id, support = sup and sup.id }
+    local reserve = {}
+    for _, s2 in ipairs(rifles) do
+        if s2 ~= main and s2 ~= sup then reserve[#reserve + 1] = s2.id end
+    end
+    p.mission = { kind = "take", obj = obj.id, phase = "approach", since = LF.tick, main = main.id, support = sup and sup.id,
+        reserve = reserve, committed = {} }
     p.mainEffort = main.id
     local hx, hy, hz = posOf(hqOf(p) or main)
     if not hx then hx, hy, hz = posOf(main) end
@@ -548,7 +572,7 @@ function LF.Platoon.take(p, obj)
     S(p).queue, S(p).runner = {}, nil
     setHQStance(p, "offensive")
     LF.log("PLATOON " .. p.name .. " ordered to take " .. obj.name .. ": main effort " .. main.name
-        .. (sup and (", support " .. sup.name) or ""))
+        .. (sup and (", support " .. sup.name) or "") .. ", " .. #reserve .. " squad(s) in reserve")
     -- Far off: the platoon moves up together to an assembly area short of it first.
     local d = hx and LF.dist(hx, hy, obj.x, obj.y) or 0
     if d > CFG.assembly + 15 then
@@ -587,6 +611,22 @@ function LF.Platoon.deploy(p, m, why)
         issue(p, { squad = sup.id, kind = "support", obj = obj.id, x = x, y = y, z = z,
             words = short(sup) .. ", support by fire from the flank - keep their heads down!" })
     end
+    -- The reserve: short of the objective on the main effort's line, spread a little apart.
+    local mx, my = posOf(main or sup or hqOf(p))
+    local rs = m.reserve or {}
+    for i, rid in ipairs(rs) do
+        local r = LF.Units.get(rid)
+        if r and mx then
+            local dx, dy = mx - obj.x, my - obj.y
+            local d = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+            dx, dy = dx / d, dy / d
+            local back = math.max(CFG.reserveBack, math.min(d, CFG.reserveBack + 10))
+            local lat = (i - (#rs + 1) / 2) * 8
+            local x, y = math.floor(obj.x + dx * back - dy * lat), math.floor(obj.y + dy * back + dx * lat)
+            issue(p, { squad = r.id, kind = "reserve", x = x, y = y, z = obj.z,
+                words = short(r) .. ", you're the reserve - stay back in cover and be ready!" })
+        end
+    end
 end
 
 -- Hold an objective.
@@ -594,35 +634,36 @@ function LF.Platoon.hold(p, obj)
     local rifles, mg = rolesFor(p)
     local main = rifles[1] or mg
     if not main then return false, "it has no squad left" end
-    local second = nil
-    for _, s in ipairs(squadsOf(p)) do if s ~= main then second = s end end
-    p.mission = { kind = "hold", obj = obj.id, phase = "hold", since = LF.tick, main = main.id, support = second and second.id }
+    local others = {}
+    for _, s in ipairs(squadsOf(p)) do if s ~= main then others[#others + 1] = s end end
+    p.mission = { kind = "hold", obj = obj.id, phase = "hold", since = LF.tick, main = main.id, support = others[1] and others[1].id,
+        seconds = {} }
     p.mainEffort = main.id
     S(p).queue, S(p).runner = {}, nil
     setHQStance(p, "offensive")
     issue(p, { squad = main.id, kind = "hold", obj = obj.id, words = short(main) .. ", hold that " .. (obj.building and "building" or "ground") .. "!" })
-    if second then
-        -- The nearest other building within reach; else a spot to one side of the objective.
+    -- Each other squad: the nearest building within reach not already given out; else it digs in.
+    local used = {}
+    if obj.building then used[obj.building] = true end
+    for _, second in ipairs(others) do
         local o2 = nil
-        local L = obj.building and LF.Building.at(obj.x, obj.y, obj.z)
-        local cell = getCell()
-        local bestD = CFG.holdNear
         for r = 8, CFG.holdNear, 3 do
             for k = 0, 15 do
                 local a = k * math.pi / 8
                 local x, y = math.floor(obj.x + math.cos(a) * r), math.floor(obj.y + math.sin(a) * r)
-                local id = LF.Building.idAt(x, y, obj.z)
-                if id and id ~= obj.building and r < bestD then
+                local id = not o2 and LF.Building.idAt(x, y, obj.z)
+                if id and not used[id] then
                     local exists = nil
                     for _, oo in pairs(LF.Objective.all()) do if oo.building == id then exists = oo end end
-                    o2 = exists or LF.Objective.create(x, y, obj.z, obj.name .. " (annex)")
-                    bestD = r
+                    o2 = exists or LF.Objective.create(x, y, obj.z)
+                    if o2 then used[id] = true end
                 end
             end
             if o2 then break end
         end
         if o2 then
-            p.mission.second = o2.id
+            p.mission.seconds[#p.mission.seconds + 1] = o2.id
+            p.mission.second = p.mission.second or o2.id
             issue(p, { squad = second.id, kind = "hold", obj = o2.id, words = short(second) .. ", hold " .. o2.name .. " - cover their flank!" })
         else
             -- (No other building near: it digs in where it is, covering the objective.)
@@ -648,10 +689,10 @@ function LF.Platoon.withdraw(p, x, y, z, why)
 end
 
 -- Move the platoon to (x, y). The sergeant of the lead squad picks the formation from the ground:
---   ranger file / tactical column - one file: the lead squad, the other squad behind it (its
---       sergeant at its head), the headquarters at the rear
---   wedge - the squads abreast (~7 tiles either side of the line of march), each sergeant leading
---       his squad, the headquarters in the centre behind them
+--   ranger file / tactical column - one file: the lead squad, the other squads behind it one after
+--       another (each sergeant at his squad's head), the headquarters at the rear
+--   wedge - the squads abreast (10 tiles apart), each sergeant leading his squad, the
+--       headquarters in the centre behind them
 -- Returns true, or false and why (its men aren't here yet: try again later).
 function LF.Platoon.move(p, x, y, z)
     local rifles, mg = rolesFor(p)
@@ -694,9 +735,9 @@ function LF.Platoon.move(p, x, y, z)
         side[sq.id] = sx and ((sx - (cx or sx)) * rx + (sy - (cy or sy)) * ry) or 0
     end
     table.sort(order, function(a, b) return side[a.id] < side[b.id] end)
-    local lat = #order > 1 and { -CFG.abreast, CFG.abreast } or { 0 }
+    local gap = #order <= 2 and CFG.abreast * 2 or CFG.abreastGap
     for i, sq in ipairs(order) do
-        local l = lat[i] or 0
+        local l = (i - (#order + 1) / 2) * gap
         local ok2, why2 = LF.March.order(sq, math.floor(x + rx * l), math.floor(y + ry * l), z or 0, "wedge",
             { noGather = true, platoonPatrol = true })
         if not ok2 then LF.log("PLATOON " .. sq.name .. " can't move: " .. tostring(why2)) end
@@ -808,6 +849,14 @@ function LF.Platoon.onArrived(squad)
         LF.log("PLATOON " .. squad.name .. " is in its support-by-fire position")
         return true
     end
+    if squad.reserveAt then
+        squad.reserveAt = nil
+        LF.March.cancel(squad.id)
+        LF.Tactics.setStance(squad, "defensive")
+        shout(LF.Units.commander(squad), "Reserve's in place - get into cover and stay ready!")
+        LF.log("PLATOON " .. squad.name .. " is in reserve")
+        return true
+    end
     if squad.withdrawTo then
         squad.withdrawTo = nil
         squad.platoonTask = "dig"
@@ -880,6 +929,12 @@ local function updateTake(p, m)
                 LF.Morale.taskDone(sup, "kept the enemy's heads down for the assault")
                 issue(p, { squad = sup.id, kind = "dig", words = short(sup) .. ", good work - dig in where you are and cover the building!" })
             end
+            for _, rid in ipairs(m.reserve or {}) do
+                local r = LF.Units.get(rid)
+                if r and not (m.committed or {})[rid] then
+                    issue(p, { squad = r.id, kind = "dig", words = short(r) .. ", dig in there - stay ready to back them up!" })
+                end
+            end
             return
         end
         -- The assault has failed?
@@ -887,14 +942,28 @@ local function updateTake(p, m)
         local broken = not main or mainShare < 0.4 or (LF.Tactics.state(main) and LF.Tactics.state(main).broken)
         if broken then
             local pf = platoonFit(p)
-            local supShare = sup and fitShare(sup) or 0
-            if sup and not sup.mg and not m.swapped and supShare >= CFG.takeOverFit and pf >= CFG.withdrawTake then
-                m.swapped = true
-                m.main, m.support = sup.id, main and main.id or nil
-                p.mainEffort = sup.id
+            -- Who is left to send in: the reserve first, then a rifle support squad.
+            m.committed = m.committed or {}
+            local fresh = nil
+            for _, rid in ipairs(m.reserve or {}) do
+                local r = LF.Units.get(rid)
+                if not fresh and r and not m.committed[rid] and fitShare(r) >= CFG.takeOverFit then fresh = r end
+            end
+            local fromReserve = fresh ~= nil
+            if not fresh and sup and not sup.mg and not m.swapped and fitShare(sup) >= CFG.takeOverFit then fresh = sup end
+            if fresh and pf >= CFG.withdrawTake then
+                m.committed[fresh.id] = true
+                if fromReserve then
+                    m.main = fresh.id
+                else
+                    m.swapped = true
+                    m.main, m.support = sup.id, main and main.id or nil
+                end
+                p.mainEffort = fresh.id
                 LF.log("PLATOON " .. p.name .. ": " .. (main and main.name or "the main effort") .. "'s assault has failed - "
-                    .. sup.name .. " takes it over")
-                issue(p, { squad = sup.id, kind = "take", obj = obj.id, words = short(sup) .. ", you take the assault - go!" })
+                    .. (fromReserve and "the reserve is committed: " or "") .. fresh.name .. " takes it over")
+                issue(p, { squad = fresh.id, kind = "take", obj = obj.id,
+                    words = short(fresh) .. (fromReserve and ", you're up - take that building!" or ", you take the assault - go!") })
                 if main then
                     issue(p, { squad = main.id, kind = "cover", obj = obj.id, words = short(main) .. ", get down and cover them!" })
                 end

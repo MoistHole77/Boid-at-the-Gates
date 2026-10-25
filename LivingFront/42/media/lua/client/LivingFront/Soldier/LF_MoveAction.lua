@@ -381,6 +381,7 @@ function LF_MoveAction.stallCheck(self, d)
         for _, v in ipairs({ "ClimbFenceFinished", "ClimbWindowFinished", "ClimbWallFinished", "BumpDone" }) do c:setVariable(v, true) end
         c:setVariable("ClimbFenceStarted", false)
         c:setBumpType("")
+        c:reportEvent("ActiveAnimFinishing")    -- (out of a stagger state with no animation left)
     end)
     local pfb = c:getPathFindBehavior2()
     if pfb then

@@ -3,7 +3,7 @@
 --   Inspect <soldier>     - when you right-click on or right next to a soldier (top of the menu)
 --   Living Front >
 --     Spawn here          - a soldier, a fire team (4), a squad (10), a machine-gun squad (10) or a
---                           platoon (23: headquarters and two squads), German or Soviet; a civilian
+--                           platoon (43: headquarters and four squads), German or Soviet; a civilian
 --     Give orders to      - any platoon (take / hold this place, withdraw to here) or unit in the
 --                           game (by side, nearest the click first): stance, patrol here, take /
 --                           hold this place as an objective, clear this building, inspect its leader
@@ -149,9 +149,15 @@ local function healParts(p)
             function() bp:setAdditionalPain(0) end, function() bp:SetHealth(100) end,
         }) do pcall(f) end
     end
-    pcall(function() bd:setOverallBodyHealth(100) end)
-    pcall(function() bd:setInfected(false) end)
-    pcall(function() bd:setInfectionLevel(0) end)
+    -- (Only methods this game version has: calling a missing one inside pcall still writes a
+    -- stack trace to the log every reset.)
+    local function try(o, name, ...)
+        local f = o and o[name]
+        if f then pcall(f, o, ...) end
+    end
+    try(bd, "setOverallBodyHealth", 100)
+    try(bd, "setInfected", false)
+    try(bd, "setInfectionLevel", 0)
     pcall(function() p:setHealth(1) end)
     -- Up off the ground if a blast or a hit had him down.
     pcall(function() p:setKnockedDown(false) end)
@@ -393,9 +399,7 @@ local function objectiveAt(x, y, z)
     end
     if near then return near end
     if not bid then return nil end          -- (objectives are buildings)
-    local n = 0
-    for _ in pairs(LF.Objective.all()) do n = n + 1 end
-    return LF.Objective.create(x, y, z, "Objective " .. string.char(65 + n % 26))
+    return LF.Objective.create(x, y, z)
 end
 
 local function holdObj(u, obj)
@@ -446,6 +450,9 @@ local function takeOf(u, x, y, z, given)
     LF.say(ok and (u.name .. " moves to take " .. obj.name) or ("Can't: " .. tostring(why)))
 end
 
+-- (For the orders given from the world map - LF_Map.)
+LF.Debug.orders = { unitList = unitList, platoonList = platoonList, takeOf = takeOf, holdOf = holdOf, patrolOf = patrolOf }
+
 local function clearObjectives()
     LF.Objective.clear()
     LF.say("Objectives cleared")
@@ -489,8 +496,8 @@ local function onMenu(playerNum, context, worldObjects, test)
         fm:addOption("Squad (10)", nil, function() spawnUnit(key, x, y, z, "squad", playerNum) end)
         fm:addOption("Machine-gun squad (10, " .. (key == "GER" and "2 MG34s" or "2 DP-27s") .. ")", nil,
             function() spawnUnit(key, x, y, z, "mg", playerNum) end)
-        fm:addOption("Platoon (23: HQ + 2 rifle squads)", nil, function() spawnUnit(key, x, y, z, "platoon", playerNum) end)
-        fm:addOption("Platoon (23: HQ + rifle squad + MG squad)", nil, function() spawnUnit(key, x, y, z, "platoonMG", playerNum) end)
+        fm:addOption("Platoon (43: HQ + 4 rifle squads)", nil, function() spawnUnit(key, x, y, z, "platoon", playerNum) end)
+        fm:addOption("Platoon (43: HQ + 3 rifle squads + MG squad)", nil, function() spawnUnit(key, x, y, z, "platoonMG", playerNum) end)
     end
     spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 

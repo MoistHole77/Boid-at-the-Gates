@@ -557,6 +557,16 @@ function LF.Tactics.doorDuty(rec, body)
     for _, c in ipairs(sq.contacts or {}) do
         if LF.dist(c.x, c.y, body:getX(), body:getY()) <= 30 then return nil end
     end
+    -- And only once the whole unit is in: nobody shuts the door on his own men still coming in.
+    -- (A man down outside - waiting for the medic, or being dragged - isn't waited for.)
+    for _, rid in ipairs(LF.Units.members(rec.squad)) do
+        local r = LF.Records.get(rid)
+        local b = r and r.alive and LF.Bodies.get(rid)
+        if b and not b:isDead() and not (LF.Medic and LF.Medic.busy(rid))
+            and LF.Building.idAt(b:getX(), b:getY(), b:getZ()) ~= L.id then
+            return nil
+        end
+    end
     sq.doorClaims = sq.doorClaims or {}
     local best, bd, bdoor = nil, math.huge, nil
     for _, o in ipairs(L.openings) do

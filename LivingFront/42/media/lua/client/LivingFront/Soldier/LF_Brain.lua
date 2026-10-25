@@ -911,7 +911,8 @@ local function decide(id, body, rec, m)
         if LF.Units.relieve(rec) then leader = false end
         -- Holding a building, but outside it (he was wounded out there, or wandered off before
         -- the stand): back in to his post first, then down there.
-        local px, py, pz = LF.Tactics.insidePost and LF.Tactics.insidePost(rec, body)
+        local px, py, pz = nil, nil, nil       -- (not "x and f()": that keeps only f's first value)
+        if LF.Tactics.insidePost then px, py, pz = LF.Tactics.insidePost(rec, body) end
         if px then
             if m.state ~= "down" then setState(id, body, rec, m, "down", "wounded - back inside the building") end
             if not isMoving(body) and LF.tick - m.lastPath > 120 then
@@ -1368,6 +1369,7 @@ local function unstick(id, body, m, why)
         body:setVariable("ClimbFenceStarted", false)
         body:setBumpDone(true)
         body:setBumpType("")
+        body:reportEvent("ActiveAnimFinishing")
         body:setOnFloor(false)
         body:setKnockedDown(false)
     end)
@@ -1398,14 +1400,29 @@ local function stepNpc(id, body, rec)
     -- just stuck "bumped" - cleared after about a second, the length of the stagger itself (0.46
     -- left a man standing frozen mid-room for good; 0.47 cleared it after 3 s, and every stagger
     -- from a hit ran the full 3 s - men stood frozen in the open under fire).
+    -- The game only leaves its "bumped" state when the stagger animation finishes - so clearing
+    -- the stagger alone left the man in that state with no animation to finish, frozen for good
+    -- (0.52: Cpl. Kozlov, Pvt. Smirnov). He's watched by the state itself, not just the flag, and
+    -- let out of it by telling the state machine the animation has finished.
     local okB, bumped = pcall(function() return body:isBumped() and not body:isOnFloor() end)
-    if okB and bumped and not (LF.Medic and LF.Medic.busy(id)) then
+    local okS, st = pcall(function() return body:getCurrentStateName() end)
+    local inBump = okS and st == "BumpedState"
+    if ((okB and bumped) or inBump) and not (LF.Medic and LF.Medic.busy(id)) then
         m.bumpSince = m.bumpSince or LF.tick
-        if LF.tick - m.bumpSince > 70 then
-            local okS, st = pcall(function() return body:getCurrentStateName() end)
-            LF.log("BRAIN #" .. id .. " stagger over - back on his feet (state " .. tostring(okS and st) .. ")")
-            pcall(function() body:setBumpType(""); body:setBumpDone(true); body:setVariable("BumpDone", true) end)
-            m.bumpSince = nil
+        local okF, falling = pcall(function() return body:getVariableBoolean("BumpFall") end)
+        if LF.tick - m.bumpSince > ((okF and falling) and 150 or 70) then
+            LF.log("BRAIN #" .. id .. " stagger over - back on his feet (state " .. tostring(st) .. ")")
+            pcall(function()
+                body:setBumpType("")
+                body:setBumpDone(true)
+                body:setVariable("BumpDone", true)
+                if not body:isOnFloor() then
+                    body:setBumpFall(false)
+                    body:setVariable("BumpFall", false)
+                end
+                body:reportEvent("ActiveAnimFinishing")
+            end)
+            m.bumpSince = LF.tick - 30          -- (still stuck in a second: again)
         end
     else
         m.bumpSince = nil

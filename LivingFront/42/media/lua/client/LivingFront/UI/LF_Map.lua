@@ -6,11 +6,17 @@
 -- with its name over it once you are zoomed in far enough to read it. Hovering over one on the
 -- world map outlines it brightly and shows a label like the game's street names: its name and
 -- what kind of building it is, who holds it, and which units are taking or holding it.
+--
+-- Right-click on the world map: on a building, make it an objective (or stop it being one) and
+-- send any platoon or squad to take or hold it; anywhere, send them to patrol (or a platoon to
+-- withdraw) there. Buildings anywhere on the map will do - far ones are found again properly as
+-- the troops get near them.
 
 require "ISUI/Maps/ISWorldMap"
 require "ISUI/Maps/ISMiniMap"
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Units/LF_Objective"
+require "LivingFront/Tactics/LF_Platoon"
 
 LF.Map = LF.Map or {}
 
@@ -19,6 +25,7 @@ local CFG = {
     hoverFill = 0.45,
     nameZoom = 14.5,        -- names show from this zoom in (the map's own zoom scale)
     nameZoomMini = 16,
+    nameScale = 2,          -- names drawn at twice the small font
 }
 
 local COLORS = {
@@ -99,7 +106,7 @@ end
 -- The hover label: a box with the game's street-name look (a tab at each end).
 local function label(ui, lines, sx, sy, c)
     local tm = getTextManager()
-    local fontB, font = UIFont.Medium, UIFont.Small
+    local fontB, font = UIFont.Large, UIFont.Medium
     local hB, h = tm:getFontHeight(fontB), tm:getFontHeight(font)
     local wid = 0
     for i, t in ipairs(lines) do wid = math.max(wid, tm:MeasureStringX(i == 1 and fontB or font, t)) end
@@ -147,9 +154,11 @@ local function drawAll(ui, api, mini)
             if obj ~= hovered then
                 local sx, sy = centre(api, obj)
                 local c = colorOf(obj)
-                local font = UIFont.Small
-                ui:drawTextCentre(obj.name, sx + 1, sy - tm:getFontHeight(font) / 2 + 1, 0, 0, 0, 0.8, font)
-                ui:drawTextCentre(obj.name, sx, sy - tm:getFontHeight(font) / 2, c[1], c[2], c[3], 1, font)
+                local font, k = UIFont.Small, CFG.nameScale
+                local tx = sx - tm:MeasureStringX(font, obj.name) * k / 2
+                local ty = sy - tm:getFontHeight(font) * k / 2
+                ui:drawTextZoomed(obj.name, tx + 1, ty + 1, k, 0, 0, 0, 0.8, font)
+                ui:drawTextZoomed(obj.name, tx, ty, k, c[1], c[2], c[3], 1, font)
             end
         end
     end
@@ -158,6 +167,107 @@ local function drawAll(ui, api, mini)
         label(ui, detailLines(hovered), sx, sy, colorOf(hovered))
     end
     ui.lfHoveredObjective = hovered
+end
+
+-- ---- orders from the map ----------------------------------------------------------------------
+
+local function sub(menu, label)
+    local o = menu:addOption(label)
+    local m = ISContextMenu:getNew(menu)
+    menu:addSubMenu(o, m)
+    return m
+end
+
+local function kindWord(obj, def)
+    if obj then return obj.kind or "building" end
+    return def and "building" or nil
+end
+
+-- Add the Living Front options for world point (wx, wy) to a context menu.
+local function addMapOptions(ctx, wx, wy)
+    local z = 0
+    local x, y = math.floor(wx), math.floor(wy)
+    local obj = LF.Objective.atPoint(x, y)
+    local def = not obj and LF.Objective.metaDefAt(x, y)
+    local isBuilding = obj ~= nil or def ~= nil
+    -- The objective here, made if need be.
+    local function objective()
+        if obj then return obj end
+        local o, why = LF.Objective.create(x, y, z)
+        if not o then LF.say("Can't: " .. tostring(why)); return nil end
+        obj = o
+        return o
+    end
+    local head = obj and (obj.name .. " - " .. kindWord(obj) .. ", " .. holderWords(obj):lower())
+        or (isBuilding and "Living Front: this building" or "Living Front: here")
+    local lf = sub(ctx, head)
+    if obj then
+        local id = obj.id
+        lf:addOption("Stop this being an objective", nil, function() LF.Objective.remove(id); LF.say("No longer an objective") end)
+    elseif isBuilding then
+        lf:addOption("Make this building an objective", nil, function()
+            local o = objective()
+            if o then LF.say(o.name .. " - " .. (o.kind or "building")) end
+        end)
+    end
+    local O = LF.Debug and LF.Debug.orders
+    if not O then return end
+    local where = isBuilding and "this building" or "here"
+    local plists = O.platoonList(x, y)
+    for _, f in ipairs({ { "GER", "German platoons" }, { "SOV", "Soviet platoons" } }) do
+        local list = plists[f[1]]
+        if list and #list > 0 then
+            local fm = sub(lf, f[2])
+            for _, e in ipairs(list) do
+                local plt = e.p
+                local pm = sub(fm, LF.Platoon.describe(plt) .. string.format(" (%d tiles)", math.floor(e.d)))
+                if isBuilding then
+                    pm:addOption("Take " .. where, nil, function()
+                        local o = objective()
+                        if not o then return end
+                        local ok, why = LF.Platoon.take(plt, o)
+                        LF.say(ok and (plt.name .. " moves to take " .. o.name) or ("Can't: " .. tostring(why)))
+                    end)
+                    pm:addOption("Hold " .. where, nil, function()
+                        local o = objective()
+                        if not o then return end
+                        local ok, why = LF.Platoon.hold(plt, o)
+                        LF.say(ok and (plt.name .. " holds " .. o.name) or ("Can't: " .. tostring(why)))
+                    end)
+                end
+                pm:addOption("Patrol " .. where, nil, function()
+                    local ok, why = LF.Platoon.patrol(plt, x, y, z)
+                    LF.say(ok and (plt.name .. " patrols there") or ("Can't: " .. tostring(why)))
+                end)
+                pm:addOption("Withdraw to " .. where, nil, function()
+                    LF.Platoon.withdraw(plt, x, y, z, "ordered from the map")
+                    LF.say(plt.name .. " withdraws")
+                end)
+            end
+        end
+    end
+    local lists = O.unitList(x, y)
+    for _, f in ipairs({ { "GER", "German squads" }, { "SOV", "Soviet squads" } }) do
+        local list = lists[f[1]]
+        if list and #list > 0 then
+            local fm = sub(lf, f[2])
+            for _, e in ipairs(list) do
+                local u = e.u
+                local um = sub(fm, string.format("%s (%d/%d, %d tiles)", u.name, e.n, e.total, math.floor(e.d)))
+                if isBuilding then
+                    um:addOption("Take " .. where, nil, function()
+                        local o = objective()
+                        if o then O.takeOf(u, x, y, z, o) end
+                    end)
+                    um:addOption("Hold " .. where, nil, function()
+                        local o = objective()
+                        if o then O.holdOf(u, x, y, z, o) end
+                    end)
+                end
+                um:addOption("Patrol " .. where, nil, function() O.patrolOf(u, x, y, z, "auto") end)
+            end
+        end
+    end
 end
 
 -- ---- hooks -------------------------------------------------------------------------------------
@@ -175,6 +285,23 @@ function ISWorldMap:pickMouseOverStreet()
     if self.lfHoveredObjective then
         pcall(function() self.mapAPI:getStreetsAPI():setMouseOverStreet(nil, 0.0, 0.0) end)
     end
+end
+
+-- Right-click: the game's own menu (debug mode has one), with ours added to it.
+local rightUp = ISWorldMap.onRightMouseUp
+function ISWorldMap:onRightMouseUp(x, y)
+    if self.symbolsUI and self.symbolsUI:onRightMouseUpMap(x, y) then return true end
+    local handled = rightUp(self, x, y)
+    if not getSpecificPlayer(0) then return handled end
+    local wx, wy = self.mapAPI:uiToWorldX(x, y), self.mapAPI:uiToWorldY(x, y)
+    local ctx = nil
+    if handled and getPlayerContextMenu then
+        local ok, c = pcall(getPlayerContextMenu, 0)
+        if ok and c and c:isVisible() then ctx = c end
+    end
+    if not ctx then ctx = ISContextMenu.get(0, x + self:getAbsoluteX(), y + self:getAbsoluteY()) end
+    LF.guard("map orders", addMapOptions, ctx, wx, wy)
+    return true
 end
 
 if ISMiniMapInner then
