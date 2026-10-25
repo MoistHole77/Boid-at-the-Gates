@@ -10,6 +10,9 @@
 -- Where there is something to sit on - a chair or a couch in the house his unit holds, a bench in
 -- a park - he takes it (the game's own sit-on-furniture: he walks to it, sits, and gets up again
 -- the same way as the player), within a few tiles of his place; each seat one man.
+-- Sitting at rest, he puts his rifle down - on the ground beside him or slung on his back (half
+-- the time each) - and picks it up again when he gets up. (An activity that wants the rifle in
+-- his hands - dozing with it across his lap, going through his kit - has him take it back.)
 -- Sitting is the game's own: the "sit on ground" event puts him in the game's sitting state
 -- (the whole body, rifle across his lap) and "forceGetUp" stands him up with the game's clip.
 -- (Up to 0.26.0 the sitting was a clip of ours played as an action - but actions only drive the
@@ -74,7 +77,14 @@ function LF_IdleAction:isValid() return not self.character:isDead() end
 function LF_IdleAction:waitToStart() return false end
 
 function LF_IdleAction:start()
-    if not self.kind.gun and LF.Combat then self.slung = LF.Combat.sling(self.character) end
+    if LF.Combat then
+        if not self.kind.gun then
+            self.slung = LF.Combat.sling(self.character)
+        elseif LF.Combat.slungGun(self.character) and LF.Idle.isSitting(self.character) then
+            -- (His rifle is down while he sits: he takes it up for this, then slings it.)
+            self.restow = LF.Combat.unsling(self.character) ~= nil
+        end
+    end
     self:setActionAnim(self.kind.anim)
     if self.kind.bandageType then self:setAnimVariable("BandageType", self.kind.bandageType) end
 end
@@ -84,7 +94,15 @@ function LF_IdleAction:update()
 end
 
 local function rearm(self)
-    if self.slung and LF.Combat then
+    if not LF.Combat then return end
+    if self.restow then
+        self.restow = nil
+        LF.Combat.sling(self.character)
+        return
+    end
+    -- Sitting at rest: the rifle stays down until he gets up (LF.Idle.stop takes it back).
+    if self.slung and LF.Idle.isSitting(self.character) then self.slung = nil; return end
+    if self.slung then
         self.slung = nil
         LF.Combat.unsling(self.character)
     end
@@ -267,6 +285,11 @@ function LF.Idle.tick(body, m, keep)
     end
     -- The game wouldn't sit him down (on stairs, mid-turn...): he stands easy instead.
     if R.seated and not R.seat and now - R.start > CFG.sitFailTicks and not LF.Idle.isSitting(body) then R.seated = false end
+    -- Sat down: the rifle goes down (once, and not while an activity has it).
+    if R.seated and not R.stowed and LF.Idle.isSitting(body) and not body:isPerformingAnAction() and LF.Combat then
+        R.stowed = true
+        if ZombRand(2) == 0 then LF.Combat.ground(body) else LF.Combat.sling(body) end
+    end
     if now >= R.endAt then
         if not body:isPerformingAnAction() then
             LF.Idle.stop(body, m)

@@ -65,6 +65,7 @@ local CFG = {
     withdrawBack = 35,      -- with no rally point, it withdraws this far back from the enemy
     clearOfEnemy = 28,      -- a withdrawing squad marches once no enemy is known this close
     arriveDist = 8,
+    assembly = 40,          -- taking an objective from afar: the platoon moves up together to this far short of it
     abreast = 7,            -- a platoon patrol: each squad this far out from the line of march
     hqBehind = 4,           -- ... the headquarters this far behind the rearmost man
 }
@@ -367,6 +368,18 @@ end
 local function apply(p, o)
     local squad = LF.Units.get(o.squad)
     if not squad then return end
+    -- Its men aren't here (bodies only exist near you): the order waits for them.
+    if o.kind ~= "dig" and o.kind ~= "withdraw" and not cmdBodyOf(squad) then
+        local s = S(p)
+        s.waiting = s.waiting or {}
+        for i = #s.waiting, 1, -1 do if s.waiting[i].squad == o.squad then table.remove(s.waiting, i) end end
+        s.waiting[#s.waiting + 1] = o
+        if not o.waitLogged then
+            o.waitLogged = true
+            LF.log("PLATOON " .. p.name .. ": " .. squad.name .. "'s men aren't here yet - its order (" .. o.kind .. ") waits for them")
+        end
+        return
+    end
     local obj = o.obj and LF.Objective.get(o.obj)
     LF.log("PLATOON " .. p.name .. ": " .. squad.name .. " has its orders - " .. o.kind)
     if o.kind == "take" and obj then
@@ -449,6 +462,12 @@ local function deliver(p)
     local s = S(p)
     local cmd = commander(p)
     local cb = cmd and bodyOf(cmd.id)
+    -- Orders waiting for a squad's men to be here.
+    if s.waiting and #s.waiting > 0 then
+        local w = s.waiting
+        s.waiting = {}
+        for _, o in ipairs(w) do apply(p, o) end
+    end
     if s.runner then
         local r = s.runner
         local rb = bodyOf(r.id)
@@ -521,24 +540,53 @@ function LF.Platoon.take(p, obj)
     local main = rifles[1]
     if not main then return false, "it has no rifle squad left to make the assault" end
     local sup = mg or rifles[2]
-    p.mission = { kind = "take", obj = obj.id, phase = "assault", since = LF.tick, main = main.id, support = sup and sup.id }
+    p.mission = { kind = "take", obj = obj.id, phase = "approach", since = LF.tick, main = main.id, support = sup and sup.id }
     p.mainEffort = main.id
     local hx, hy, hz = posOf(hqOf(p) or main)
+    if not hx then hx, hy, hz = posOf(main) end
     p.home = hx and { x = math.floor(hx), y = math.floor(hy), z = hz } or nil
     S(p).queue, S(p).runner = {}, nil
     setHQStance(p, "offensive")
     LF.log("PLATOON " .. p.name .. " ordered to take " .. obj.name .. ": main effort " .. main.name
         .. (sup and (", support " .. sup.name) or ""))
-    issue(p, { squad = main.id, kind = "take", obj = obj.id,
-        words = short(main) .. ", you're the main effort - take that " .. (obj.building and "building" or "position") .. "!" })
+    -- Far off: the platoon moves up together to an assembly area short of it first.
+    local d = hx and LF.dist(hx, hy, obj.x, obj.y) or 0
+    if d > CFG.assembly + 15 then
+        local ax, ay = obj.x + (hx - obj.x) / d * CFG.assembly, obj.y + (hy - obj.y) / d * CFG.assembly
+        p.mission.assembly = { x = math.floor(ax), y = math.floor(ay), z = obj.z }
+        local cmd = commander(p)
+        if cmd then shout(cmd.id, "Platoon - we're taking that " .. (obj.building and "building" or "position") .. ". Move out!") end
+        local ok, why = LF.Platoon.move(p, ax, ay, obj.z)
+        if not ok then
+            p.mission.pendingMove = true
+            LF.log("PLATOON " .. p.name .. " can't move off yet (" .. tostring(why) .. ") - it will as soon as it can")
+        end
+        return true
+    end
+    LF.Platoon.deploy(p, p.mission, "close enough to go straight in")
+    return true
+end
+
+-- The assault: the main effort takes the objective, the support goes to its fire position.
+function LF.Platoon.deploy(p, m, why)
+    local obj = LF.Objective.get(m.obj)
+    if not obj then return end
+    m.phase = "assault"
+    LF.Platoon.stopMove(p)
+    local main = LF.Units.get(m.main)
+    local sup = m.support and LF.Units.get(m.support)
+    LF.log("PLATOON " .. p.name .. " deploys for the assault on " .. obj.name .. " (" .. why .. ")")
+    if main then
+        issue(p, { squad = main.id, kind = "take", obj = obj.id,
+            words = short(main) .. ", you're the main effort - take that " .. (obj.building and "building" or "position") .. "!" })
+    end
     if sup then
-        local mx, my = posOf(main)
+        local mx, my = posOf(main or sup)
         local x, y, z = sbfSpot(obj, mx or obj.x + 20, my or obj.y, sup)
-        p.mission.sbf = { x = x, y = y, z = z }
+        m.sbf = { x = x, y = y, z = z }
         issue(p, { squad = sup.id, kind = "support", obj = obj.id, x = x, y = y, z = z,
             words = short(sup) .. ", support by fire from the flank - keep their heads down!" })
     end
-    return true
 end
 
 -- Hold an objective.
@@ -598,47 +646,103 @@ function LF.Platoon.withdraw(p, x, y, z, why)
     return true
 end
 
--- Patrol to (x, y): the two squads abreast (~7 tiles either side of the line of march), each
--- with its sergeant leading at the front; the headquarters follows in the centre, behind them.
-function LF.Platoon.patrol(p, x, y, z)
-    local squads = squadsOf(p)
-    if #squads == 0 then return false, "it has no squads" end
-    local cx, cy, n = 0, 0, 0
-    for _, sq in ipairs(squads) do
-        local sx, sy = posOf(sq)
-        if sx then cx, cy, n = cx + sx, cy + sy, n + 1 end
+-- Move the platoon to (x, y). The sergeant of the lead squad picks the formation from the ground:
+--   ranger file / tactical column - one file: the lead squad, the other squad behind it (its
+--       sergeant at its head), the headquarters at the rear
+--   wedge - the squads abreast (~7 tiles either side of the line of march), each sergeant leading
+--       his squad, the headquarters in the centre behind them
+-- Returns true, or false and why (its men aren't here yet: try again later).
+function LF.Platoon.move(p, x, y, z)
+    local rifles, mg = rolesFor(p)
+    local order = {}
+    for _, s2 in ipairs(rifles) do order[#order + 1] = s2 end
+    if mg then order[#order + 1] = mg end
+    local lead = order[1]
+    if not lead then return false, "it has no squads" end
+    for _, sq in ipairs(order) do
+        local cid = LF.Units.commander(sq)
+        if not (cid and LF.Bodies.get(cid)) then return false, sq.name .. "'s men aren't here (too far from you)" end
     end
-    if n == 0 then return false, "none of its squads is here" end
-    cx, cy = cx / n, cy / n
-    local dx, dy = x - cx, y - cy
-    local d = math.sqrt(dx * dx + dy * dy)
-    if d < 4 then return false, "already there" end
+    for _, sq in ipairs(order) do clearTask(sq); sq.objTask = nil; LF.March.cancel(sq.id) end
+    local group = {}
+    for i = 2, #order do group[#group + 1] = order[i].id end
+    group[#group + 1] = p.hq
+    lead.marchGroup = group
+    local ok, why = LF.March.order(lead, math.floor(x), math.floor(y), z or 0, "auto", { noGather = true, platoonPatrol = true })
+    if not ok then lead.marchGroup = nil; return false, why end
+    local M = LF.March.get(lead.id)
+    local cx, cy = posOf(lead)
+    local dx, dy = x - (cx or x - 1), y - (cy or y)
+    local d = math.max(0.1, math.sqrt(dx * dx + dy * dy))
     dx, dy = dx / d, dy / d
-    local rx, ry = -dy, dx
-    -- Left squad left, right squad right (as they stand now).
-    local side = {}
-    for _, sq in ipairs(squads) do
-        local sx, sy = posOf(sq)
-        side[sq.id] = sx and ((sx - cx) * rx + (sy - cy) * ry) or 0
-    end
-    table.sort(squads, function(a, b) return side[a.id] < side[b.id] end)
-    local lat = #squads > 1 and { -CFG.abreast, CFG.abreast } or { 0 }
-    p.mission = { kind = "patrol", x = math.floor(x), y = math.floor(y), z = z or 0, phase = "moving", since = LF.tick }
     p.facingX, p.facingY = dx, dy
+    for _, sq in ipairs(order) do sq.platoonTask = "patrol" end
+    if M and M.form ~= "wedge" then
+        p.move = { x = x, y = y, z = z or 0, mode = "file", lead = lead.id, since = LF.tick }
+        LF.log("PLATOON " .. p.name .. " moves to " .. math.floor(x) .. "," .. math.floor(y) .. " in one file ("
+            .. LF.March.FORMATIONS[M.form] .. "): " .. lead.name .. " leads, the headquarters at the rear")
+        return true
+    end
+    -- Open ground: the squads abreast instead.
+    LF.March.cancel(lead.id)
+    lead.marchGroup = nil
+    local rx, ry = -dy, dx
+    local side = {}
+    for _, sq in ipairs(order) do
+        local sx, sy = posOf(sq)
+        side[sq.id] = sx and ((sx - (cx or sx)) * rx + (sy - (cy or sy)) * ry) or 0
+    end
+    table.sort(order, function(a, b) return side[a.id] < side[b.id] end)
+    local lat = #order > 1 and { -CFG.abreast, CFG.abreast } or { 0 }
+    for i, sq in ipairs(order) do
+        local l = lat[i] or 0
+        local ok2, why2 = LF.March.order(sq, math.floor(x + rx * l), math.floor(y + ry * l), z or 0, "wedge",
+            { noGather = true, platoonPatrol = true })
+        if not ok2 then LF.log("PLATOON " .. sq.name .. " can't move: " .. tostring(why2)) end
+        sq.platoonTask = "patrol"
+    end
+    p.move = { x = x, y = y, z = z or 0, mode = "abreast", since = LF.tick }
+    LF.log("PLATOON " .. p.name .. " moves to " .. math.floor(x) .. "," .. math.floor(y) .. " in wedges, squads abreast, the headquarters centre rear")
+    return true
+end
+
+function LF.Platoon.stopMove(p)
+    if not p.move then return end
+    for _, sq in ipairs(squadsOf(p)) do
+        sq.marchGroup = nil
+        if sq.platoonTask == "patrol" then sq.platoonTask = nil end
+        LF.March.cancel(sq.id)
+    end
+    LF.March.cancel(p.hq)
+    p.move = nil
+    local hq = hqOf(p)
+    if hq and hq.stance == "patrolling" then hq.stance = "offensive" end
+end
+
+-- Has the platoon got where it was moving to?
+local function moveArrived(p)
+    local mv = p.move
+    if not mv then return true end
+    if mv.mode == "file" then
+        local M = LF.March.get(mv.lead)
+        return M == nil or M.arrived == true
+    end
+    for _, sq in ipairs(squadsOf(p)) do
+        local M = LF.March.get(sq.id)
+        if M and not M.arrived then return false end
+    end
+    return true
+end
+
+-- Patrol to (x, y).
+function LF.Platoon.patrol(p, x, y, z)
+    local ok, why = LF.Platoon.move(p, x, y, z)
+    if not ok then return false, why end
+    p.mission = { kind = "patrol", x = math.floor(x), y = math.floor(y), z = z or 0, phase = "moving", since = LF.tick }
     S(p).queue, S(p).runner = {}, nil
     setHQStance(p, "offensive")
-    for i, sq in ipairs(squads) do
-        clearTask(sq)
-        sq.objTask = nil
-        local l = lat[i] or 0
-        local ok, why = LF.March.order(sq, math.floor(x + rx * l), math.floor(y + ry * l), z or 0, "auto",
-            { noGather = true, platoonPatrol = true })
-        if ok then sq.platoonTask = "patrol"
-        else LF.log("PLATOON " .. sq.name .. " can't patrol: " .. tostring(why)) end
-    end
     local cmd = commander(p)
-    if cmd then shout(cmd.id, "Platoon - move out! Squads abreast, sergeants lead!") end
-    LF.log("PLATOON " .. p.name .. " patrols to " .. math.floor(x) .. "," .. math.floor(y) .. " (" .. math.floor(d) .. " tiles)")
+    if cmd then shout(cmd.id, "Platoon - move out!") end
     return true
 end
 
@@ -748,6 +852,19 @@ end
 local function updateTake(p, m)
     local obj = LF.Objective.get(m.obj)
     if not obj then p.mission = nil; return end
+    if m.phase == "approach" then
+        if m.pendingMove then
+            local a = m.assembly
+            if LF.Platoon.move(p, a.x, a.y, a.z) then m.pendingMove = nil end
+            return
+        end
+        -- At the assembly area, or the enemy met on the way: deploy.
+        local hx, hy = posOf(hqOf(p))
+        local c = hx and platoonContact(p, hx, hy, 40)
+        if c then LF.Platoon.deploy(p, m, "contact on the way in")
+        elseif moveArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area") end
+        return
+    end
     local main = LF.Units.get(m.main)
     local sup = m.support and LF.Units.get(m.support)
     local cmd = commander(p)
@@ -864,8 +981,13 @@ function LF.Platoon.place(rec)
     local z = math.floor(body:getZ())
     local m = p.mission
     local isCmd = hq.leader == rec.id
-    -- On a platoon patrol, with no enemy close: the centre rear, in step with the squads.
-    if m and m.kind == "patrol" and not platoonContact(p, body:getX(), body:getY(), 35) then
+    -- The platoon on the move in one file: the headquarters' places at its rear (LF_March).
+    if p.move and p.move.mode == "file" then
+        local role, x, y, mz, face, gait, scan = LF.March.place(rec)
+        if role then return role, x, y, mz, face, gait, scan end
+    end
+    -- On the move with the squads abreast, no enemy close: the centre rear, in step with them.
+    if p.move and p.move.mode == "abreast" and not platoonContact(p, body:getX(), body:getY(), 35) then
         local px, py, moving = patrolSpot(p)
         if px then
             local fx, fy = p.facingX or 1, p.facingY or 0

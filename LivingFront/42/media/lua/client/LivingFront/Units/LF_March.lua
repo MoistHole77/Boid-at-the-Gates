@@ -50,8 +50,23 @@ LF.March.CFG = CFG
 local marches = {}          -- squad id -> march (runtime)
 Events.OnInitGlobalModData.Add(function() marches = {} end)
 function LF.March.forgetAll() marches = {} end
-function LF.March.get(squadId) return marches[squadId] end
-function LF.March.cancel(squadId) marches[squadId] = nil end
+
+-- A platoon moving in a ranger file or tactical column is one march: its lead squad's, with the
+-- other squad and the headquarters behind it in the same file (M.lead, M.group). Every unit in it
+-- finds the march under its own id; a follower's entry goes when the lead's march does.
+local function getM(id)
+    local M = id and marches[id]
+    if M and M.lead and M.lead ~= id and marches[M.lead] ~= M then marches[id] = nil; return nil end
+    return M
+end
+LF.March.get = getM
+function LF.March.cancel(squadId)
+    local M = marches[squadId]
+    if M and M.group and M.lead == squadId then
+        for _, uid in ipairs(M.group) do if marches[uid] == M then marches[uid] = nil end end
+    end
+    marches[squadId] = nil
+end
 
 -- ---- roads ----------------------------------------------------------------------------------
 
@@ -275,6 +290,31 @@ local function columnOrder(squad, form)
         if i == 2 and sgt and form ~= "column" then order[#order + 1] = sgt; sgt = nil end -- (wedge: the centre)
     end
     if sgt then order[#order + 1] = sgt end
+    -- A platoon in file: the next squad (its sergeant at its head), then the headquarters at the
+    -- rear - the lieutenant, his radio operator, the platoon sergeant.
+    for _, uid in ipairs(squad.marchGroup or {}) do
+        local u = LF.Units.get(uid)
+        if u and u.kind == "hq" then
+            local ids = {}
+            if u.leader then ids[#ids + 1] = u.leader end
+            for _, tid in ipairs(u.teams) do
+                local t = LF.Units.get(tid)
+                for _, rid in ipairs(t and t.members or {}) do
+                    local r = LF.Records.get(rid)
+                    if r and r.hqRole == "rto" then table.insert(ids, 2, rid) else ids[#ids + 1] = rid end
+                end
+            end
+            for _, rid in ipairs(ids) do
+                local r = LF.Records.get(rid)
+                if r and r.alive then order[#order + 1] = rid end
+            end
+        elseif u then
+            local was = u.platoonPatrol
+            u.platoonPatrol = true
+            for _, rid in ipairs(columnOrder(u, "file")) do order[#order + 1] = rid end
+            u.platoonPatrol = was
+        end
+    end
     return order
 end
 
@@ -322,7 +362,7 @@ local function layOut(squad, M)
         end
     else
         local column = M.form == "column"
-        local inFile = n - ((column and squad.leader and M.order[n] == squad.leader) and 1 or 0)
+        local inFile = n - ((column and squad.leader and LF.Records.get(squad.leader) and LF.Records.get(squad.leader).alive) and 1 or 0)
         local k = 0
         for _, rid in ipairs(M.order) do
             local o
@@ -499,6 +539,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     if LF.Join and not (opts and (opts.continuing or opts.noGather)) then LF.guard("join", LF.Join.gather, squad, "patrol") end
     if not (opts and opts.continuing) then squad.pendingHold = nil end    -- a new order replaces a pending one
     if not (opts and opts.continuing) then squad.platoonPatrol = (opts and opts.platoonPatrol) or nil end
+    if not (opts and (opts.continuing or opts.platoonPatrol)) then squad.marchGroup = nil end   -- (its own march now)
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
     if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end
@@ -539,6 +580,20 @@ function LF.March.order(squad, x, y, z, form, opts)
     M.started = (opts and opts.started) or LF.tick
     M.formAt = LF.tick
     marches[squad.id] = M
+    -- A platoon in file: the units behind the lead squad march in it too.
+    if squad.marchGroup and form ~= "wedge" then
+        M.lead, M.group = squad.id, squad.marchGroup
+        for _, uid in ipairs(squad.marchGroup) do
+            local u = LF.Units.get(uid)
+            if u then
+                marches[uid] = M
+                if not (opts and opts.continuing) then
+                    if u.kind == "hq" then u.stance = "patrolling"
+                    elseif LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(u, "patrolling") end
+                end
+            end
+        end
+    end
     LF.log("PATROL " .. squad.name .. (opts and opts.continuing and " next leg" or "") .. " to "
         .. math.floor(x) .. "," .. math.floor(y) .. (final and "" or (" (leg to " .. lx .. "," .. ly .. ")"))
         .. " in " .. LF.March.FORMATIONS[form] .. (auto and " (sergeant's choice)" or "") .. ", "
@@ -580,6 +635,7 @@ local function chooseFormation(squad, cid, M)
     elseif road / n < 0.3 and roadAhead < 0.3 then
         want = "wedge"
     end
+    if M.group and want == "wedge" then want = "column" end    -- (a platoon in file stays in file)
     if want ~= M.wantForm then M.wantForm, M.wantSince = want, LF.tick end
     if want == M.form or LF.tick - M.wantSince < 180 or LF.tick - (M.formAt or 0) < 600 then return end
     M.form, M.formAt = want, LF.tick
@@ -600,7 +656,7 @@ end
 --   gait "march" (walking in formation), "wait" (where he stands until his place reaches him),
 --   "halt" (stopped: crouch and aim outboard)
 function LF.March.place(rec)
-    local M = rec.squad and marches[rec.squad]
+    local M = rec.squad and getM(rec.squad)
     if not M or M.halted or not M.off[rec.id] then return nil end
     M.faces = M.faces or {}
     local f = M.faces[rec.id]
@@ -634,7 +690,7 @@ function LF.March.paceMul(rec, body)
     -- has dropped behind walks normally until he's back in place (gait "catchup"). No speeding up
     -- or slowing down in between. (Kept as a function so it can be switched back on.)
     if not LF.March.steerPace then return 1 end
-    local M = rec.squad and marches[rec.squad]
+    local M = rec.squad and getM(rec.squad)
     if not M or M.halted or M.arrived or not M.off[rec.id] or not M.joined[rec.id] then return 1 end
     local s = project(M, body:getX(), body:getY())
     local want
@@ -645,8 +701,23 @@ end
 
 -- Each tactics update. Returns true while the patrol is under way (the squad's other orders wait).
 function LF.March.update(squad, cid, cmd, contact, quietTicks)
-    local M = marches[squad.id]
+    local M = getM(squad.id)
     if not M then return false end
+    -- A squad marching behind the lead squad of its platoon: the lead runs the march; this squad
+    -- halts the whole file when it meets the enemy.
+    if M.lead and M.lead ~= squad.id then
+        if contact then
+            local lead = LF.Units.get(M.lead)
+            if lead then lead.groupContactAt = LF.tick end
+            if not M.halted then
+                M.halted = true
+                LF.log("PATROL " .. squad.name .. ": contact - the platoon halts and fights")
+                LF.Tactics.shout(cid, "Contact! Take cover!")
+            end
+            return false
+        end
+        return not M.halted
+    end
     if contact then
         if not M.halted then
             M.halted = true
@@ -657,6 +728,7 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
     end
     if M.halted then
         if (quietTicks or 0) < CFG.resumeQuiet then return false end
+        if M.group and LF.tick - (squad.groupContactAt or -100000) < CFG.resumeQuiet then return false end
         if M.arrived then
             M.halted = false
             LF.log("PATROL " .. squad.name .. ": quiet again - back into the halt")

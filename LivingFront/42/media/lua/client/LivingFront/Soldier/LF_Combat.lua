@@ -98,9 +98,61 @@ local function isPistol(gun)
     return ok and a == "Handgun"
 end
 
--- The rifle on his back, and the slot it's in; nil if none.
+-- (A man sitting down at rest may lay his rifle on the ground beside him instead: it lies there
+-- as a real item in the world and he picks it up when he gets up.)
+local grounded = {}         -- body -> { gun, sq } (runtime)
+
+-- Take the gun off the ground (the world item goes, the gun back into his inventory).
+local function lift(g)
+    local wio = nil
+    pcall(function() wio = g.gun:getWorldItem() end)
+    if wio then
+        pcall(function()
+            local sq = wio:getSquare() or g.sq
+            if sq then sq:transmitRemoveItemFromSquare(wio) end
+            wio:removeFromWorld()
+            wio:removeFromSquare()
+            wio:setSquare(nil)
+        end)
+        pcall(function() g.gun:setWorldItem(nil) end)
+    end
+end
+
+local function doGround(body)
+    if grounded[body] or holstered[body] then return false end
+    local gun = body:getPrimaryHandItem()
+    if not (gun and instanceof(gun, "HandWeapon")) or isPistol(gun) then return false end
+    local sq = body:getCurrentSquare()
+    if not sq then return false end
+    body:setPrimaryHandItem(nil)
+    body:setSecondaryHandItem(nil)
+    body:getInventory():Remove(gun)
+    local ox, oy = 0.25 + ZombRand(30) / 100, 0.25 + ZombRand(30) / 100
+    sq:AddWorldInventoryItem(gun, ox, oy, 0)
+    grounded[body] = { gun = gun, sq = sq }
+    return true
+end
+function LF.Combat.ground(body) return LF.guard("ground rifle", doGround, body) end
+
+-- A body that went away (despawned, dead) leaves no rifle lying about for ever: a dead man's stays
+-- where it is (it's his), a despawned man's is picked up with him.
+Events.OnTick.Add(function()
+    if LF.tick % 60 ~= 23 then return end
+    for b, g in pairs(grounded) do
+        local id = b:getModData().LF_id
+        if b:isDead() then
+            grounded[b] = nil
+        elseif not (id and LF.Bodies and LF.Bodies.get(id) == b) then
+            LF.guard("lift rifle", lift, g)
+            grounded[b] = nil
+        end
+    end
+end)
+
+-- The rifle on his back (or on the ground beside him), and where; nil if none.
 function LF.Combat.slungGun(body)
     if holstered[body] then return holstered[body], "holster" end
+    if grounded[body] then return grounded[body].gun, "ground" end
     for _, loc in ipairs(BACK_SLOTS) do
         local ok, g = pcall(function() return body:getAttachedItem(loc) end)
         if ok and g then return g, loc end
@@ -132,6 +184,15 @@ local function doUnsling(body)
     if loc == "holster" then
         holstered[body] = nil
         body:setPrimaryHandItem(gun)
+        return gun
+    end
+    if loc == "ground" then
+        local g = grounded[body]
+        grounded[body] = nil
+        lift(g)
+        if not body:getInventory():contains(gun) then body:getInventory():AddItem(gun) end
+        body:setPrimaryHandItem(gun)
+        if gun:isTwoHandWeapon() then body:setSecondaryHandItem(gun) end
         return gun
     end
     if not pcall(function() body:removeAttachedItem(gun) end) then body:setAttachedItem(loc, nil) end

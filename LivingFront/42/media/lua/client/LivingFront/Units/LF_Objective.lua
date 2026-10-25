@@ -4,7 +4,8 @@
 -- An objective is a building (or a point in the open). A unit gets a task on it:
 --   hold - the defensive stance on the objective (the building defence, or a perimeter).
 --   take - 1. approach:    patrol toward it (the sergeant choosing his formations; long ways
---                          planned in legs) to a rally point ~32 tiles short of it
+--                          planned in legs) to a rally point ~20 tiles short of it (inside rifle
+--                          range, so with nobody seen the squad doesn't bound the last stretch)
 --          2. assault:     the moment the point man reaches the rally point, the offensive stance
 --                          against the objective, facing it: the bravo teams form a base of
 --                          fire on the building, the alpha teams flank round it; with nobody in
@@ -28,7 +29,7 @@ require "LivingFront/Units/LF_Stance"
 LF.Objective = LF.Objective or {}
 
 local CFG = {
-    rallyDistance = 32,     -- the rally point is this far short of the objective
+    rallyDistance = 20,     -- the rally point is this far short of the objective (0.51: was 32)
     nearAssault = 45,       -- contact this close to the objective on the way in: straight to the assault
     unseenClear = 1800,     -- nobody seen in the building for ~30 s during the assault: clear it
     clearRange = 35,        -- ... if the squad is within this of it
