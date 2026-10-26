@@ -186,7 +186,9 @@ end
 Events.OnTick.Add(function()
     if LF.tick % CFG.pollTicks == 5 then
         LF.guard("chasm bridge", checkBridge)
-        if status.alive or next(pending) then LF.guard("chasm answers", pollAnswers) end
+        local any = false
+        for _ in pairs(pending) do any = true; break end       -- (Kahlua has no next())
+        if status.alive or any then LF.guard("chasm answers", pollAnswers) end
     end
     if status.alive and LF.tick % CFG.stateTicks == 20 then LF.guard("chasm state", writeState) end
 end)

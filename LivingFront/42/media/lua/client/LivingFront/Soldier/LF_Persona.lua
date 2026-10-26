@@ -279,6 +279,74 @@ function LF.Persona.card(rec)
     return card
 end
 
+-- ---- in his own words, with no language model ---------------------------------------------------------
+
+local WAR_SAY = {
+    ["does his duty and keeps out of politics"] = "I do my duty and keep out of politics. Safer that way.",
+    ["fights only for the men beside him"] = "Win, lose - I fight for the men beside me. That's all I've got.",
+    ["thinks the war was lost the day they marched east, and keeps it to himself"] = "Between us, sir? It was lost the day we marched east.",
+    ["believes what the newsreels tell him and repeats it"] = "The newsreels say we're winning, so we're winning.",
+    ["is bitter about the generals and the Party men"] = "The generals and the Party men should come up here and fight it themselves.",
+    ["wants it over, any way at all"] = "I just want it over, sir. Any way at all.",
+    ["was proud to go and is less proud every month"] = "I was proud to go. Less proud every month.",
+    ["is a convinced communist and Komsomol member"] = "We'll win. The Party and the people - nothing can stop that.",
+    ["fights for the Motherland, not for any commissar"] = "I fight for the Motherland. Not for any commissar.",
+    ["fights for revenge - the Germans burned his village"] = "They burned my village. I'll make them pay for every house.",
+    ["keeps his head down and trusts no political officer"] = "I keep my head down, comrade. Best way.",
+    ["fights because there is no going back"] = "There's no going back. So we go forward.",
+    ["wants it over so he can go home to the land"] = "I want it over so I can go home to the land.",
+    ["volunteered in '41 and has seen too much since"] = "I volunteered in '41. I've seen too much since.",
+}
+
+local MINE = { he = "I", his = "my", him = "me", himself = "myself", hasn = "haven" }
+local function mine(s)
+    -- (word by word; Kahlua's patterns may lack %f frontiers)
+    return (s:gsub("(%a+)", function(w) return MINE[w] end))
+end
+
+local function cap(s) return (s:gsub("^%l", string.upper)) end
+
+-- A line about one topic of his life, first person, from his persona (no model needed).
+function LF.Persona.say(rec, topic)
+    local p = LF.Persona.of(rec)
+    if topic == "home" then return "I'm from " .. p.home .. "." end
+    if topic == "job" then return "Before all this I was " .. p.job .. "." end
+    if topic == "family" then
+        if p.family:find("^no one") then return "No one left. My family is gone." end
+        return "I've got " .. mine(p.family) .. "."
+    end
+    if topic == "past" then return "I " .. (p.past:gsub("^has ", "have ")) .. "." end
+    if topic == "age" then return "I'm " .. p.age .. ", sir." end
+    if topic == "war" then return WAR_SAY[p.war] or ("I " .. mine(p.war) .. ".") end
+    if topic == "want" then return "What I want? " .. cap(mine(p.want)) .. "." end
+    if topic == "fear" then return "Afraid? Of " .. mine(p.fear) .. ", if you must know." end
+    if topic == "friend" then
+        local f = LF.Persona.ties(rec)
+        local fr = f and LF.Records.get(f)
+        if not fr then return "I keep to myself mostly." end
+        local who = fr.forename or (LF.Units and LF.Units.title(fr)) or "my friend"
+        if fr.captured then return "They took " .. who .. " prisoner. I keep thinking about it." end
+        if not fr.alive then return who .. " was my friend. He's dead now." end
+        return who .. " looks out for me, and I look out for him. The rest are all right."
+    end
+    if topic == "mood" then
+        local m = LF.Morale and LF.Morale.get(rec) or 60
+        if rec.wounded then return "It hurts, sir. I'll manage." end
+        if m >= 75 then return "Good, sir. Ready for anything." end
+        if m >= 50 then return "All right, sir. Tired." end
+        if m >= 30 then return "Not good, sir. Not good at all." end
+        return "I can't take much more of this, sir."
+    end
+    return nil
+end
+
+-- One of his own example lines (how he talks).
+function LF.Persona.line(rec, n)
+    local p = LF.Persona.of(rec)
+    local st = STYLES[p.style] or STYLES.terse
+    return st[2][(n - 1) % #st[2] + 1]
+end
+
 -- After a conversation: a note on it and which way his opinion of you moved (+1, 0, -1).
 function LF.Persona.remember(rec, note, delta)
     rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }

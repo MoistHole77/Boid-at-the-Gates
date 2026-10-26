@@ -37,18 +37,49 @@ end
 
 local GREET = { GER = "Jawohl.", SOV = "Da, comrade." }
 
-local function plainReply(rec, mems, n)
-    if n > 1 then
-        local p = LF.Persona.of(rec)
-        local intros = { "I'm from " .. p.home .. ". Before all this I was " .. p.job .. ".",
-                         "I've got " .. p.family .. ".", "Me? I " .. p.past .. "." }
-        return intros[(n - 2) % #intros + 1]
+-- What he asks about: the first topic whose words are in the question.
+local TOPICS = {
+    { "name", { "your name", "who are you", "called" } },
+    { "home", { "where are you from", "where you from", "hometown", "home town", "born", "from?" } },
+    { "family", { "family", "wife", "mother", "mum", "mom", "children", "kids", "sweetheart", "girl", "brother",
+                  "sister", "married", "parents", "father", "letters" } },
+    { "job", { "job", "work", "before the war", "trade", "for a living" } },
+    { "past", { "how long", "served", "serving", "join", "enlist", "called up", "experience", "veteran", "been in" } },
+    { "age", { "how old", "your age" } },
+    { "fear", { "afraid", "fear", "scared", "frightened" } },
+    { "want", { "want", "wish", "after the war", "dream", "hope" } },
+    { "friend", { "friend", "mates", "team", "squad", "the others", "the men", "people in", "get along" } },
+    { "war", { "war", "win", "lose", "winning", "losing", "fight for", "politic", "party", "stalin", "hitler",
+               "fuhrer", "führer", "think of", "worth it" } },
+    { "seen", { "happen", "seen", "see anything", "news", "report", "what's going on", "whats going on", "lately" } },
+    { "mood", { "how are", "how's it", "hows it", "how is it", "feel", "doing", "morale", "okay", "alright", "all right" } },
+}
+
+local function topicOf(text)
+    local t = " " .. text:lower() .. " "
+    for _, tp in ipairs(TOPICS) do
+        for _, w in ipairs(tp[2]) do
+            if t:find(w, 1, true) then return tp[1] end
+        end
     end
-    local open = GREET[rec.faction] or "Yes?"
-    if #mems == 0 then return open .. " Nothing to report - it has been quiet." end
-    local said = { open }
-    for i = 1, math.min(2, #mems) do said[#said + 1] = firstPerson(mems[i]) end
-    return table.concat(said, " ")
+    return nil
+end
+
+-- What he says with no language model: an answer on what you asked about, in his own words,
+-- or else what he last saw, or a line in his own voice.
+local function plainReply(rec, mems, n, text)
+    local topic = topicOf(text or "")
+    if topic == "name" then return LF.Units.title(rec) .. ", sir." end
+    if topic == "seen" or (n == 1 and not topic and #mems > 0) then
+        if #mems == 0 then return (GREET[rec.faction] or "") .. " Nothing to report - it has been quiet." end
+        local said = {}
+        for i = 1, math.min(2, #mems) do said[#said + 1] = firstPerson(mems[i]) end
+        return table.concat(said, " ")
+    end
+    local line = topic and LF.Persona.say(rec, topic)
+    if line then return line end
+    if n == 1 then return (GREET[rec.faction] or "Yes?") .. " " .. LF.Persona.say(rec, "mood") end
+    return LF.Persona.line(rec, n)
 end
 
 local function doing(rec)
@@ -89,7 +120,7 @@ function LF.Talk.say(id, text)
     addLine(id, "You", text)
     LF.log("TALK you to " .. title .. " #" .. id .. ": " .. text)
     local mems = LF.Memory.of(rec, 6)
-    local fallback = plainReply(rec, mems, #s.exchanges + 1)
+    local fallback = plainReply(rec, mems, #s.exchanges + 1, text)
     local function answer(words, how)
         s.waiting = nil
         s.exchanges[#s.exchanges + 1] = { you = text, him = words }
