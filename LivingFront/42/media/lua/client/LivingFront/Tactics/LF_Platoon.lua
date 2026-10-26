@@ -68,7 +68,8 @@ local CFG = {
     withdrawBack = 35,      -- with no rally point, it withdraws this far back from the enemy
     clearOfEnemy = 28,      -- a withdrawing squad marches once no enemy is known this close
     arriveDist = 8,
-    assembly = 40,          -- taking an objective from afar: the platoon moves up together to this far short of it
+    assembly = 40,
+    lateBy = 20,            -- ... and goes in without a squad once it is this many seconds later than expected          -- taking an objective from afar: the platoon moves up together to this far short of it
     abreast = 7,            -- a platoon patrol, two squads: each this far out from the line of march
     abreastGap = 10,        -- ... more squads: this far apart, side by side
     hqBehind = 4,           -- ... the headquarters this far behind the rearmost man
@@ -703,7 +704,8 @@ function LF.Platoon.move(p, x, y, z)
     if not lead then return false, "it has no squads" end
     for _, sq in ipairs(order) do
         local cid = LF.Units.commander(sq)
-        if not (cid and LF.Bodies.get(cid)) then return false, sq.name .. "'s men aren't here (too far from you)" end
+        local cr = cid and LF.Records.get(cid)
+        if not (cr and cr.alive) then return false, sq.name .. " has no one in command" end
     end
     for _, sq in ipairs(order) do clearTask(sq); sq.objTask = nil; LF.March.cancel(sq.id) end
     local group = {}
@@ -721,6 +723,7 @@ function LF.Platoon.move(p, x, y, z)
     for _, sq in ipairs(order) do sq.platoonTask = "patrol" end
     if M and M.form ~= "wedge" then
         p.move = { x = x, y = y, z = z or 0, mode = "file", lead = lead.id, since = LF.tick }
+        LF.Platoon.expect(p)
         LF.log("PLATOON " .. p.name .. " moves to " .. math.floor(x) .. "," .. math.floor(y) .. " in one file ("
             .. LF.March.FORMATIONS[M.form] .. "): " .. lead.name .. " leads, the headquarters at the rear")
         return true
@@ -744,8 +747,24 @@ function LF.Platoon.move(p, x, y, z)
         sq.platoonTask = "patrol"
     end
     p.move = { x = x, y = y, z = z or 0, mode = "abreast", since = LF.tick }
+    LF.Platoon.expect(p)
     LF.log("PLATOON " .. p.name .. " moves to " .. math.floor(x) .. "," .. math.floor(y) .. " in wedges, squads abreast, the headquarters centre rear")
     return true
+end
+
+-- When the lieutenant expects the whole platoon to be there: now plus the longest march still to
+-- go, at the patrol pace (simulated seconds, LF.simTime). Set when the move is ordered.
+function LF.Platoon.expect(p)
+    local mv = p.move
+    if not mv then return end
+    local worst = 0
+    for _, sq in ipairs(squadsOf(p)) do
+        local e = LF.March.eta(sq.id)
+        if e and e > worst then worst = e end
+    end
+    mv.expectAt = LF.simTime + worst
+    mv.expectFor = worst
+    LF.log(string.format("PLATOON %s expects to be in place in %.0f s", p.name, worst))
 end
 
 function LF.Platoon.stopMove(p)
@@ -800,8 +819,9 @@ local function patrolSpot(p)
         for _, rid in ipairs(LF.Units.members(sq.id)) do
             local r = LF.Records.get(rid)
             local b = r and r.alive and bodyOf(rid)
-            if b then
-                local x, y = b:getX(), b:getY()
+            if r and r.alive then
+                local x, y = r.x, r.y
+                if b then x, y = b:getX(), b:getY() end
                 sx, sy, n = sx + x, sy + y, n + 1
                 rear = math.min(rear, x * fx + y * fy)
             end
@@ -908,28 +928,24 @@ local function updateTake(p, m)
             if LF.Platoon.move(p, a.x, a.y, a.z) then m.pendingMove = nil end
             return
         end
-        -- At the assembly area, or the enemy met on the way: deploy. (Not every squad need be in:
-        -- once the main effort is there and half the platoon with it - or it has waited 30 s, or
-        -- anyone has waited 90 s - the lieutenant goes on. A squad that took the long way round,
-        -- or whose men aren't here, gets its orders where it is; 0.53 waited for it for ever.)
+        -- At the assembly area, or the enemy met on the way: deploy. The lieutenant waits for
+        -- everyone - however long a march he knew a squad had - and goes without the stragglers
+        -- only once they are 20 s later than he expected them (LF.Platoon.expect).
         local hx, hy = posOf(hqOf(p))
         local c = hx and platoonContact(p, hx, hy, 40)
         if c then LF.Platoon.deploy(p, m, "contact on the way in"); return end
         if moveArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area"); return end
-        local n, inN, mainIn = 0, 0, false
-        for _, sq in ipairs(squadsOf(p)) do
-            n = n + 1
-            local M = LF.March.get(sq.id)
-            local done = M == nil or M.arrived == true
-            if done then inN = inN + 1 end
-            if done and sq.id == m.main then mainIn = true end
-        end
-        if inN > 0 and not m.firstIn then m.firstIn = LF.tick end
-        local waited = m.firstIn and LF.tick - m.firstIn or 0
-        if mainIn and (inN * 2 >= n or waited > 1800) then
-            LF.Platoon.deploy(p, m, string.format("at the assembly area, %d of %d squads in", inN, n))
-        elseif waited > 5400 then
-            LF.Platoon.deploy(p, m, string.format("waited long enough - %d of %d squads in", inN, n))
+        local mv = p.move
+        if mv and not mv.expectAt then LF.Platoon.expect(p) end       -- (a move from before this)
+        if mv and mv.expectAt and LF.simTime > mv.expectAt + CFG.lateBy then
+            local n, inN, late = 0, 0, {}
+            for _, sq in ipairs(squadsOf(p)) do
+                n = n + 1
+                local M = LF.March.get(sq.id)
+                if M == nil or M.arrived == true then inN = inN + 1 else late[#late + 1] = short(sq) end
+            end
+            LF.Platoon.deploy(p, m, string.format("%d of %d squads in, %s %ds overdue - going without them",
+                inN, n, table.concat(late, ", "), math.floor(LF.simTime - mv.expectAt)))
         end
         return
     end
@@ -1007,7 +1023,30 @@ local function updateHold(p, m)
     if rx then LF.Platoon.withdraw(p, rx, ry, rz, "the defence can't hold - the platoon is cut to pieces") end
 end
 
+-- The headquarters' men with no body, on a move with the squads abreast: kept at the centre rear
+-- with them (in a file they are in the march itself - LF_March).
+local function hqOffscreen(p)
+    if not (p.move and p.move.mode == "abreast") then return end
+    local hq = hqOf(p)
+    if not hq then return end
+    local px, py = patrolSpot(p)
+    if not px then return end
+    local fx, fy = p.facingX or 1, p.facingY or 0
+    for _, rid in ipairs(LF.Units.members(hq.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not bodyOf(rid) then
+            local f, l = 0, 0
+            if rid ~= hq.leader then
+                local o = r.hqRole == "rto" and { -1.5, -1.5 } or { -2, 2 }
+                f, l = o[1], o[2]
+            end
+            r.x, r.y = px + fx * f - fy * l, py + fy * f + fx * l
+        end
+    end
+end
+
 local function updatePlatoon(p)
+    LF.guard("platoon hq off-screen", hqOffscreen, p)
     local cmd = commander(p)
     -- Missions only run with someone in command; without, the squads carry on alone.
     if not cmd then return end

@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.53.1"
+LF.VERSION = "0.54.0"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -97,6 +97,24 @@ function LF.now()
     return LF.tick
 end
 Events.OnTick.Add(function() LF.tick = LF.tick + 1 end)
+
+-- Simulated seconds: real time scaled by the game speed (1x, 5x, 20x, 40x), stopped while
+-- paused. What the off-screen war is timed by - a squad walking 0.75 tiles a second walks that
+-- many tiles per simulated second whether you can see it or not.
+LF.simTime = 0
+local SPEEDS = { [1] = 1, [2] = 5, [3] = 20, [4] = 40 }
+local lastMs = nil
+Events.OnTick.Add(function()
+    local now = getTimestampMs and getTimestampMs() or nil
+    if not now then return end
+    local dt = lastMs and (now - lastMs) / 1000 or 0
+    lastMs = now
+    if dt <= 0 then return end
+    dt = math.min(dt, 0.25)                     -- (a hitch or a load screen isn't marching time)
+    if isGamePaused and isGamePaused() then return end
+    local sp = getGameSpeed and getGameSpeed() or 1
+    LF.simTime = LF.simTime + dt * (SPEEDS[sp] or 1)
+end)
 
 -- Speech bubble over the real player, for debug feedback.
 function LF.say(text)

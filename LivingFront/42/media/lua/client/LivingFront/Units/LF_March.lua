@@ -13,7 +13,12 @@
 -- has been quiet for ~10 s it sets off again on the point man.
 -- At the destination it halts: every man crouches and aims outboard (see the formations below).
 --
--- Bodies only exist near the player, so a patrol only moves while you are near it.
+-- Off-screen (bodies only exist near the player): the march goes on without them. Its head moves
+-- along the route at the patrol pace in simulated seconds (LF.simTime), each man's record is
+-- kept at his place in the formation, and the route itself is planned across country from the
+-- map's building outlines - round the buildings, since the ground isn't loaded to look at. When
+-- the men come near you again they get their bodies where they are: in formation, on the route,
+-- and carry on. An off-screen march meets nobody (that comes with off-screen fighting).
 
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
@@ -485,6 +490,125 @@ local function legTarget(sx, sy, fx, fy, z)
     return math.floor(sx + (fx - sx) / d * 10), math.floor(sy + (fy - sy) / d * 10), false
 end
 
+-- ---- off-screen ------------------------------------------------------------------------------
+
+-- The building's outline (x1, y1, x2, y2) at (x, y) from the map, loaded or not; or nil.
+local function buildingBox(x, y)
+    local ok, def = pcall(function() return getWorld():getMetaGrid():getBuildingAt(math.floor(x), math.floor(y)) end)
+    if not (ok and def) then return nil end
+    local ok2, x1, y1, x2, y2 = pcall(function() return def:getX(), def:getY(), def:getX2(), def:getY2() end)
+    if not ok2 or not x1 then return nil end
+    return x1, y1, x2, y2
+end
+
+-- A route from (sx, sy) to (gx, gy) for a march nobody can see: straight, but round any building
+-- in the way (by the nearer side of its outline, 2 tiles clear) - except the one it is going to.
+function LF.March.offscreenRoute(sx, sy, gx, gy)
+    local pts = { { x = sx, y = sy } }
+    local gbx1, gby1 = buildingBox(gx, gy)
+    local cx, cy = sx, sy
+    local passed = {}
+    for _ = 1, 30 do
+        local d = LF.dist(cx, cy, gx, gy)
+        if d < 2 then break end
+        local ux, uy = (gx - cx) / d, (gy - cy) / d
+        local hit = nil
+        for k = 2, d, 2 do
+            local x1, y1, x2, y2 = buildingBox(cx + ux * k, cy + uy * k)
+            if x1 and not (gbx1 and x1 == gbx1 and y1 == gby1) and not passed[x1 .. "," .. y1] then
+                hit = { x1, y1, x2, y2 }
+                break
+            end
+        end
+        if not hit then break end
+        passed[hit[1] .. "," .. hit[2]] = true
+        -- Round it: the two corners (2 tiles out) on the side the line passes nearer the middle of.
+        local m = 2
+        local x1, y1, x2, y2 = hit[1] - m, hit[2] - m, hit[3] + m, hit[4] + m
+        local mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        local side = ((mx - cx) * uy - (my - cy) * ux) > 0 and 1 or -1     -- building to the right of the line: pass left
+        local corners = { { x1, y1 }, { x2, y1 }, { x2, y2 }, { x1, y2 } }
+        local keep = {}
+        for _, c in ipairs(corners) do
+            local s = (c[1] - cx) * uy - (c[2] - cy) * ux
+            if (s > 0 and side < 0) or (s <= 0 and side > 0) then keep[#keep + 1] = c end
+        end
+        -- (In order along the way.)
+        table.sort(keep, function(a, b) return (a[1] - cx) * ux + (a[2] - cy) * uy < (b[1] - cx) * ux + (b[2] - cy) * uy end)
+        for _, c in ipairs(keep) do pts[#pts + 1] = { x = c[1], y = c[2] } end
+        if #keep == 0 then break end
+        cx, cy = pts[#pts].x, pts[#pts].y
+    end
+    pts[#pts + 1] = { x = gx + 0.5, y = gy + 0.5 }
+    local clean = { pts[1] }
+    for i = 2, #pts do
+        if LF.dist(clean[#clean].x, clean[#clean].y, pts[i].x, pts[i].y) > 0.5 then clean[#clean + 1] = pts[i] end
+    end
+    if #clean < 2 then clean[2] = { x = gx + 0.5, y = gy + 0.5 } end
+    return clean
+end
+
+-- How long (simulated seconds) until the march gets where it's going, at the patrol pace: what
+-- is left of this leg and, for a route still being planned leg by leg, the rest of the way
+-- straight (with a quarter on for the roads). 0 once arrived; nil with no march.
+function LF.March.eta(squadId)
+    local M = getM(squadId)
+    if not M then return nil end
+    if M.arrived then return 0 end
+    local left = math.max(0, M.total - M.head)
+    if not M.final and M.dest then left = left + LF.dist(M.dest.x, M.dest.y, M.x, M.y) * 1.25 end
+    return left / (LF.Move and LF.Move.PATROL_PACE or 0.75)
+end
+
+local arrive        -- (below)
+
+-- An off-screen march moves on: the head at the patrol pace, every man without a body at his
+-- place (he has fallen in - nobody is watching him walk to it).
+local function advanceOffscreen(squad, M)
+    local dt = LF.simTime - (M.simAt or LF.simTime)
+    M.simAt = LF.simTime
+    if M.arrived then return end
+    if M.halted then
+        M.halted = false            -- (whatever stopped it isn't being fought out here)
+        LF.log("PATROL " .. squad.name .. ": off-screen - moving on")
+    end
+    if dt > 0 then M.head = math.min(M.total, M.head + (LF.Move and LF.Move.PATROL_PACE or 0.75) * dt) end
+    for _, rid in ipairs(M.order) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not LF.Bodies.get(rid) and M.off[rid] then
+            M.joined[rid] = true
+            local x, y = placeOf(M, rid)
+            r.x, r.y, r.z = x, y, M.z
+        end
+    end
+    if M.head < M.total then return end
+    local cid = LF.Units.commander(squad)
+    if not M.final then
+        local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
+            { continuing = true, form = M.form, started = M.started })
+        if not ok then marches[squad.id] = nil end
+        return
+    end
+    arrive(squad, cid, M)
+end
+
+-- Every half second: the marches whose commander has no body here.
+Events.OnTick.Add(function()
+    if LF.tick % 30 ~= 11 then return end
+    local due = {}
+    for sid, M in pairs(marches) do
+        if not M.lead or M.lead == sid then due[#due + 1] = sid end
+    end
+    -- (Collected first: arriving can start other marches.)
+    for _, sid in ipairs(due) do
+        local M = marches[sid]
+        local squad = M and LF.Units.get(sid)
+        local cid = squad and LF.Units.commander(squad)
+        local cb = cid and LF.Bodies.get(cid)
+        if squad and not (cb and not cb:isDead()) then LF.guard("offscreen march", advanceOffscreen, squad, M) end
+    end
+end)
+
 -- ---- the sergeant's choice of formation -------------------------------------------------------
 --
 -- He goes by where most of his men are and what lies ahead on the route:
@@ -542,21 +666,36 @@ function LF.March.order(squad, x, y, z, form, opts)
     if not (opts and (opts.continuing or opts.platoonPatrol)) then squad.marchGroup = nil end   -- (its own march now)
     local auto = not LF.March.FORMATIONS[form]
     local cid = LF.Units.commander(squad)
-    if not (cid and LF.Bodies.get(cid)) then return false, "its commander isn't here" end
+    local crec = cid and LF.Records.get(cid)
+    if not (crec and crec.alive) then return false, "it has no commander" end
     local order = columnOrder(squad, LF.March.FORMATIONS[form] and form or "column")
-    local point = nil
+    -- The point: the first man with a body; with none here, the first man's record (off-screen).
+    local px, py, offscreen = nil, nil, false
     for _, rid in ipairs(order) do
         local b = LF.Bodies.get(rid)
-        if b and not b:isDead() then point = b; break end
+        if b and not b:isDead() then px, py = b:getX(), b:getY(); break end
     end
-    if not point then return false, "nobody here to lead" end
+    if not px then
+        local r = order[1] and LF.Records.get(order[1])
+        if not r then return false, "nobody to lead" end
+        px, py, offscreen = r.x, r.y, true
+    end
     z = math.floor(z or 0)
-    local lx, ly, final = legTarget(point:getX(), point:getY(), x, y, z)
-    local pts, how, onRoad = planRoute(point:getX(), point:getY(), lx, ly, z)
+    local lx, ly, final, pts, how, onRoad
+    if offscreen and not loaded(px, py, z) then
+        -- Off-screen: the whole way at once, across country round the buildings.
+        lx, ly, final = math.floor(x), math.floor(y), true
+        pts = LF.March.offscreenRoute(px, py, lx, ly)
+        how, onRoad = "off-screen, round the buildings", false
+    else
+        lx, ly, final = legTarget(px, py, x, y, z)
+        pts, how, onRoad = planRoute(px, py, lx, ly, z)
+    end
     if #pts < 2 then return false, "already there" end
     if not (opts and opts.continuing) and LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(squad, "patrolling") end
     if auto then
         form = (opts and opts.form) or (onRoad and "column" or "wedge")
+        if offscreen and squad.marchGroup and form == "wedge" then form = "file" end   -- (a platoon in file stays one)
     end
     order = columnOrder(squad, form)
     local M = { pts = pts, z = z, form = form, auto = auto, x = x, y = y, final = final,
@@ -578,6 +717,7 @@ function LF.March.order(squad, x, y, z, form, opts)
     M.head = 0
     M.joined[order[1]] = true
     M.started = (opts and opts.started) or LF.tick
+    M.simAt = LF.simTime
     M.formAt = LF.tick
     marches[squad.id] = M
     -- A platoon in file: the units behind the lead squad march in it too.
@@ -703,6 +843,7 @@ end
 function LF.March.update(squad, cid, cmd, contact, quietTicks)
     local M = getM(squad.id)
     if not M then return false end
+    M.simAt = LF.simTime            -- (on-screen: the off-screen clock starts from now if it goes off)
     -- A squad marching behind the lead squad of its platoon: the lead runs the march; this squad
     -- halts the whole file when it meets the enemy.
     if M.lead and M.lead ~= squad.id then
@@ -819,16 +960,21 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         if not ok then marches[squad.id] = nil end
         return ok
     end
-    -- The point man is at the destination: the patrol has arrived, now - nobody waits for the
-    -- rear to close up (stragglers go straight to their halt places).
+    arrive(squad, cid, M)
+    return true
+end
+
+-- The point man is at the destination: the patrol has arrived, now - nobody waits for the rear
+-- to close up (stragglers go straight to their halt places).
+arrive = function(squad, cid, M)
     M.arrived = true
     for _, rid in ipairs(M.order) do M.joined[rid] = true end
     local _, _, dx, dy = pointAt(M, M.total)
     squad.facingX, squad.facingY = dx, dy
-    LF.log("PATROL " .. squad.name .. " arrives (" .. math.floor((LF.tick - M.started) / 60) .. " s)")
+    local cb = cid and LF.Bodies.get(cid)
+    LF.log("PATROL " .. squad.name .. " arrives (" .. math.floor((LF.tick - M.started) / 60) .. " s" .. (cb and "" or ", off-screen") .. ")")
     -- A task waiting on the arrival (an objective's assault) takes over at once.
-    if LF.Objective and LF.Objective.onArrived and LF.Objective.onArrived(squad) then return true end
+    if LF.Objective and LF.Objective.onArrived and LF.Objective.onArrived(squad) then return end
     LF.log("PATROL " .. squad.name .. " halts at its destination - down and eyes outboard")
-    LF.Tactics.shout(cid, "Halt! Get down - eyes out!")
-    return true
+    if cid then LF.Tactics.shout(cid, "Halt! Get down - eyes out!") end
 end

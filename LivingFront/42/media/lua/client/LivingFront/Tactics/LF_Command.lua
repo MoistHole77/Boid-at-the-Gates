@@ -209,7 +209,8 @@ local function updateSquad(squad)
     if cmd and not cmd:isDead() and considerStance(squad, sq, cid, cmd) then return end
     if not cmd or cmd:isDead() then
         -- No commander here: each corporal runs his own team (offensive stance only - a defence
-        -- just holds where it is).
+        -- just holds where it is). On the march the march goes on without him (LF_March, off-screen).
+        if LF.March.get(squad.id) then return end
         if LF.Stance.get(squad).maneuvers then
             initTeams(squad)
             passOrders(squad, sq, nil)
