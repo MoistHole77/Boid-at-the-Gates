@@ -558,22 +558,32 @@ local function talkTarget()
     local px, py, pz = p:getX(), p:getY(), math.floor(p:getZ())
     local fx, fy = 0, 0
     pcall(function() local v = p:getForwardDirection(); fx, fy = v:getX(), v:getY() end)
+    local mx, my = getMouseX(), getMouseY()
+    local zoom = getCore():getZoom(0)
     local best, bestScore = nil, nil
+    local hover, hoverD = nil, nil
     for id, body in pairs(LF.Bodies.all()) do
         if math.floor(body:getZ()) == pz and not body:isDead() then
             local dx, dy = body:getX() - px, body:getY() - py
             local d = math.sqrt(dx * dx + dy * dy)
-            if d <= CFG.talkRange then
+            local rec = d <= CFG.talkRange and LF.Records.get(id)
+            if rec and rec.alive and rec.faction ~= "CIV" and not rec.captured then
+                -- The mouse on him (his figure on screen, feet to head) ...
+                local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
+                local top = sy - (LF.headHeight(body) + 10) / zoom
+                if math.abs(mx - sx) <= 22 / zoom and my >= top and my <= sy + 10 / zoom then
+                    if not hoverD or d < hoverD then hover, hoverD = id, d end
+                end
+                -- ... or him in front of you.
                 local dot = d > 0.01 and (dx * fx + dy * fy) / d or 1
-                local rec = LF.Records.get(id)
-                if dot >= CFG.talkCone and rec and rec.alive and rec.faction ~= "CIV" and not rec.captured then
+                if dot >= CFG.talkCone then
                     local score = d - dot          -- (nearest, most in front)
                     if not bestScore or score < bestScore then best, bestScore = id, score end
                 end
             end
         end
     end
-    return best
+    return hover or best
 end
 
 local function typing()
@@ -586,7 +596,7 @@ local function typing()
 end
 
 Events.OnTick.Add(function()
-    if LF.tick % 6 ~= 2 then return end
+    if LF.tick % 2 ~= 0 then return end
     facingId = LF.try("talk target", talkTarget)
 end)
 
@@ -606,9 +616,9 @@ Events.OnPostUIDraw.Add(function()
         local body = LF.Bodies.get(facingId)
         if not (body and body:isOnScreen()) then return end
         local rec = LF.Records.get(facingId)
-        local x, y, z = body:getX(), body:getY(), body:getZ()
-        local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
+        local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
         local zoom = getCore():getZoom(0)
+        local head = LF.headHeight(body)
         local key = "E"
         pcall(function() key = Keyboard.getKeyName(getCore():getKey("Interact")) end)
         local font = UIFont.Dialogue or UIFont.Medium
@@ -618,8 +628,11 @@ Events.OnPostUIDraw.Add(function()
         if name then lead = lead .. " to " end
         local w1 = tm:MeasureStringX(font, lead)
         local w2 = name and tm:MeasureStringX(font, name) or 0
-        local left = sx - (w1 + w2) / 2
-        local ty = sy - 135 / zoom - tm:getFontHeight(font)
+        local left = math.floor(sx - (w1 + w2) / 2 + 0.5)
+        -- (Above his speech, if he is saying something.)
+        local n, lh = 0, 0
+        if LF.Tactics and LF.Tactics.speechLines then n, lh = LF.Tactics.speechLines(facingId) end
+        local ty = math.floor(sy - head / zoom - math.max(0, n - 1) * lh - tm:getFontHeight(font) - (n > 0 and 4 or 0) + 0.5)
         tm:DrawString(font, left + 1, ty + 1, lead, 0, 0, 0, 0.8)
         tm:DrawString(font, left, ty, lead, 1, 1, 1, 1)
         if name then

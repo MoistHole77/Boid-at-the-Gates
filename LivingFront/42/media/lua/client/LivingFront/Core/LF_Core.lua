@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.62.0"
+LF.VERSION = "0.62.1"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -125,6 +125,64 @@ end
 function LF.pick(list)
     return list[ZombRand(#list) + 1]
 end
+
+-- ---- text over a character ---------------------------------------------------------------------------
+-- Where a world point is on screen (UI pixels) the way the game places its own text over a
+-- character: from the camera offset the world was drawn with, shifted as the game shifts models
+-- so the camera's character lands on whole pixels. (isoToScreenX instead lines a point up with
+-- the floor tiles, a fraction of a pixel off the models: text drawn with it jiggles while the
+-- camera moves.)
+local function exactScreen(x, y, z, zoom)
+    local sx = (IsoUtils.XToScreen(x, y, z, 0) - IsoCamera.getOffX()) / zoom + IsoCamera.getScreenLeft(0)
+    local sy = (IsoUtils.YToScreen(x, y, z, 0) - IsoCamera.getOffY()) / zoom + IsoCamera.getScreenTop(0)
+    return sx, sy
+end
+local screenOk = nil
+function LF.screenOf(x, y, z)
+    local zoom = getCore():getZoom(0)
+    if screenOk ~= false then
+        local ok, sx, sy, fx, fy = pcall(function()
+            local ax, ay = exactScreen(x, y, z, zoom)
+            local p = getPlayer()
+            local qx, qy = ax, ay
+            if p then qx, qy = exactScreen(p:getX(), p:getY(), p:getZ(), zoom) end
+            return ax, ay, qx - math.floor(qx), qy - math.floor(qy)
+        end)
+        if ok and sx then
+            screenOk = true
+            return math.floor(sx - fx + 0.5), math.floor(sy - fy + 0.5)
+        end
+        screenOk = false
+        LF.log("text over characters: falling back to isoToScreen")
+    end
+    return isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
+end
+
+-- How high over a body his head is (UI pixels at zoom 1): standing, crouched, sitting, lying.
+-- Eased per body, so text over him glides down as he sits rather than dropping.
+local headNow, headTick = {}, {}
+function LF.headHeight(body)
+    if headTick[body] == LF.tick and headNow[body] then return headNow[body] end
+    headTick[body] = LF.tick
+    local target = 135
+    pcall(function()
+        if body:isOnFloor() or body:isKnockedDown() then target = 40
+        elseif LF.Idle and LF.Idle.isSitting(body) then target = 82
+        elseif body:isSneaking() then target = 108 end
+    end)
+    local cur = headNow[body] or target
+    cur = cur + (target - cur) * 0.15
+    if math.abs(target - cur) < 0.5 then cur = target end
+    headNow[body] = cur
+    return cur
+end
+Events.OnTick.Add(function()
+    if (LF.tick or 0) % 600 ~= 7 then return end
+    for b in pairs(headNow) do
+        local ok, dead = pcall(function() return b:isDead() or not b:getCurrentSquare() end)
+        if not ok or dead then headNow[b] = nil; headTick[b] = nil end
+    end
+end)
 
 function LF.dist(x1, y1, x2, y2)
     local dx, dy = x1 - x2, y1 - y2

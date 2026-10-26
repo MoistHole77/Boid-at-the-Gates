@@ -158,6 +158,14 @@ end
 
 -- Words spoken (not shouted) - a reply when you talk to him: wrapped over several lines above his
 -- head, on show for longer (seconds, default from its length).
+-- Lines of speech over him right now (0 if none), and their height.
+function LF.Tactics.speechLines(id)
+    local s = shouts[id]
+    if not s or LF.tick > s.untilTick then return 0, 0 end
+    local h = getTextManager():getFontHeight(s.lines and UIFont.Small or UIFont.Medium)
+    return s.lines and #s.lines or 1, h
+end
+
 -- (quiet: words still coming in, as he speaks - shown, not logged)
 function LF.Tactics.say(id, text, seconds, quiet)
     local rec = LF.Records.get(id)
@@ -179,20 +187,21 @@ local function drawShouts()
             shouts[id] = nil
         elseif body:isOnScreen() then
             local x, y, z = body:getX(), body:getY(), body:getZ()
-            local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
+            local sx, sy = LF.screenOf(x, y, z)
+            local head = LF.headHeight(body)
             local rec = LF.Records.get(id)
             local c = COLORS[rec and rec.faction or "CIV"] or COLORS.CIV
             local left = (s.untilTick - LF.tick) / (s.dur or CFG.shoutTicks)
             local a = math.min(1, left * 3)
             if s.lines then
                 local h = tm:getFontHeight(UIFont.Small)
-                local top = sy - 135 / zoom - (#s.lines - 1) * h
+                local top = sy - head / zoom - (#s.lines - 1) * h
                 for i, l in ipairs(s.lines) do
                     tm:DrawStringCentre(UIFont.Small, sx + 1, top + (i - 1) * h + 1, l, 0, 0, 0, a * 0.8)
                     tm:DrawStringCentre(UIFont.Small, sx, top + (i - 1) * h, l, 1, 1, 1, a)
                 end
             else
-                tm:DrawStringCentre(UIFont.Medium, sx, sy - 135 / zoom, s.text, c[1], c[2], c[3], a)
+                tm:DrawStringCentre(UIFont.Medium, sx, sy - head / zoom, s.text, c[1], c[2], c[3], a)
             end
         end
     end
