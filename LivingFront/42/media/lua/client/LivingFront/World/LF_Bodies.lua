@@ -133,13 +133,24 @@ local function managerPass()
     -- A squad stays together: while any of its men is within range of the player, the rest of
     -- them keep (or get) their bodies too, as long as the ground under them is loaded - so a long
     -- column doesn't lose its rear when the player walks on ahead.
+    -- (A platoon counts as one group: its squads and headquarters keep their bodies together.)
     local near = squadsNear
     for k in pairs(near) do near[k] = nil end
+    local groupOf = {}
+    local function group(sid)
+        local g = groupOf[sid]
+        if g == nil then
+            local u = LF.Units and LF.Units.get(sid)
+            g = (u and u.platoon) and ("p" .. u.platoon) or sid
+            groupOf[sid] = g
+        end
+        return g
+    end
     for id, rec in pairs(LF.Records.all()) do
         local body = bodies[id]
         if rec.squad and rec.alive and body and not body:isDead()
             and LF.distSq(body:getX(), body:getY(), px, py) <= despawnSq then
-            near[rec.squad] = true
+            near[group(rec.squad)] = true
         end
     end
     local cell = getCell()
@@ -159,12 +170,12 @@ local function managerPass()
             if LF.Units then LF.guard("succession", LF.Units.onDeath, rec) end
         elseif body then
             if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq
-                and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())) then
+                and not (rec.squad and near[group(rec.squad)] and loaded(body:getX(), body:getY(), body:getZ())) then
                 LF.Bodies.despawn(id)
             end
         elseif rec.alive and spawned < cfg.maxSpawnsPerPass then
             local d2 = LF.distSq(rec.x, rec.y, px, py)
-            if d2 < spawnSq or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
+            if d2 < spawnSq or (rec.squad and near[group(rec.squad)] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end
             end
         end

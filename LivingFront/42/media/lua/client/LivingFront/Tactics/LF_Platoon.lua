@@ -908,11 +908,29 @@ local function updateTake(p, m)
             if LF.Platoon.move(p, a.x, a.y, a.z) then m.pendingMove = nil end
             return
         end
-        -- At the assembly area, or the enemy met on the way: deploy.
+        -- At the assembly area, or the enemy met on the way: deploy. (Not every squad need be in:
+        -- once the main effort is there and half the platoon with it - or it has waited 30 s, or
+        -- anyone has waited 90 s - the lieutenant goes on. A squad that took the long way round,
+        -- or whose men aren't here, gets its orders where it is; 0.53 waited for it for ever.)
         local hx, hy = posOf(hqOf(p))
         local c = hx and platoonContact(p, hx, hy, 40)
-        if c then LF.Platoon.deploy(p, m, "contact on the way in")
-        elseif moveArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area") end
+        if c then LF.Platoon.deploy(p, m, "contact on the way in"); return end
+        if moveArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area"); return end
+        local n, inN, mainIn = 0, 0, false
+        for _, sq in ipairs(squadsOf(p)) do
+            n = n + 1
+            local M = LF.March.get(sq.id)
+            local done = M == nil or M.arrived == true
+            if done then inN = inN + 1 end
+            if done and sq.id == m.main then mainIn = true end
+        end
+        if inN > 0 and not m.firstIn then m.firstIn = LF.tick end
+        local waited = m.firstIn and LF.tick - m.firstIn or 0
+        if mainIn and (inN * 2 >= n or waited > 1800) then
+            LF.Platoon.deploy(p, m, string.format("at the assembly area, %d of %d squads in", inN, n))
+        elseif waited > 5400 then
+            LF.Platoon.deploy(p, m, string.format("waited long enough - %d of %d squads in", inN, n))
+        end
         return
     end
     local main = LF.Units.get(m.main)
