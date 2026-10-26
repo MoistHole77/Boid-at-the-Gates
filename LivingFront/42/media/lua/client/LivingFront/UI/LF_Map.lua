@@ -254,34 +254,28 @@ end
 local VIEW_WORDS = { truth = "The front as it really is", GER = "What the Germans believe", SOV = "What the Soviets believe" }
 LF.Map.VIEW_WORDS = VIEW_WORDS
 
-local function sectorQuad(api, key)
-    local x1, y1, x2, y2 = LF.Front.bounds(key)
-    return corners(api, x1, y1, x2, y2)
-end
-
 local function drawFront(ui, api, mini)
     local view = CFG.warView
     if view == "off" or not LF.Front then return end
     local side = (view == "GER" or view == "SOV") and view or nil
-    -- Sectors.
-    local list = {}
-    if side then
-        for key, b in pairs(LF.Front.belief(side)) do list[key] = b.owner end
-    else
-        for key, sec in pairs(LF.Front.sectors()) do list[key] = sec.contested and "contested" or sec.owner end
-    end
-    for key, o in pairs(list) do
+    -- Sectors: the ground round each objective, tinted by who holds it (in this view).
+    local own = LF.Front.owners(side or "truth")
+    local runs, edges = LF.Front.shapes()
+    for _, r in ipairs(runs) do
+        local o = own[r.key]
         local c = o and (COLORS[o] or (o == "contested" and COLORS.contested)) or nil
         if c then
-            local x1, y1, x2, y2, x3, y3, x4, y4 = sectorQuad(api, key)
+            local x1, y1, x2, y2, x3, y3, x4, y4 = corners(api, r.x1, r.y1, r.x2, r.y2)
             local a = o == "contested" and CFG.sectorFill * 1.6 or CFG.sectorFill
             ui:drawPolygon(nil, x1, y1, x2, y2, x3, y3, x4, y4, c[1], c[2], c[3], a)
-            if o == "contested" and not mini then
-                line(ui, x1, y1, x2, y2, 1, c[1], c[2], c[3], 0.6)
-                line(ui, x2, y2, x3, y3, 1, c[1], c[2], c[3], 0.6)
-                line(ui, x3, y3, x4, y4, 1, c[1], c[2], c[3], 0.6)
-                line(ui, x4, y4, x1, y1, 1, c[1], c[2], c[3], 0.6)
-            end
+        end
+    end
+    -- Borders between sectors, faint (the front line is drawn over them).
+    if not mini then
+        for _, e in ipairs(edges) do
+            local ax, ay = api:worldToUIX(e.x1, e.y1), api:worldToUIY(e.x1, e.y1)
+            local bx, by = api:worldToUIX(e.x2, e.y2), api:worldToUIY(e.x2, e.y2)
+            line(ui, ax, ay, bx, by, 1, 1, 1, 1, 0.25)
         end
     end
     -- The front line.

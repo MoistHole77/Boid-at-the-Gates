@@ -1,21 +1,24 @@
 -- Living Front: sectors, the front line, and what each side knows (roadmap phase 5, steps A and B).
 --
--- A. The ground is split into square sectors (CFG.size tiles). A sector exists once a unit or an
---    objective has been in it, so empty country costs nothing. Every pass (a few seconds) each
---    sector is HELD by the side with fit men in it, CONTESTED if both sides have, and otherwise
---    stays with whoever held it last - ground is yours until the enemy walks in. A held objective
---    holds its sector while no enemy is there. The front line is every edge between a German and
---    a Soviet sector; a sector changing hands is an event in the log ("sector").
+-- A. A SECTOR is the ground around an objective: every point within CFG.reach tiles of an
+--    objective belongs to the nearest one (so neighbouring objectives split the ground between
+--    them, and country far from any objective is no one's sector). A sector is held by whoever
+--    holds its objective, and contested while the objective is - walking in takes nothing: to
+--    take a sector and move the front line you have to take and hold its objective. The front
+--    line is every border between a German and a Soviet sector. A sector changing sides is an
+--    event in the log ("sector").
+--    The shapes are worked out on a CFG.cell-tile grid, once each time objectives are added,
+--    moved or removed (not every pass): strips to fill, and borders between sectors.
 --
 -- B. Neither side sees the truth. Each keeps SIGHTINGS of the enemy's units - where, how many fit
 --    men, when - refreshed when one of its units is within sight of them or in contact with them,
---    and forgotten after CFG.forget seconds. From those each side keeps its own BELIEF of who holds
---    each sector: its own ground it knows; enemy ground only where it has seen the enemy; and a
---    sector it last saw as the enemy's stays the enemy's in its mind until it sees otherwise.
---    So a side's map lags behind what really happened - the commanders (step C) will plan on it.
+--    and forgotten after CFG.forget seconds. Each side also keeps what it believes of every
+--    OBJECTIVE (holder, name): its own it knows, another only once one of its units has it in
+--    sight; otherwise as last seen. Its picture of the sectors follows from that, so a side's map
+--    lags behind what really happened - the commanders (step C) will plan on it.
 --
--- Cost: one pass over the units (not the men one by one more than once) every CFG.passTicks, and a
--- unit-to-unit sight check between the two sides; nothing per frame except drawing the map.
+-- Cost: one pass over the units every CFG.passTicks, a unit-to-unit sight check between the two
+-- sides, and a unit-to-objective one; the sector shapes only when the objectives change.
 
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
@@ -26,12 +29,12 @@ require "LivingFront/World/LF_Clash"
 LF.Front = LF.Front or {}
 
 local CFG = {
-    size = 50,              -- tiles a side
+    reach = 120,            -- tiles: an objective's sector reaches this far at most
+    cell = 10,              -- tiles: the grid the sector shapes are worked out on
     passTicks = 300,        -- how often sectors and sightings are brought up to date
-    sight = 40,             -- tiles: a unit sees an enemy unit this close (cover, buildings aside)
+    sight = 40,             -- tiles: a unit sees an enemy unit (or an objective) this close
     fresh = 600,            -- simulated seconds a sighting counts as fresh ...
     forget = 3 * 3600,      -- ... and is forgotten after
-    minMen = 1,             -- fit men that make a presence
 }
 LF.Front.CFG = CFG
 
@@ -41,8 +44,13 @@ LF.Front.ENEMY = ENEMY
 
 local function store()
     local d = LF.Records.data()
-    d.front = d.front or { sectors = {}, sight = { GER = {}, SOV = {} }, belief = { GER = {}, SOV = {} } }
+    d.front = d.front or {}
     local f = d.front
+    f.version = f.version or 0
+    if f.version < 2 then
+        -- (0.63's grid sectors are replaced by objective sectors: start their table afresh.)
+        f.sectors, f.belief, f.version = {}, { GER = {}, SOV = {} }, 2
+    end
     f.sectors = f.sectors or {}
     f.sight = f.sight or { GER = {}, SOV = {} }
     f.belief = f.belief or { GER = {}, SOV = {} }
@@ -50,30 +58,132 @@ local function store()
     return f
 end
 
--- ---- sectors ----------------------------------------------------------------------------------
+-- ---- sector shapes ------------------------------------------------------------------------------
 
-local function cellOf(x, y) return math.floor(x / CFG.size), math.floor(y / CFG.size) end
-local function keyOf(cx, cy) return cx .. "," .. cy end
-function LF.Front.keyAt(x, y) return keyOf(cellOf(x, y)) end
-function LF.Front.cellOfKey(key)
-    local a, b = key:match("^(%-?%d+),(%-?%d+)$")
-    return tonumber(a), tonumber(b)
-end
--- The square of a sector in world tiles: x1, y1, x2, y2.
-function LF.Front.bounds(key)
-    local cx, cy = LF.Front.cellOfKey(key)
-    return cx * CFG.size, cy * CFG.size, (cx + 1) * CFG.size, (cy + 1) * CFG.size
+local function centreOf(obj)
+    if obj.bounds then return (obj.bounds[1] + obj.bounds[3]) / 2, (obj.bounds[2] + obj.bounds[4]) / 2 end
+    return obj.x, obj.y
 end
 
-local function sector(key)
-    local S = store().sectors
-    local s = S[key]
-    if not s then s = { owner = nil, since = LF.simTime }; S[key] = s end
-    return s
+local shape = { sig = nil, cells = {}, runs = {}, edges = {} }
+
+-- A fingerprint of the objectives' places: the shapes are worked out again when it changes.
+local function signature()
+    local parts = {}
+    for id, obj in pairs(LF.Objective.all()) do
+        local x, y = centreOf(obj)
+        parts[#parts + 1] = tostring(id) .. "@" .. math.floor(x) .. "," .. math.floor(y)
+    end
+    table.sort(parts)
+    return table.concat(parts, ";")
 end
 
--- Runtime picture of this pass: key -> { GER = fit men, SOV = fit men, units = { ... } }
-local present = {}
+local function rebuild()
+    local C, R = CFG.cell, CFG.reach
+    local objs = {}
+    for id, obj in pairs(LF.Objective.all()) do
+        local x, y = centreOf(obj)
+        objs[#objs + 1] = { key = tostring(id), x = x, y = y }
+    end
+    -- Each cell within reach of an objective: the nearest one's.
+    local cells = {}
+    local reachSq = R * R
+    for _, o in ipairs(objs) do
+        local cx1, cy1 = math.floor((o.x - R) / C), math.floor((o.y - R) / C)
+        local cx2, cy2 = math.floor((o.x + R) / C), math.floor((o.y + R) / C)
+        for cy = cy1, cy2 do
+            local row = cells[cy]
+            if not row then row = {}; cells[cy] = row end
+            for cx = cx1, cx2 do
+                if row[cx] == nil then
+                    local px, py = (cx + 0.5) * C, (cy + 0.5) * C
+                    local best, bd = nil, reachSq
+                    for _, q in ipairs(objs) do
+                        local d = LF.distSq(px, py, q.x, q.y)
+                        if d <= bd then best, bd = q.key, d end
+                    end
+                    row[cx] = best or false
+                end
+            end
+        end
+    end
+    -- Strips: a row's run of cells of one sector, as one box to fill.
+    local runs = {}
+    for cy, row in pairs(cells) do
+        local xs = {}
+        for cx in pairs(row) do xs[#xs + 1] = cx end
+        table.sort(xs)
+        local start, key, last = nil, nil, nil
+        local function flush()
+            if key then runs[#runs + 1] = { key = key, x1 = start * C, y1 = cy * C, x2 = (last + 1) * C, y2 = (cy + 1) * C } end
+        end
+        for _, cx in ipairs(xs) do
+            local k = row[cx]
+            if k and k == key and cx == last + 1 then last = cx
+            else
+                flush()
+                if k then start, key, last = cx, k, cx else key = nil end
+            end
+        end
+        flush()
+    end
+    -- Borders between two sectors (a, b), joined into straight runs.
+    local edges = {}
+    local function keyAtCell(cx, cy) local row = cells[cy]; return row and row[cx] or false end
+    for cy, row in pairs(cells) do
+        for cx, k in pairs(row) do
+            if k then
+                local r = keyAtCell(cx + 1, cy)
+                if r and r ~= k then edges[#edges + 1] = { a = k, b = r, x1 = (cx + 1) * C, y1 = cy * C, x2 = (cx + 1) * C, y2 = (cy + 1) * C } end
+                local d = keyAtCell(cx, cy + 1)
+                if d and d ~= k then edges[#edges + 1] = { a = k, b = d, x1 = cx * C, y1 = (cy + 1) * C, x2 = (cx + 1) * C, y2 = (cy + 1) * C } end
+            end
+        end
+    end
+    -- (Join neighbouring pieces of the same border into one line: fewer lines to draw.)
+    table.sort(edges, function(p, q)
+        local pv, qv = p.x1 == p.x2, q.x1 == q.x2
+        if pv ~= qv then return pv end
+        if pv then
+            if p.x1 ~= q.x1 then return p.x1 < q.x1 end
+            return p.y1 < q.y1
+        end
+        if p.y1 ~= q.y1 then return p.y1 < q.y1 end
+        return p.x1 < q.x1
+    end)
+    local joined = {}
+    for _, e in ipairs(edges) do
+        local l = joined[#joined]
+        if l and l.a == e.a and l.b == e.b and l.x2 == e.x1 and l.y2 == e.y1 and ((l.x1 == l.x2) == (e.x1 == e.x2)) then
+            l.x2, l.y2 = e.x2, e.y2
+        else
+            joined[#joined + 1] = { a = e.a, b = e.b, x1 = e.x1, y1 = e.y1, x2 = e.x2, y2 = e.y2 }
+        end
+    end
+    shape.cells, shape.runs, shape.edges = cells, runs, joined
+    LF.log("FRONT sectors laid out: " .. #objs .. " objective(s), " .. #runs .. " strips, " .. #joined .. " border lines")
+end
+
+local function ensureShape()
+    if shape.checked == LF.tick and shape.sig then return end     -- (once a tick is plenty)
+    shape.checked = LF.tick
+    local sig = signature()
+    if sig ~= shape.sig then
+        shape.sig = sig
+        LF.guard("front shapes", rebuild)
+    end
+end
+
+-- The sector at a point (its key: the objective's id as a string), or nil.
+function LF.Front.keyAt(x, y)
+    ensureShape()
+    local row = shape.cells[math.floor(y / CFG.cell)]
+    local k = row and row[math.floor(x / CFG.cell)]
+    return k or nil
+end
+
+-- ---- who holds what -------------------------------------------------------------------------------
+
 local units = {}            -- this pass: { u, x, y, fit, faction }
 
 -- The fighting units, where their men are, and how many are fit.
@@ -101,44 +211,37 @@ local function survey()
 end
 
 local function updateSectors()
-    present = {}
+    ensureShape()
+    local S = store().sectors
+    -- Who is in each (for the commanders: how many fit men of each side).
+    local men = {}
     for _, e in ipairs(units) do
-        if e.fit >= CFG.minMen then
-            local key = LF.Front.keyAt(e.x, e.y)
-            local p = present[key] or { GER = 0, SOV = 0 }
-            p[e.faction] = p[e.faction] + e.fit
-            present[key] = p
+        local key = LF.Front.keyAt(e.x, e.y)
+        if key then
+            local m = men[key] or { GER = 0, SOV = 0 }
+            m[e.faction] = m[e.faction] + e.fit
+            men[key] = m
         end
     end
-    -- Objectives hold their ground.
-    local held = {}
-    for _, obj in pairs(LF.Objective.all()) do
-        local key = LF.Front.keyAt(obj.x, obj.y)
-        sector(key)
-        if obj.holder and ENEMY[obj.holder] and not obj.contested then held[key] = obj.holder end
-    end
-    for key in pairs(present) do sector(key) end
-    for key, s in pairs(store().sectors) do
-        local p = present[key]
-        local g, v = p and p.GER or 0, p and p.SOV or 0
-        local owner, contested = s.owner, false
-        if g > 0 and v > 0 then contested = true
-        elseif g > 0 then owner = "GER"
-        elseif v > 0 then owner = "SOV"
-        elseif held[key] then owner = held[key] end
+    for id, obj in pairs(LF.Objective.all()) do
+        local key = tostring(id)
+        local s = S[key]
+        if not s then s = { owner = nil, since = LF.simTime }; S[key] = s end
+        local owner = (obj.holder and ENEMY[obj.holder]) and obj.holder or nil
         if owner ~= s.owner then
-            local x1, y1, x2, y2 = LF.Front.bounds(key)
-            -- (Only ground changing sides is news: a march claiming empty country is not, and would
-            -- crowd the fights out of the event log.)
             if s.owner and owner and LF.Clash and LF.Clash.note then
-                LF.log("FRONT sector " .. key .. " taken: " .. s.owner .. " -> " .. owner)
-                LF.Clash.note("sector", { sector = key, from = s.owner, to = owner,
-                                          x = math.floor((x1 + x2) / 2), y = math.floor((y1 + y2) / 2) })
+                local x, y = centreOf(obj)
+                LF.log("FRONT the sector of " .. (obj.name or "?") .. " taken: " .. s.owner .. " -> " .. owner)
+                LF.Clash.note("sector", { sector = key, obj = id, from = s.owner, to = owner, x = math.floor(x), y = math.floor(y) })
             end
             s.owner, s.since = owner, LF.simTime
         end
-        s.contested = contested or nil
-        s.men = p and { GER = g, SOV = v } or nil
+        s.contested = obj.contested and true or nil
+        s.name = obj.name
+        s.men = men[key]
+    end
+    for key in pairs(S) do
+        if not LF.Objective.get(tonumber(key)) then S[key] = nil end
     end
 end
 
@@ -212,36 +315,6 @@ function LF.Front.believedEnemy(side, key)
     return men, newest
 end
 
-local function updateBelief()
-    for _, side in ipairs(SIDES) do
-        local B = store().belief[side]
-        local enemy = ENEMY[side]
-        -- Fresh enemy, per sector.
-        local seen = {}
-        for _, s in pairs(store().sight[side]) do
-            if LF.simTime - s.at <= CFG.fresh then
-                local key = LF.Front.keyAt(s.x, s.y)
-                seen[key] = (seen[key] or 0) + s.men
-            end
-        end
-        for key, sec in pairs(store().sectors) do
-            local mine = sec.men and sec.men[side] or 0
-            local b = B[key]
-            local was = b and b.owner
-            local now = was
-            if mine > 0 and (seen[key] or 0) > 0 then now = "contested"
-            elseif mine > 0 then now = side
-            elseif (seen[key] or 0) > 0 then now = enemy
-            elseif sec.owner == side then now = side            -- (our own ground we know is ours)
-            elseif was == "contested" then now = enemy          -- (we left it with them in it)
-            end
-            if now ~= was or not b then
-                B[key] = { owner = now, at = LF.simTime }
-            end
-        end
-    end
-end
-
 -- What each side believes of each objective: who holds it and what it is called. Its own it
 -- knows; another it learns by having a unit within sight of it; otherwise it remembers what it
 -- last saw (a new objective: as it stood when it appeared).
@@ -270,13 +343,27 @@ local function updateObjectives()
     end
 end
 
+-- A side's picture of the sectors: who it believes holds each objective.
+local function updateBelief()
+    for _, side in ipairs(SIDES) do
+        local B, OB = {}, store().objBelief[side]
+        for id in pairs(LF.Objective.all()) do
+            local b = OB[id]
+            if b then
+                B[tostring(id)] = { owner = b.contested and "contested" or ((b.holder and ENEMY[b.holder]) and b.holder or nil), at = b.at }
+            end
+        end
+        store().belief[side] = B
+    end
+end
+
 local function pass()
     units = survey()
     updateSectors()
     readEvents()
     updateSightings()
-    updateBelief()
     updateObjectives()
+    updateBelief()
 end
 
 -- What a side believes of an objective: { holder, name, contested, at } (nil: never heard of it).
@@ -289,7 +376,7 @@ Events.OnTick.Add(function()
     if LF.tick % CFG.passTicks ~= 151 then return end
     LF.guard("front", pass)
 end)
-Events.OnInitGlobalModData.Add(function() lastSeq = nil; present = {}; units = {} end)
+Events.OnInitGlobalModData.Add(function() lastSeq = nil; units = {}; shape.sig = nil end)
 
 -- ---- for the map and the commanders -----------------------------------------------------------
 
@@ -304,30 +391,32 @@ function LF.Front.owner(key)
     return s.owner, s.contested == true
 end
 
--- The front line: the edges between sectors held by the two sides, as { x1, y1, x2, y2 } in tiles.
--- view: "truth", or a side ("GER" / "SOV") for the line as that side believes it is.
-function LF.Front.line(view)
+-- Who holds each sector, in a view: "truth", or a side ("GER" / "SOV") for what it believes.
+-- key -> "GER" / "SOV" / "contested" / nil.
+function LF.Front.owners(view)
     local own = {}
     if view == "GER" or view == "SOV" then
         for key, b in pairs(store().belief[view]) do own[key] = b.owner end
     else
         for key, s in pairs(store().sectors) do own[key] = s.contested and "contested" or s.owner end
     end
+    return own
+end
+
+-- The sector shapes, to draw: strips { key, x1, y1, x2, y2 } and borders { a, b, x1, y1, x2, y2 }.
+function LF.Front.shapes()
+    ensureShape()
+    return shape.runs, shape.edges
+end
+
+-- The front line in a view: the borders between a German and a Soviet sector.
+function LF.Front.line(view)
+    local own = LF.Front.owners(view)
     local out = {}
-    local size = CFG.size
-    for key, o in pairs(own) do
-        if o == "GER" then
-            local cx, cy = LF.Front.cellOfKey(key)
-            for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
-                if own[keyOf(cx + d[1], cy + d[2])] == "SOV" then
-                    local x1, y1 = cx * size, cy * size
-                    if d[1] == 1 then out[#out + 1] = { x1 + size, y1, x1 + size, y1 + size }
-                    elseif d[1] == -1 then out[#out + 1] = { x1, y1, x1, y1 + size }
-                    elseif d[2] == 1 then out[#out + 1] = { x1, y1 + size, x1 + size, y1 + size }
-                    else out[#out + 1] = { x1, y1, x1 + size, y1 } end
-                end
-            end
-        end
+    local _, edges = LF.Front.shapes()
+    for _, e in ipairs(edges) do
+        local a, b = own[e.a], own[e.b]
+        if (a == "GER" and b == "SOV") or (a == "SOV" and b == "GER") then out[#out + 1] = { e.x1, e.y1, e.x2, e.y2 } end
     end
     return out
 end
