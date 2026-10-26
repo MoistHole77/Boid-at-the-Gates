@@ -54,7 +54,8 @@ local CFG = {
     updateTicks = 60,
     earshot = 30,           -- the lieutenant's voice
     runnerReach = 5,        -- the platoon sergeant hands an order over this close
-    runnerTimeout = 3600,   -- ~60 s: an order that hasn't arrived is given up on
+    runnerPace = 2.5,       -- a runner (or the lieutenant) off-screen covers this many tiles a simulated second
+    runnerGiveUp = 300,     -- simulated seconds: an order still not delivered is dropped
     ltBehind = 10,          -- the lieutenant watches from this far behind the main effort's sergeant
     ssgtBehind = 3,         -- the platoon sergeant this far behind it
     rtoBeside = 1.8,
@@ -76,11 +77,19 @@ local CFG = {
 }
 LF.Platoon.CFG = CFG
 
-local state = {}            -- platoon id -> { queue = {orders}, runner = {...}, walkTo } (runtime)
+-- The orders in hand - queue, runner, walkTo - are saved on the platoon (p.orders, 0.55); the
+-- points the headquarters look at, which carry methods, are runtime only.
+local state = {}            -- platoon id -> { patrolFaces } (runtime)
 Events.OnInitGlobalModData.Add(function() state = {} end)
-local function S(p)
+local function RT(p)
     local s = state[p.id]
-    if not s then s = { queue = {} }; state[p.id] = s end
+    if not s then s = {}; state[p.id] = s end
+    return s
+end
+local function S(p)
+    local s = p.orders
+    if not s then s = { queue = {} }; p.orders = s end
+    s.queue = s.queue or {}
     return s
 end
 
@@ -376,18 +385,8 @@ end
 local function apply(p, o)
     local squad = LF.Units.get(o.squad)
     if not squad then return end
-    -- Its men aren't here (bodies only exist near you): the order waits for them.
-    if o.kind ~= "dig" and o.kind ~= "withdraw" and not cmdBodyOf(squad) then
-        local s = S(p)
-        s.waiting = s.waiting or {}
-        for i = #s.waiting, 1, -1 do if s.waiting[i].squad == o.squad then table.remove(s.waiting, i) end end
-        s.waiting[#s.waiting + 1] = o
-        if not o.waitLogged then
-            o.waitLogged = true
-            LF.log("PLATOON " .. p.name .. ": " .. squad.name .. "'s men aren't here yet - its order (" .. o.kind .. ") waits for them")
-        end
-        return
-    end
+    -- (Since 0.55 an order is carried out whether or not the men are near you: off-screen it
+    -- runs on the unit's state - LF_March, LF_Objective.)
     local obj = o.obj and LF.Objective.get(o.obj)
     LF.log("PLATOON " .. p.name .. ": " .. squad.name .. " has its orders - " .. o.kind)
     if o.kind == "take" and obj then
@@ -454,19 +453,50 @@ local function apply(p, o)
     end
 end
 
+-- Where a man is: his body, or his record off-screen. x, y or nil.
+local function recPos(id)
+    local b = bodyOf(id)
+    if b then return b:getX(), b:getY() end
+    local r = id and LF.Records.get(id)
+    if r and r.alive then return r.x, r.y end
+    return nil
+end
+
+-- Can the squad's sergeant hear the commander? (Off-screen too: by where their records are.)
+local function inEarshot(cmd, squad)
+    local cx, cy = nil, nil
+    if cmd then cx, cy = recPos(cmd.id) end           -- (both values: "cmd and recPos()" keeps only x)
+    local sx, sy = posOf(squad)
+    if not (cx and sx) then return true, 0 end
+    local d = LF.dist(cx, cy, sx, sy)
+    return d <= CFG.earshot, d
+end
+
+-- A man with no body here walks (off-screen) toward (tx, ty) at the runner's pace; at is the
+-- simulated time he was last moved. Returns the new time.
+local function walkOffscreen(id, tx, ty, at)
+    local r = LF.Records.get(id)
+    if not (r and r.alive) or bodyOf(id) then return LF.simTime end
+    local dt = LF.simTime - (at or LF.simTime)
+    if dt <= 0 then return LF.simTime end
+    local d = LF.dist(r.x, r.y, tx, ty)
+    local step = math.min(d, CFG.runnerPace * dt)
+    if d > 0.01 then r.x, r.y = r.x + (tx - r.x) / d * step, r.y + (ty - r.y) / d * step end
+    return LF.simTime
+end
+
 -- Give an order: by voice if its sergeant can hear the lieutenant, else by runner.
 local function issue(p, o)
     local cmd = commander(p)
-    local cb = cmd and bodyOf(cmd.id)
     local squad = LF.Units.get(o.squad)
-    local sb = cmdBodyOf(squad)
-    if not (cb and sb) or LF.dist(cb:getX(), cb:getY(), sb:getX(), sb:getY()) <= CFG.earshot then
-        if cb then shout(cmd.id, o.words) end
+    if not squad then return end
+    local near, d = inEarshot(cmd, squad)
+    if not cmd or near then
+        if cmd then shout(cmd.id, o.words) end
         apply(p, o)
         return
     end
-    LF.log("PLATOON " .. p.name .. ": " .. squad.name .. " is out of earshot (" .. math.floor(LF.dist(cb:getX(), cb:getY(), sb:getX(), sb:getY()))
-        .. " tiles) - the order goes by runner")
+    LF.log("PLATOON " .. p.name .. ": " .. squad.name .. " is out of earshot (" .. math.floor(d) .. " tiles) - the order goes by runner")
     local s = S(p)
     -- (A newer order to the same squad replaces one still waiting.)
     for i = #s.queue, 1, -1 do if s.queue[i].squad == o.squad then table.remove(s.queue, i) end end
@@ -476,61 +506,64 @@ end
 local function short(squad) return (squad.name:gsub("^.* / ", "")) end
 
 -- Orders on their way: the platoon sergeant runs them over; without him the lieutenant walks
--- until his sergeant can hear him.
+-- until his sergeant can hear him. Off-screen the runner (or the lieutenant) walks on his record
+-- at CFG.runnerPace, so a far order takes as long to arrive as it would in front of you.
 local function deliver(p)
     local s = S(p)
     local cmd = commander(p)
-    local cb = cmd and bodyOf(cmd.id)
-    -- Orders waiting for a squad's men to be here.
-    if s.waiting and #s.waiting > 0 then
-        local w = s.waiting
-        s.waiting = {}
-        for _, o in ipairs(w) do apply(p, o) end
-    end
+    s.waiting = nil                 -- (orders waiting for bodies: before 0.55)
     if s.runner then
         local r = s.runner
-        local rb = bodyOf(r.id)
+        local rr = LF.Records.get(r.id)
         local squad = LF.Units.get(r.order.squad)
-        local sb = cmdBodyOf(squad)
-        if not rb or not squad then
+        if not (rr and rr.alive and fit(rr)) or not squad then
             -- The runner is down: the order waits for another way.
             table.insert(s.queue, 1, r.order)
             s.runner = nil
-        elseif not sb then
-            apply(p, r.order); s.runner = nil
-        elseif LF.dist(rb:getX(), rb:getY(), sb:getX(), sb:getY()) <= CFG.runnerReach then
+            return
+        end
+        local rx, ry = recPos(r.id)
+        local sx, sy = posOf(squad)
+        if not sx then apply(p, r.order); s.runner = nil; return end
+        if LF.dist(rx, ry, sx, sy) <= CFG.runnerReach then
             shout(r.id, "From the lieutenant: " .. r.order.words)
-            LF.log("PLATOON " .. p.name .. ": " .. title(LF.Records.get(r.id)) .. " delivers the order to " .. squad.name)
+            LF.log("PLATOON " .. p.name .. ": " .. title(rr) .. " delivers the order to " .. squad.name
+                .. string.format(" (%.0f s after setting off%s)", LF.simTime - (r.sinceSim or LF.simTime), bodyOf(r.id) and "" or ", off-screen"))
             apply(p, r.order)
             s.runner = nil
-        elseif LF.tick - r.since > CFG.runnerTimeout then
+        elseif LF.simTime - (r.sinceSim or LF.simTime) > CFG.runnerGiveUp then
             LF.log("PLATOON " .. p.name .. ": the runner never got through to " .. squad.name .. " - order dropped")
             s.runner = nil
+        else
+            r.simAt = walkOffscreen(r.id, sx, sy, r.simAt)
         end
         return
     end
     local o = s.queue[1]
     if not o then s.walkTo = nil; return end
     local squad = LF.Units.get(o.squad)
-    local sb = cmdBodyOf(squad)
     if not squad then table.remove(s.queue, 1); return end
-    if not (cb and sb) or LF.dist(cb:getX(), cb:getY(), sb:getX(), sb:getY()) <= CFG.earshot then
+    local near = inEarshot(cmd, squad)
+    if not cmd or near then
         table.remove(s.queue, 1)
         s.walkTo = nil
-        if cb then shout(cmd.id, o.words) end
+        if cmd then shout(cmd.id, o.words) end
         apply(p, o)
         return
     end
     local ss = ssgtOf(p)
-    local sbody = ss and fit(ss) and bodyOf(ss.id)
-    if sbody then
+    if ss and fit(ss) then
         table.remove(s.queue, 1)
-        s.runner = { id = ss.id, order = o, since = LF.tick }
+        s.runner = { id = ss.id, order = o, sinceSim = LF.simTime, simAt = LF.simTime }
         s.walkTo = nil
-        LF.log("PLATOON " .. p.name .. ": " .. title(ss) .. " runs the order to " .. squad.name)
+        LF.log("PLATOON " .. p.name .. ": " .. title(ss) .. " runs the order to " .. squad.name .. (bodyOf(ss.id) and "" or " (off-screen)"))
         shout(ss.id, "I'll take it to " .. short(squad) .. "!")
     else
+        -- No runner: the lieutenant goes himself (off-screen, on his record).
+        if s.walkTo ~= squad.id then s.walkAt = LF.simTime end
         s.walkTo = squad.id
+        local sx, sy = posOf(squad)
+        if sx then s.walkAt = walkOffscreen(cmd.id, sx, sy, s.walkAt) end
     end
 end
 
@@ -644,20 +677,26 @@ function LF.Platoon.hold(p, obj)
     setHQStance(p, "offensive")
     issue(p, { squad = main.id, kind = "hold", obj = obj.id, words = short(main) .. ", hold that " .. (obj.building and "building" or "ground") .. "!" })
     -- Each other squad: the nearest building within reach not already given out; else it digs in.
+    -- (Buildings by the map's outlines, so this works off-screen too.)
+    local function bkey(x, y)
+        local def = LF.Objective.metaDefAt(x, y)
+        if not def then return nil end
+        local ok, bx, by = pcall(function() return def:getX(), def:getY() end)
+        return ok and (tostring(bx) .. "," .. tostring(by)) or nil
+    end
     local used = {}
-    if obj.building then used[obj.building] = true end
+    local own = bkey(obj.anchor and obj.anchor[1] or obj.x, obj.anchor and obj.anchor[2] or obj.y)
+    if own then used[own] = true end
     for _, second in ipairs(others) do
         local o2 = nil
         for r = 8, CFG.holdNear, 3 do
             for k = 0, 15 do
                 local a = k * math.pi / 8
                 local x, y = math.floor(obj.x + math.cos(a) * r), math.floor(obj.y + math.sin(a) * r)
-                local id = not o2 and LF.Building.idAt(x, y, obj.z)
-                if id and not used[id] then
-                    local exists = nil
-                    for _, oo in pairs(LF.Objective.all()) do if oo.building == id then exists = oo end end
-                    o2 = exists or LF.Objective.create(x, y, obj.z)
-                    if o2 then used[id] = true end
+                local key = not o2 and bkey(x, y)
+                if key and not used[key] then
+                    o2 = LF.Objective.atPoint(x, y) or LF.Objective.create(x, y, obj.z)
+                    if o2 then used[key] = true end
                 end
             end
             if o2 then break end
@@ -1025,10 +1064,55 @@ end
 
 -- The headquarters' men with no body, on a move with the squads abreast: kept at the centre rear
 -- with them (in a file they are in the march itself - LF_March).
+-- Off-screen with a mission and no move: where the headquarters' men would be - the lieutenant
+-- behind the main effort's sergeant (or in the objective once it is taken or held, or at the
+-- rally point when withdrawing), his radio operator beside him, the platoon sergeant just behind
+-- the main effort. They walk there at the runner's pace. (The runner and a lieutenant carrying
+-- an order himself are moved by deliver.)
+local function hqMissionOffscreen(p, hq)
+    local m = p.mission
+    if not m then return end
+    local s, rt = S(p), RT(p)
+    rt.hqAt = rt.hqAt or {}
+    local obj = m.obj and LF.Objective.get(m.obj)
+    local lx, ly, sgx, sgy
+    if m.kind == "withdraw" or m.kind == "rally" then
+        lx, ly = m.x, m.y
+    elseif obj and (m.phase == "taken" or m.kind == "hold") then
+        lx, ly = obj.x, obj.y
+    else
+        local mx, my = posOf(LF.Units.get(p.mainEffort))
+        if not mx then return end
+        local ax, ay = obj and obj.x or mx + (p.facingX or 1) * 10, obj and obj.y or my + (p.facingY or 0) * 10
+        local dx, dy = mx - ax, my - ay
+        local d = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+        lx, ly = mx + dx / d * CFG.ltBehind, my + dy / d * CFG.ltBehind
+        sgx, sgy = mx + dx / d * CFG.ssgtBehind, my + dy / d * CFG.ssgtBehind
+    end
+    for _, rid in ipairs(LF.Units.members(hq.id)) do
+        local r = LF.Records.get(rid)
+        local busy = (s.runner and s.runner.id == rid) or (s.walkTo and rid == hq.leader)
+        if r and r.alive and not bodyOf(rid) and not busy then
+            local tx, ty = lx, ly
+            if rid ~= hq.leader then
+                if r.hqRole == "ssgt" and sgx then tx, ty = sgx, sgy
+                elseif r.hqRole == "rto" then tx, ty = lx + CFG.rtoBeside, ly
+                else tx, ty = lx - 2.5, ly end
+            end
+            rt.hqAt[rid] = walkOffscreen(rid, tx, ty, rt.hqAt[rid])
+        else
+            rt.hqAt[rid] = nil
+        end
+    end
+end
+
 local function hqOffscreen(p)
-    if not (p.move and p.move.mode == "abreast") then return end
     local hq = hqOf(p)
     if not hq then return end
+    if not (p.move and p.move.mode == "abreast") then
+        if not p.move then hqMissionOffscreen(p, hq) end
+        return
+    end
     local px, py = patrolSpot(p)
     if not px then return end
     local fx, fy = p.facingX or 1, p.facingY or 0
@@ -1124,7 +1208,7 @@ function LF.Platoon.place(rec)
                 f, l = o[1], o[2]
             end
             local x, y = px + fx * f - fy * l, py + fy * f + fx * l
-            local st = S(p)
+            local st = RT(p)
             st.patrolFaces = st.patrolFaces or {}
             local face = st.patrolFaces[rec.id]
             if not face then
@@ -1151,8 +1235,8 @@ function LF.Platoon.place(rec)
         end
         -- Going to give an order himself.
         if s.walkTo then
-            local sb = cmdBodyOf(LF.Units.get(s.walkTo))
-            if sb then return "move", sb:getX(), sb:getY(), math.floor(sb:getZ()), point end
+            local wx, wy, wz = posOf(LF.Units.get(s.walkTo))       -- (off-screen too: where its record is)
+            if wx then return "move", wx, wy, math.floor(wz or z), point end
         end
         if m.kind == "withdraw" or m.kind == "rally" then
             local d = LF.dist(body:getX(), body:getY(), m.x, m.y)
@@ -1181,8 +1265,8 @@ function LF.Platoon.place(rec)
     local cb = cmd and bodyOf(cmd.id)
     if rec.hqRole == "ssgt" then
         if s.runner and s.runner.id == rec.id then
-            local sb = cmdBodyOf(LF.Units.get(s.runner.order.squad))
-            if sb then return "move", sb:getX(), sb:getY(), math.floor(sb:getZ()), point end
+            local wx, wy, wz = posOf(LF.Units.get(s.runner.order.squad))
+            if wx then return "move", wx, wy, math.floor(wz or z), point end
         end
         if not m then return nil end
         -- With the main effort, just behind its sergeant.

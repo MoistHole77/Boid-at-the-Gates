@@ -285,9 +285,13 @@ end
 
 LF.Objective.FACTION = FACTION
 
--- Is (x, y) at the objective (in its building, or within 8 tiles of its point)?
+-- Is (x, y) at the objective (in its building, or within 8 tiles of its point)? Where the ground
+-- isn't loaded (off-screen), by the building's footprint from the map.
 local function atObjective(obj, x, y, z)
-    if obj.building then return LF.Building.idAt(x, y, z or obj.z) == obj.building end
+    if obj.building and getCell():getGridSquare(math.floor(x), math.floor(y), math.floor(z or obj.z)) then
+        return LF.Building.idAt(x, y, z or obj.z) == obj.building
+    end
+    if obj.rects then return onFootprint(obj, x, y) end
     return LF.dist(x, y, obj.x, obj.y) <= 8
 end
 LF.Objective.at = atObjective
@@ -305,20 +309,46 @@ end
 
 -- ---- tasks ----------------------------------------------------------------------------------
 
--- Hold it: the defensive stance on the objective.
+-- Off-screen, the men without bodies move into the objective: each onto his own square of its
+-- footprint (2 tiles apart), so they get their bodies inside it when you come near. True if
+-- anyone was moved.
+local function settleInside(squad, obj)
+    local spots = {}
+    for _, r in ipairs(obj.rects or {}) do
+        for x = r[1] + 1, r[1] + r[3] - 1, 2 do
+            for y = r[2] + 1, r[2] + r[4] - 1, 2 do spots[#spots + 1] = { x + 0.5, y + 0.5 } end
+        end
+    end
+    if #spots == 0 then spots[1] = { obj.x, obj.y } end
+    local moved, i = 0, 0
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local rec = LF.Records.get(rid)
+        if rec and rec.alive and not LF.Bodies.get(rid) then
+            i = i + 1
+            local sp = spots[(i - 1) % #spots + 1]
+            rec.x, rec.y, rec.z = sp[1], sp[2], obj.z
+            moved = moved + 1
+        end
+    end
+    return moved > 0
+end
+LF.Objective.settleInside = settleInside
+
+-- Hold it: the defensive stance on the objective. (Men off-screen are put inside it.)
 function LF.Objective.hold(squad, obj)
     squad.objTask = { obj = obj.id, kind = "hold", phase = "hold", since = LF.tick }
     LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
+    if obj.building or obj.rects then settleInside(squad, obj) end
     LF.log("OBJECTIVE " .. squad.name .. " holds " .. obj.name)
 end
 
 -- Take it: patrol to the rally point short of it, then the assault.
 function LF.Objective.take(squad, obj)
     if LF.Join then LF.guard("join", LF.Join.gather, squad, "take") end     -- standing-by teams come along
-    local cid = LF.Units.commander(squad)
-    local cmd = cid and LF.Bodies.get(cid)
-    if not cmd then return false, "its commander isn't here" end
-    local dx, dy = cmd:getX() - obj.x, cmd:getY() - obj.y
+    -- (From where the squad is: its sergeant's body, or his record off-screen.)
+    local sx, sy = LF.Squad.anchor(squad.id)
+    if not sx then return false, "it has no one in command" end
+    local dx, dy = sx - obj.x, sy - obj.y
     local d = math.max(1, math.sqrt(dx * dx + dy * dy))
     local r = math.min(CFG.rallyDistance, d * 0.5)
     local rx, ry = obj.x + dx / d * r, obj.y + dy / d * r
@@ -452,11 +482,53 @@ function LF.Objective.planned(squad)
     return t ~= nil and t.kind == "take" and t.phase == "assault"
 end
 
+-- Off-screen (the sergeant has no body here): the task goes on by the unit's state. On the
+-- approach, the march arriving starts the assault (LF_March). In the assault, with no enemy at
+-- the objective, the men walk in and it is taken; with the enemy there, the squad waits at its
+-- rally point - off-screen fighting is not in yet (roadmap phase 3).
+local function updateTakeOffscreen(squad, obj)
+    local t = squad.objTask
+    if t.phase == "approach" then
+        local M = LF.March.get(squad.id)
+        if M and M.arrived then LF.Objective.onArrived(squad)
+        elseif not M and LF.Stance.get(squad).name ~= "patrolling" then
+            startAssault(squad, obj, "the approach ended (off-screen)")
+        end
+    elseif t.phase == "rally" then
+        startAssault(squad, obj, "at the rally point")
+    elseif t.phase == "assault" then
+        local c = whoIsThere(obj)
+        local ours, theirs = c[squad.faction] or 0, 0
+        for f, n in pairs(c) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
+        if theirs > 0 then
+            if not t.offscreenWait then
+                t.offscreenWait = true
+                LF.log("OBJECTIVE " .. squad.name .. ": " .. theirs .. " enemy at " .. obj.name .. " - off-screen it waits at its rally point (no off-screen fighting yet)")
+            end
+            return
+        end
+        t.offscreenWait = nil
+        if ours == 0 then
+            settleInside(squad, obj)
+            t.cleared = true
+            LF.log("OBJECTIVE " .. squad.name .. " walks into " .. obj.name .. " - nobody there (off-screen)")
+            return
+        end
+        obj.holder = squad.faction
+        rename(obj)
+        setPhase(squad, "hold", "no enemy at " .. obj.name .. " (off-screen)")
+        t.kind = "hold"
+        LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
+        LF.log("OBJECTIVE " .. obj.name .. " taken by the " .. (FACTION[squad.faction] or squad.faction) .. " (off-screen)")
+        if LF.Service then LF.guard("service objective", LF.Service.objectiveTaken, squad) end
+    end
+end
+
 local function updateTake(squad, obj)
     local t = squad.objTask
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
-    if not cmd then return end
+    if not cmd then return updateTakeOffscreen(squad, obj) end
     -- Has the squad seen anyone at the objective lately?
     for _, c in ipairs(LF.Squad.contactPoints(squad.id, 600, 24)) do
         if atObjective(obj, c.x, c.y, math.floor(c.z or obj.z)) then t.lastSeen = LF.tick; break end

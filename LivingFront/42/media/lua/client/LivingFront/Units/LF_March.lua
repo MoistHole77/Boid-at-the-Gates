@@ -52,25 +52,64 @@ local CFG = {
 }
 LF.March.CFG = CFG
 
-local marches = {}          -- squad id -> march (runtime)
-Events.OnInitGlobalModData.Add(function() marches = {} end)
-function LF.March.forgetAll() marches = {} end
+-- Marches are saved with the game (0.55): squad id -> march, in the mod's saved data. What
+-- can't be saved - the points the men look at, which carry methods - is kept apart (faces).
+local marches = nil
+local faces = {}            -- squad id -> rec id -> look point (runtime)
+local function loadMarches()
+    local data = LF.Records.data()
+    data.marches = data.marches or {}
+    marches = data.marches
+    -- The clocks restart with a load: nothing measured against the old ones may stand.
+    local n = 0
+    for _, M in pairs(marches) do
+        if not M.follow then
+            n = n + 1
+            M.headMovedAt, M.formAt, M.formCheck, M.wantSince = nil, 0, 0, nil
+            M.clock, M.clockMs, M.simAt, M.started = nil, nil, nil, 0
+        end
+    end
+    if n > 0 then LF.log("PATROL " .. n .. " march(es) resumed from the save") end
+end
+Events.OnInitGlobalModData.Add(function() marches = nil; faces = {} end)
+local function store()
+    if not marches then loadMarches() end
+    return marches
+end
+function LF.March.forgetAll()
+    LF.Records.data().marches = {}
+    marches = nil
+    faces = {}
+end
 
 -- A platoon moving in a ranger file or tactical column is one march: its lead squad's, with the
--- other squad and the headquarters behind it in the same file (M.lead, M.group). Every unit in it
--- finds the march under its own id; a follower's entry goes when the lead's march does.
+-- other squads and the headquarters behind it in the same file (M.lead, M.group). Each unit
+-- behind the lead has a stub { follow = lead id } under its own id, and finds the lead's march
+-- through it; the stub goes when the lead's march does.
 local function getM(id)
-    local M = id and marches[id]
-    if M and M.lead and M.lead ~= id and marches[M.lead] ~= M then marches[id] = nil; return nil end
+    if not id then return nil end
+    local ms = store()
+    local M = ms[id]
+    if M and M.follow then
+        local L = ms[M.follow]
+        if L and not L.follow and L.lead == M.follow then return L end
+        ms[id] = nil
+        return nil
+    end
     return M
 end
 LF.March.get = getM
 function LF.March.cancel(squadId)
-    local M = marches[squadId]
-    if M and M.group and M.lead == squadId then
-        for _, uid in ipairs(M.group) do if marches[uid] == M then marches[uid] = nil end end
+    local ms = store()
+    local M = ms[squadId]
+    if M and not M.follow and M.group and M.lead == squadId then
+        for _, uid in ipairs(M.group) do
+            local f = ms[uid]
+            if f and f.follow == squadId then ms[uid] = nil end
+        end
     end
-    marches[squadId] = nil
+    ms[squadId] = nil
+    faces[squadId] = nil
 end
 
 -- ---- roads ----------------------------------------------------------------------------------
@@ -586,7 +625,7 @@ local function advanceOffscreen(squad, M)
     if not M.final then
         local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
             { continuing = true, form = M.form, started = M.started })
-        if not ok then marches[squad.id] = nil end
+        if not ok then store()[squad.id] = nil end
         return
     end
     arrive(squad, cid, M)
@@ -596,12 +635,12 @@ end
 Events.OnTick.Add(function()
     if LF.tick % 30 ~= 11 then return end
     local due = {}
-    for sid, M in pairs(marches) do
-        if not M.lead or M.lead == sid then due[#due + 1] = sid end
+    for sid, M in pairs(store()) do
+        if not M.follow and (not M.lead or M.lead == sid) then due[#due + 1] = sid end
     end
     -- (Collected first: arriving can start other marches.)
     for _, sid in ipairs(due) do
-        local M = marches[sid]
+        local M = store()[sid]
         local squad = M and LF.Units.get(sid)
         local cid = squad and LF.Units.commander(squad)
         local cb = cid and LF.Bodies.get(cid)
@@ -719,14 +758,14 @@ function LF.March.order(squad, x, y, z, form, opts)
     M.started = (opts and opts.started) or LF.tick
     M.simAt = LF.simTime
     M.formAt = LF.tick
-    marches[squad.id] = M
+    store()[squad.id] = M
     -- A platoon in file: the units behind the lead squad march in it too.
     if squad.marchGroup and form ~= "wedge" then
         M.lead, M.group = squad.id, squad.marchGroup
         for _, uid in ipairs(squad.marchGroup) do
             local u = LF.Units.get(uid)
             if u then
-                marches[uid] = M
+                store()[uid] = { follow = squad.id }
                 if not (opts and opts.continuing) then
                     if u.kind == "hq" then u.stance = "patrolling"
                     elseif LF.Tactics and LF.Tactics.setStance then LF.Tactics.setStance(u, "patrolling") end
@@ -798,9 +837,10 @@ end
 function LF.March.place(rec)
     local M = rec.squad and getM(rec.squad)
     if not M or M.halted or not M.off[rec.id] then return nil end
-    M.faces = M.faces or {}
-    local f = M.faces[rec.id]
-    if not f then f = LF.Tactics.point(0, 0, M.z); M.faces[rec.id] = f end
+    local fs = faces[rec.squad]
+    if not fs then fs = {}; faces[rec.squad] = fs end
+    local f = fs[rec.id]
+    if not f then f = LF.Tactics.point(0, 0, M.z); fs[rec.id] = f end
     if not M.joined[rec.id] then
         local w = M.wait[rec.id]
         local x, y = placeOf(M, rec.id)
@@ -880,7 +920,7 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         LF.log("PATROL " .. squad.name .. ": quiet again - moving on")
         local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
             { continuing = true, form = M.form, started = M.started })
-        if not ok then marches[squad.id] = nil end
+        if not ok then store()[squad.id] = nil end
         return ok
     end
     if M.arrived then return true end
@@ -957,7 +997,7 @@ function LF.March.update(squad, cid, cmd, contact, quietTicks)
         -- End of a leg: on to the next, from where the point man is.
         local ok = LF.March.order(squad, M.x, M.y, M.z, M.auto and "auto" or M.form,
             { continuing = true, form = M.form, started = M.started })
-        if not ok then marches[squad.id] = nil end
+        if not ok then store()[squad.id] = nil end
         return ok
     end
     arrive(squad, cid, M)
