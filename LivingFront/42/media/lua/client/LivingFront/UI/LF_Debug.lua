@@ -615,6 +615,13 @@ local function onMenu(playerNum, context, worldObjects, test)
             typeMenu:addOption(t.label, nil, function() fn(key) end)
         end
     end
+    if LF.Map and LF.Map.CFG then
+        local on = LF.Map.CFG.trackers
+        tools:addOption("Unit trackers on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
+            LF.Map.CFG.trackers = not LF.Map.CFG.trackers
+            LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
+        end)
+    end
     tools:addOption("Platoon report (to the log)", nil, function()
         for _, p in pairs(LF.Units.all()) do
             if p.kind == "platoon" then LF.log("PLATOON REPORT " .. LF.Platoon.describe(p)) end

@@ -17,6 +17,7 @@ require "ISUI/Maps/ISMiniMap"
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Units/LF_Objective"
 require "LivingFront/Tactics/LF_Platoon"
+require "LivingFront/Units/LF_March"
 
 LF.Map = LF.Map or {}
 
@@ -26,7 +27,10 @@ local CFG = {
     nameZoom = 14.5,        -- names show from this zoom in (the map's own zoom scale)
     nameZoomMini = 16,
     nameScale = 2,          -- names drawn at twice the small font
+    trackers = true,        -- unit markers on the maps (for following off-screen fights)
+    unitLabelZoom = 13.5,   -- unit names and status from this zoom in (world map)
 }
+LF.Map.CFG = CFG
 
 local COLORS = {
     GER = { 0.55, 0.65, 0.82 },
@@ -132,8 +136,85 @@ local function detailLines(obj)
     return lines
 end
 
--- Draw every objective on a map UI (world map or minimap).
+-- ---- unit trackers -----------------------------------------------------------------------------
+-- Every squad and platoon headquarters, on- or off-screen: a marker where its men are (their
+-- bodies, or their records off-screen), a thin line to where it is marching, and - zoomed in on
+-- the world map - its name, fit men and what it is doing. Red outline: in a fight; amber: broken.
+
+local function unitPos(u)
+    local sx, sy, n, fit, total = 0, 0, 0, 0, 0
+    for _, rid in ipairs(LF.Units.members(u.id)) do
+        local r = LF.Records.get(rid)
+        if r then
+            total = total + 1
+            if r.alive then
+                local b = LF.Bodies.get(rid)
+                local x, y = r.x, r.y
+                if b and not b:isDead() then x, y = b:getX(), b:getY() end
+                sx, sy, n = sx + x, sy + y, n + 1
+                if not r.wounded then fit = fit + 1 end
+            end
+        end
+    end
+    if n == 0 then return nil end
+    return sx / n, sy / n, fit, total, n
+end
+
+local function unitStatus(u)
+    if u.offBroken and u.offBroken <= LF.simTime and LF.simTime - u.offBroken < 120 then return "broken", "broken" end
+    if LF.Clash and LF.Clash.inContact(u) then return "fighting", "fighting" end
+    local t = u.objTask
+    if t and t.kind == "take" then return "taking (" .. tostring(t.phase) .. ")" end
+    local M = LF.March.get(u.id)
+    if M and not M.arrived then return M.halted and "halted on the march" or "moving" end
+    if t and t.kind == "hold" then return "holding" end
+    if u.platoonTask and u.platoonTask ~= "patrol" then return u.platoonTask end
+    return u.stance or ""
+end
+
+local function shortName(u)
+    local n = u.name or "?"
+    n = n:gsub(" platoon (%d+) / ", " P%1/"):gsub(" platoon (%d+) HQ", " P%1 HQ"):gsub(" squad", "")
+    return n
+end
+
+local function drawUnits(ui, api, mini)
+    local zoom = api:getZoomF()
+    local labels = not mini and zoom >= CFG.unitLabelZoom
+    local font = UIFont.Small
+    local tm = getTextManager()
+    for _, u in pairs(LF.Units.all()) do
+        if ((u.kind == "squad" and not u.joined) or u.kind == "hq") then
+            local wx, wy, fit, total, alive = unitPos(u)
+            if wx then
+                local c = COLORS[u.faction] or COLORS.none
+                local sx, sy = api:worldToUIX(wx, wy), api:worldToUIY(wx, wy)
+                -- Where it is marching.
+                local M = LF.March.get(u.id)
+                if M and not M.arrived and M.x and not mini then
+                    local dx, dy = api:worldToUIX(M.x, M.y), api:worldToUIY(M.x, M.y)
+                    line(ui, sx, sy, dx, dy, 1, c[1], c[2], c[3], 0.55)
+                end
+                local word, flag = unitStatus(u)
+                local h = u.kind == "hq" and 3 or 4
+                ui:drawRect(sx - h, sy - h, h * 2, h * 2, 0.95, c[1], c[2], c[3])
+                local br, bg, bb = 0, 0, 0
+                if flag == "fighting" then br, bg, bb = 1, 0.15, 0.1 elseif flag == "broken" then br, bg, bb = 1, 0.7, 0.1 end
+                ui:drawRectBorder(sx - h - 1, sy - h - 1, h * 2 + 2, h * 2 + 2, 1, br, bg, bb)
+                if labels then
+                    local text = shortName(u) .. "  " .. fit .. "/" .. total .. (word ~= "" and ("  " .. word) or "")
+                    local fh = tm:getFontHeight(font)
+                    ui:drawText(text, sx + h + 4, sy - fh / 2 + 1, 0, 0, 0, 0.8, font)
+                    ui:drawText(text, sx + h + 3, sy - fh / 2, c[1], c[2], c[3], 1, font)
+                end
+            end
+        end
+    end
+end
+
+-- Draw every objective on a map UI (world map or minimap), and the unit trackers.
 local function drawAll(ui, api, mini)
+    if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
     local list = LF.Objective.all()
     local any = false
     for _ in pairs(list) do any = true; break end

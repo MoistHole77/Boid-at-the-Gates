@@ -819,13 +819,44 @@ function LF.Platoon.stopMove(p)
     if hq and hq.stance == "patrolling" then hq.stance = "offensive" end
 end
 
--- Has the platoon got where it was moving to?
+-- The head of a platoon's file has arrived: the file closes up. Each squad marches to its own
+-- spot side by side across the line of march at the destination (CFG.abreastGap apart), the
+-- headquarters in the centre behind them - so the lieutenant has every sergeant within earshot
+-- before he gives his orders. (A file of 43 men is over 100 tiles long; left as it halted, its
+-- rear was out of earshot and every order went by runner, one at a time.)
+function LF.Platoon.closeUp(p)
+    local mv = p.move
+    if not mv or mv.closing then return end
+    local fx, fy = p.facingX or 1, p.facingY or 0
+    local rx, ry = -fy, fx
+    local rifles, mg = rolesFor(p)
+    local order = {}
+    for _, s2 in ipairs(rifles) do order[#order + 1] = s2 end
+    if mg then order[#order + 1] = mg end
+    if mv.lead then LF.March.cancel(mv.lead) end
+    local n = #order
+    for i, sq in ipairs(order) do
+        sq.marchGroup = nil
+        local l = (i - (n + 1) / 2) * CFG.abreastGap
+        local tx, ty = math.floor(mv.x + rx * l), math.floor(mv.y + ry * l)
+        local ok, why = LF.March.order(sq, tx, ty, mv.z or 0, "auto", { noGather = true, platoonPatrol = true })
+        if not ok and why ~= "already there" then LF.log("PLATOON " .. sq.name .. " can't close up: " .. tostring(why)) end
+        sq.platoonTask = "patrol"
+    end
+    mv.mode, mv.closing, mv.lead = "abreast", true, nil
+    LF.log("PLATOON " .. p.name .. ": the head of the file is there - the platoon closes up, squads side by side")
+    LF.Platoon.expect(p)
+end
+
+-- Has the platoon got where it was moving to? (In file: the head arriving starts the close-up;
+-- the platoon is there when every squad has closed up.)
 local function moveArrived(p)
     local mv = p.move
     if not mv then return true end
     if mv.mode == "file" then
         local M = LF.March.get(mv.lead)
-        return M == nil or M.arrived == true
+        if M == nil or M.arrived == true then LF.Platoon.closeUp(p) end
+        return false
     end
     for _, sq in ipairs(squadsOf(p)) do
         local M = LF.March.get(sq.id)
@@ -1125,7 +1156,9 @@ local function hqOffscreen(p)
                 local o = r.hqRole == "rto" and { -1.5, -1.5 } or { -2, 2 }
                 f, l = o[1], o[2]
             end
-            r.x, r.y = px + fx * f - fy * l, py + fy * f + fx * l
+            local rt = RT(p)
+            rt.hqAt = rt.hqAt or {}
+            rt.hqAt[rid] = walkOffscreen(rid, px + fx * f - fy * l, py + fy * f + fx * l, rt.hqAt[rid])
         end
     end
 end
@@ -1136,6 +1169,7 @@ local function updatePlatoon(p)
     -- Missions only run with someone in command; without, the squads carry on alone.
     if not cmd then return end
     deliver(p)
+    if p.move and p.move.mode == "file" then moveArrived(p) end     -- (the file closes up when its head arrives)
     local m = p.mission
     if not m then return end
     if m.kind == "take" then updateTake(p, m)

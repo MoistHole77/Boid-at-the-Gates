@@ -134,7 +134,10 @@ function LF.Bodies.despawn(id)
     if rec then LF.Bodies.sync(rec, body) end
     LF.try("remove body", function()
         body:removeFromWorld()
-        body:removeFromSquare()
+        -- (Only from a square still in a loaded chunk: the game's pathfinder throws on one whose
+        -- chunk has gone - 0.56 logged 7 of those when a platoon was left behind.)
+        local sq = body:getCurrentSquare()
+        if sq and sq:getChunk() then body:removeFromSquare() end
         return true
     end)
     bodies[id] = nil

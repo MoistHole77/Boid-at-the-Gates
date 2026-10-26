@@ -30,6 +30,7 @@ LF.March = LF.March or {}
 
 local CFG = {
     spacing = 2.5,          -- tiles between men along the column (stretched to disperse, below)
+    disperseFile = 3,       -- ... in a platoon's file (43 men at 5 tiles would be 200 tiles long)
     disperse = 5,           -- no two men nearer than this on patrol: one grenade (wounding out to
                             -- 3.5 tiles, killing out to 1.5) can't take out two
     lateral = 1.5,          -- each man this far left or right of the road's line, alternately
@@ -428,7 +429,7 @@ local function layOut(squad, M)
     -- Grenade dispersion: no two men close enough together for one grenade to hit them both.
     -- The formation is stretched until every pair is at least CFG.disperse apart (a column along
     -- its length only - its width is the road's).
-    local D = CFG.disperse
+    local D = M.group and CFG.disperseFile or CFG.disperse     -- (a platoon's file: closer, or it is 200 tiles long)
     local ids = {}
     for rid, o in pairs(M.off) do
         if not o.centre then ids[#ids + 1] = rid end    -- (the sergeant in the road's middle is across it from the file)
@@ -614,14 +615,6 @@ local function advanceOffscreen(squad, M)
         LF.log("PATROL " .. squad.name .. ": off-screen - quiet again, moving on")
     end
     if dt > 0 then M.head = math.min(M.total, M.head + (LF.Move and LF.Move.PATROL_PACE or 0.75) * dt) end
-    for _, rid in ipairs(M.order) do
-        local r = LF.Records.get(rid)
-        if r and r.alive and not LF.Bodies.get(rid) and M.off[rid] then
-            M.joined[rid] = true
-            local x, y = placeOf(M, rid)
-            r.x, r.y, r.z = x, y, M.z
-        end
-    end
     if M.head < M.total then return end
     local cid = LF.Units.commander(squad)
     if not M.final then
@@ -633,7 +626,33 @@ local function advanceOffscreen(squad, M)
     arrive(squad, cid, M)
 end
 
--- Every half second: the marches whose commander has no body here.
+-- The men of a march who have no body (off-screen, on-screen or not): each falls in when his
+-- place comes up to where he stands, as on-screen, and then walks to it - at most a little faster
+-- than the patrol pace, so the rear of a long file closes up in its own time. (0.56 put every man
+-- straight onto his place - for the rear of a long file that was far behind the start.)
+local function walkRecords(M)
+    local dt = LF.simTime - (M.recAt or LF.simTime)
+    M.recAt = LF.simTime
+    if dt <= 0 then return end
+    local step = (LF.Move and LF.Move.PATROL_PACE or 0.75) * 1.3 * dt
+    local head = math.min(M.head, M.total)
+    for _, rid in ipairs(M.order) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not LF.Bodies.get(rid) and M.off[rid] then
+            if not M.joined[rid] and (M.arrived or head >= (M.proj[rid] or 0) - 1) then M.joined[rid] = true end
+            if M.joined[rid] then
+                local x, y = placeOf(M, rid)
+                local d = LF.dist(r.x, r.y, x, y)
+                if d <= step then r.x, r.y = x, y
+                elseif d > 0 then r.x, r.y = r.x + (x - r.x) / d * step, r.y + (y - r.y) / d * step end
+                r.z = M.z
+            end
+        end
+    end
+end
+
+-- Every half second: the men without bodies walk on; the marches whose commander has no body
+-- here move on by themselves.
 Events.OnTick.Add(function()
     if LF.tick % 30 ~= 11 then return end
     local due = {}
@@ -643,6 +662,7 @@ Events.OnTick.Add(function()
     -- (Collected first: arriving can start other marches.)
     for _, sid in ipairs(due) do
         local M = store()[sid]
+        if M then LF.guard("march records", walkRecords, M) end
         local squad = M and LF.Units.get(sid)
         local cid = squad and LF.Units.commander(squad)
         local cb = cid and LF.Bodies.get(cid)
@@ -740,7 +760,8 @@ function LF.March.order(squad, x, y, z, form, opts)
     end
     order = columnOrder(squad, form)
     local M = { pts = pts, z = z, form = form, auto = auto, x = x, y = y, final = final,
-                dest = { x = lx + 0.5, y = ly + 0.5 } }
+                dest = { x = lx + 0.5, y = ly + 0.5 },
+                group = (squad.marchGroup and form ~= "wedge") and squad.marchGroup or nil }
     M.len = measure(pts)
     M.total = M.len[#pts]
     M.order = order
