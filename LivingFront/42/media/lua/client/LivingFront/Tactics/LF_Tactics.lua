@@ -138,10 +138,31 @@ local OTHER = { A = "B", B = "A" }
 
 -- ---- shouting -------------------------------------------------------------------------------
 
+-- Break text into lines of at most n characters (at spaces).
+local function wrap(text, n)
+    local lines, line = {}, ""
+    for word in text:gmatch("%S+") do
+        if #line > 0 and #line + 1 + #word > n then lines[#lines + 1] = line; line = word
+        else line = (#line > 0 and (line .. " ") or "") .. word end
+    end
+    if #line > 0 then lines[#lines + 1] = line end
+    return lines
+end
+LF.Tactics.wrap = wrap
+
 function LF.Tactics.shout(id, text)
     local rec = LF.Records.get(id)
     shouts[id] = { text = text, untilTick = LF.tick + CFG.shoutTicks }
     LF.log("SHOUT #" .. id .. " " .. (rec and LF.Units.title(rec) or "?") .. ": " .. text)
+end
+
+-- Words spoken (not shouted) - a reply when you talk to him: wrapped over several lines above his
+-- head, on show for longer (seconds, default from its length).
+function LF.Tactics.say(id, text, seconds)
+    local rec = LF.Records.get(id)
+    seconds = seconds or math.max(4, math.min(20, #text / 12))
+    shouts[id] = { text = text, lines = wrap(text, 48), untilTick = LF.tick + seconds * 60, dur = seconds * 60 }
+    LF.log("SAYS #" .. id .. " " .. (rec and LF.Units.title(rec) or "?") .. ": " .. text)
 end
 
 local COLORS = { GER = { 0.75, 0.8, 0.9 }, SOV = { 1.0, 0.55, 0.5 }, CIV = { 0.9, 0.9, 0.7 } }
@@ -159,8 +180,18 @@ local function drawShouts()
             local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
             local rec = LF.Records.get(id)
             local c = COLORS[rec and rec.faction or "CIV"] or COLORS.CIV
-            local left = (s.untilTick - LF.tick) / CFG.shoutTicks
-            tm:DrawStringCentre(UIFont.Medium, sx, sy - 135 / zoom, s.text, c[1], c[2], c[3], math.min(1, left * 3))
+            local left = (s.untilTick - LF.tick) / (s.dur or CFG.shoutTicks)
+            local a = math.min(1, left * 3)
+            if s.lines then
+                local h = tm:getFontHeight(UIFont.Small)
+                local top = sy - 135 / zoom - (#s.lines - 1) * h
+                for i, l in ipairs(s.lines) do
+                    tm:DrawStringCentre(UIFont.Small, sx + 1, top + (i - 1) * h + 1, l, 0, 0, 0, a * 0.8)
+                    tm:DrawStringCentre(UIFont.Small, sx, top + (i - 1) * h, l, 1, 1, 1, a)
+                end
+            else
+                tm:DrawStringCentre(UIFont.Medium, sx, sy - 135 / zoom, s.text, c[1], c[2], c[3], a)
+            end
         end
     end
 end

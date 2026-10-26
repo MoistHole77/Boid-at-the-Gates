@@ -608,7 +608,9 @@ local function updateTakeOffscreen(squad, obj)
             LF.log("OBJECTIVE " .. squad.name .. " walks into " .. obj.name .. " - no one left to fight (off-screen)")
             return
         end
+        local was = obj.holder
         obj.holder = squad.faction
+        if was ~= obj.holder and LF.Memory then LF.guard("memory objective", LF.Memory.objective, obj, obj.holder, was) end
         rename(obj)
         setPhase(squad, "hold", "no enemy at " .. obj.name .. " (off-screen)")
         t.kind = "hold"
@@ -651,7 +653,9 @@ local function updateTake(squad, obj)
         for f, n in pairs(cf) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
         -- A building is only taken once a team has cleared it (LF_Clearing sets t.cleared).
         if theirs == 0 and ours > 0 and (not obj.building or t.cleared) then
+            local was = obj.holder
             obj.holder = squad.faction
+            if was ~= obj.holder and LF.Memory then LF.guard("memory objective", LF.Memory.objective, obj, obj.holder, was) end
             rename(obj)
             setPhase(squad, "hold", "no enemy left at " .. obj.name)
             t.kind = "hold"
@@ -679,6 +683,7 @@ local function updateHolder(obj)
     if n == 1 and only ~= obj.holder then
         local was = obj.holder
         obj.holder = only
+        if LF.Memory then LF.guard("memory objective", LF.Memory.objective, obj, only, was) end
         rename(obj)
         LF.log("OBJECTIVE " .. obj.name .. " now held by the " .. (FACTION[only] or only)
             .. (was and (" (was the " .. (FACTION[was] or was) .. ")") or ""))

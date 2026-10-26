@@ -42,6 +42,7 @@ Pure Lua. No Java, no ZombieBuddy.
 | Off-screen war step 3: hostile units with nobody near you fight off-screen once a simulated second - firepower from fit men (MG gunners count 5), cut by range, ammunition, suppression and morale, landing according to cover (held building, dug in, open, on the march); named men killed or wounded where they stand (wounds show on their bodies when they spawn), morale worn down under fire, units break and fall back below 35% fit or morale 25, objectives empty and change hands; a contact with men near you is fought for real and the far side is spawned in; every hit and break logged with its witnesses for phase 4; the simulated clock is saved; marching men scan every 6-15 s (the platoon HQ too) | Built, awaiting in-game test (0.56) |
 | Unit trackers on the world map and minimap: a marker for every squad and platoon HQ where its men are (on- or off-screen), a line to where it is marching, and zoomed in its name, fit men and what it is doing (red outline fighting, amber broken); toggle in the debug tools. A platoon's file closes up at the destination - squads side by side, HQ centre rear - before the lieutenant deploys; off-screen men fall in and walk to their places instead of being put there (0.56 sent a file's rear 180 tiles back) | Built, awaiting in-game test (0.56.1) |
 | Off-screen assaults finish: halted by contact near the objective a squad goes straight into the assault, works forward to its rally point and storms once it has the upper hand (3:1 in fit men nearby, enemy morale under 30, or 2:1 after two minutes) - stormed defenders lose most of their cover; only fit men hold a building, the wounded left inside are taken prisoner; a broken unit runs instead of halting to fight; a man wounded again is likely to die; a hold order on an enemy-held objective becomes a take | Built, awaiting in-game test (0.56.2) |
+| Off-screen war step 4 (aftermath and reports): men killed off-screen leave corpses where they fell once you come near; every event (killed, wounded, captured, broke, contact, objective) is logged with who saw it, on- or off-screen, and each man remembers what he saw (saved with the game); the radio net - each platoon's radio operator reports contact, casualties, breaks and objectives at the top of the screen (listen to German, Soviet, both or off); right-click a soldier to talk to him - he answers from who he is and what he has seen. With the LF bridge (tools/lf_bridge) and Chasm, the words come from the language model and are voiced (placed by distance and direction, radio reports over the radio) | Built, awaiting in-game test (0.57) |
 | Machine-gun squads: two gun teams and the medic (MG34 / DP-27; gunner, assistant, two security); real rates of fire in ~4 s bursts, beaten zone, heavy suppression; belts, barrel changes (MG34) and cooling (DP-27); the guns take turns; crews replaced as men fall; guns leapfrog, take the front in a defence and the best windows in a building, cover a clearing from outside, support a nearby friendly squad; the enemy targets the crews, grenades and flanks the guns | Built, awaiting in-game test (0.43) |
 | Platoons: lieutenant (pistol, greatcoat and peaked cap), platoon sergeant, radio operator (the only radio in the platoon) and four squads (an MG platoon: three rifle squads and an MG squad). The lieutenant gives each squad its task and watches from cover behind the main effort: take (main effort assaults, the MG squad (or the second rifle squad) supports by fire from a flank, the rest wait in reserve behind; a failed assault is taken over by the reserve first, or the platoon withdraws), hold (the main effort holds the objective, each other squad one of the nearest buildings), withdraw (break contact by bounds, march to the rally point, dig in). Orders by voice; out of earshot the platoon sergeant runs them over, then goes back to the main effort. Succession: the platoon sergeant takes over | Built, awaiting in-game test (0.49) |
 | Platoon movement: in a ranger file or tactical column the platoon is one file (lead squad, the other squads one behind another, each sergeant at his squad's head, the headquarters at the rear); in a wedge the squads go abreast, sergeants leading, the headquarters in the centre rear. Taking an objective from afar, the platoon moves up together to an assembly area ~40 tiles short of it, then deploys. Orders to squads whose men aren't spawned wait for them | Built, awaiting in-game test (0.51) |
@@ -87,6 +88,8 @@ built on each other: a file only depends on files in its own folder or the ones 
 | | `LF_Watch` | Keeps the real player visible |
 | | `LF_Sim` | Off-screen simulation |
 | | `LF_Clash` | Off-screen fighting: contact, firepower, cover, casualties, breaking, the event log |
+| | `LF_Aftermath` | Corpses where men fell off-screen |
+| | `LF_Chasm` | The file mailbox to the LF bridge (Chasm) |
 | **Soldier** - one man | `LF_Posture` | Crouch / stand, immune to the player's crouch key |
 | | `LF_MoveAction` | Walk / run / sprint / limp; stepping round other men |
 | | `LF_ShootAction` | Aim + fire, flinch and hold-aim actions |
@@ -98,6 +101,7 @@ built on each other: a file only depends on files in its own folder or the ones 
 | | `LF_Brain` | Perceive / decide / act loop per NPC |
 | | `LF_Service` | Service records and earned traits |
 | | `LF_Morale` | Morale: what lowers and raises it, and what it does |
+| | `LF_Memory` | What each man remembers: the events he witnessed, in words |
 | **Units** - squads and teams | `LF_Units` | Squads and fire teams: structure, ranks, spawning |
 | | `LF_Squad` | Shared contacts, formation slots |
 | | `LF_Stance` | Offensive / defensive / patrolling settings |
@@ -110,12 +114,14 @@ built on each other: a file only depends on files in its own folder or the ones 
 | | `LF_Clearing` | Clearing a building room by room; a man knocked down inside dragged out |
 | | `LF_Command` | Stance choice, standing by, the squad update loop |
 | | `LF_Platoon` | Platoons: headquarters, the lieutenant's missions and orders, the runner, succession |
+| | `LF_Radio` | The radio net: platoon reports from the event log |
 | **Specialists** - special roles | `LF_Grenade` | Grenades |
 | | `LF_Downed` | Men down on their back, getting up, being dragged |
 | | `LF_Medic` | The squad medic and critical wounds |
 | | `LF_MG` | Machine-gun squads: gun teams, bursts at the real rate of fire, belts and barrels, the guns taking turns, leapfrogging |
 | **UI** | `LF_Inspect` | The inspect window |
 | | `LF_Map` | Objectives drawn on the world map and minimap |
+| | `LF_Talk` | Talking to a soldier (right-click) |
 | | `LF_Debug` | Right-click debug menu (tests) |
 
 Conventions:

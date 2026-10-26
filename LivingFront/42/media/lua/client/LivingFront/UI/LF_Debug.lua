@@ -622,6 +622,18 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
         end)
     end
+    if LF.Radio then
+        local cur = LF.Radio.SIDES[LF.Radio.listening()] or "?"
+        tools:addOption("Radio: listening to " .. cur .. " (click to change)", nil, function()
+            local _, words = LF.Radio.cycle()
+            LF.say("Radio: listening to " .. words)
+        end)
+    end
+    if LF.Chasm then
+        local st = LF.Chasm.status()
+        tools:addOption("Chasm (LF bridge): " .. (st.alive and ("running - language model " .. st.llm .. ", voices " .. st.tts)
+            or "not running - words and voices from Living Front itself"))
+    end
     tools:addOption("Platoon report (to the log)", nil, function()
         for _, p in pairs(LF.Units.all()) do
             if p.kind == "platoon" then LF.log("PLATOON REPORT " .. LF.Platoon.describe(p)) end

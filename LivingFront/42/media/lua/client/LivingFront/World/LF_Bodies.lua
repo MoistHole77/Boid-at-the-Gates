@@ -197,6 +197,7 @@ local function managerPass()
             LF.log("#" .. id .. " " .. LF.Records.fullName(rec) .. " DIED at " .. math.floor(rec.x) .. "," .. math.floor(rec.y))
             if LF.Service then LF.guard("service record", LF.Service.died, rec) end
             if LF.Units then LF.guard("succession", LF.Units.onDeath, rec) end
+            if LF.Memory then LF.guard("memory died", LF.Memory.died, rec) end
         elseif body then
             if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq
                 and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())) then

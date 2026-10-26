@@ -69,6 +69,9 @@ LF.Clash.events = events
 -- Record an event: kind, the man (or unit) it happened to, where, and who saw it.
 local function note(kind, fields)
     local ev = events()
+    local data = LF.Records.data()
+    data.lfEventSeq = (data.lfEventSeq or 0) + 1
+    fields.seq = data.lfEventSeq
     fields.kind = kind
     fields.sim = math.floor(LF.simTime)
     local ok, h = pcall(function() return getGameTime():getWorldAgeHours() end)
@@ -284,6 +287,10 @@ local function update()
     for e in pairs(engaged) do
         local u = e.u
         u.offAmmo = math.max(0, (u.offAmmo or 1) - CFG.ammoUse * dt)
+        if not u.offContactAt or u.offContactAt > LF.simTime or LF.simTime - u.offContactAt > 60 then
+            note("contact", { unit = u.id, by = e.targets[1].t.u.id, x = math.floor(e.x), y = math.floor(e.y),
+                              seen = witnesses(e, e.targets[1].t) })
+        end
         u.offContactAt = LF.simTime
         -- (A squad marching in a platoon's file: its whole file halts.)
         local M = LF.March.get(u.id)
