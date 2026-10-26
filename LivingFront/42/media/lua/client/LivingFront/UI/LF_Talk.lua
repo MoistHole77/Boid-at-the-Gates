@@ -42,7 +42,7 @@ local GREET = { GER = "Jawohl.", SOV = "Da, comrade." }
 
 -- What he asks about: the first topic whose words are in the question.
 local TOPICS = {
-    { "name", { "your name", "who are you", "called" } },
+    { "name", { "your name", "who are you", "called", "what's yours", "whats yours", "what is yours", "and you?" } },
     { "home", { "where are you from", "where you from", "hometown", "home town", "born", "from?" } },
     { "family", { "family", "wife", "mother", "mum", "mom", "children", "kids", "sweetheart", "girl", "brother",
                   "sister", "married", "parents", "father", "letters" } },

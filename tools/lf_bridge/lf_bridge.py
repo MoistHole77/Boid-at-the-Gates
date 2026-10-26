@@ -1,4 +1,4 @@
-"""Living Front bridge (0.62): Project Zomboid <-> a local language model. Text only, no Chasm.
+"""Living Front bridge (0.63): Project Zomboid <-> a local language model. Text only, no Chasm.
 
 Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.62.0"
+VERSION = "0.63.0"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -508,6 +508,46 @@ TRUST = {-3: "He resents the officer.", -2: "He doesn't trust the officer.", -1:
          3: "He'd follow the officer anywhere."}
 
 
+ORD = {1: "1st", 2: "2nd", 3: "3rd"}
+
+
+def ordinal(n: str) -> str:
+    k = int(n)
+    return ORD.get(k if k < 20 else k % 10, f"{k}th") if not 10 < k % 100 < 14 else f"{k}th"
+
+
+def unit_words(text: str) -> str:
+    """The mod's unit labels ("SOV platoon 2 / 3 squad") as a soldier would say them ("3rd Squad,
+    2nd Platoon")."""
+    def one(m):
+        plt, sq, kind = m.group(1), m.group(2), (m.group(3) or "squad").lower()
+        kind = {"mg squad": "Machine-Gun Squad", "squad": "Squad", "team": "Team"}.get(kind, kind.title())
+        return f"{ordinal(sq)} {kind}, {ordinal(plt)} Platoon"
+    text = re.sub(r"\b(?:GER|SOV)\s+platoon\s+(\d+)\s*/\s*(\d+)\s*(MG squad|squad|team)?", one, text, flags=re.I)
+    text = re.sub(r"\b(?:GER|SOV)\s+(squad|team)\s+(\d+)", lambda m: f"{ordinal(m.group(2))} {m.group(1).title()}", text, flags=re.I)
+    text = re.sub(r"\b(?:GER|SOV)\s+platoon\s+(\d+)", lambda m: f"{ordinal(m.group(1))} Platoon", text, flags=re.I)
+    return text
+
+
+RANK_WORDS = {"PVT": ("private", "pvt"), "CPL": ("corporal", "cpl"), "SGT": ("sergeant", "sgt"),
+              "SSG": ("staff sergeant", "ssgt", "ssg"), "LT": ("lieutenant", "lt")}
+
+
+def wrong_rank(text: str, rank: str) -> bool:
+    """He names a rank, and not his own."""
+    low = " " + re.sub(r"[^a-z ]+", " ", text.lower()) + " "
+    mine = RANK_WORDS.get(rank or "", ())
+    for r, words in RANK_WORDS.items():
+        if r == rank:
+            continue
+        for w in words:
+            if any(w in m for m in mine):
+                continue                    # ("sergeant" from a staff sergeant: the short form)
+            if f" {w} " in low:
+                return True
+    return False
+
+
 def character(req: dict) -> str:
     """Who he is, written about him (the third person keeps a small model from mixing 'you' and 'he')."""
     s = req.get("soldier") or {}
@@ -515,8 +555,12 @@ def character(req: dict) -> str:
     name = s.get("name", "a soldier")
     adj, army = SIDE.get(s.get("faction"), ("", "the army"))
     rank = RANKS.get(s.get("rank") or "", "soldier")
+    unit = unit_words(s.get("unit") or "")
+    if s.get("platoon") and "Platoon" not in unit:
+        unit = (unit + ", " if unit else "") + unit_words(s.get("platoon") or "")
     lines = [f"You are playing {name}: {p.get('age', 'about 25')} years old, a {adj} {rank} in {army}, serving in "
-             f"{s.get('unit') or 'his unit'}" + (f" of {s.get('platoon')}" if s.get("platoon") else "") + "."]
+             f"{unit or 'his unit'}.",
+             f"His rank is {rank} - he is a {rank}, nothing higher or lower."]
     if p:
         lines.append(f"He comes from {p.get('home')}. Before the war he was {p.get('job')}. He has {p.get('family')}. "
                      f"He {p.get('past')}.")
@@ -527,9 +571,7 @@ def character(req: dict) -> str:
             lines.append(p["friend"][0].upper() + p["friend"][1:] + ".")
         if p.get("rival"):
             lines.append("He " + p["rival"][3:] + "." if p["rival"].startswith("he ") else p["rival"] + ".")
-        lines.append(f"How he talks: {p.get('speech')}. Lines that show his manner (never repeat them word for word):")
-        for ex in p.get("examples") or []:
-            lines.append(f'  "{ex}"')
+        lines.append(f"How he talks: {p.get('speech')}.")
     lines.append(f"His name is {name} - he never gives any other name.")
     state = [f"His morale right now: {s.get('morale', 'steady')}."]
     if s.get("wounded"):
@@ -544,7 +586,7 @@ def character(req: dict) -> str:
     mems = req.get("memories") or []
     if mems:
         lines.append("What he has seen lately ('your squad' there means his own squad):")
-        lines += [f"- {m}" for m in mems[:6]]
+        lines += [f"- {unit_words(m)}" for m in mems[:6]]
     try:
         trust = int(p.get("trust") or 0)
     except (TypeError, ValueError):
@@ -559,16 +601,18 @@ def character(req: dict) -> str:
 
 TALK_RULES = ("An officer of his own army is talking to him face to face, in a pause in the fighting. Reply as "
               "him, in the first person, and stay in character the whole time. Answer in English, as he would say it out loud. "
-              "Usually one or two sentences; three if there's something worth saying, or if he's the talkative sort. "
-              "Answer what was asked, the way a real man would - in his own manner, sometimes plainly, sometimes "
-              "guarded. Everything above about his life is background for playing him: he can let a detail slip now "
-              "and then when it fits, but he doesn't lay out his life story, and he doesn't always bring up his family, "
-              "his friend, his fears or his past - only when it's natural to the question. His secret he keeps unless "
-              "he trusts the officer. He opens up more as he comes to trust the officer. If asked his name, he gives "
-              "his rank and his real name, above. "
+              "This is a conversation: respond to what the officer actually said, the way a real man would. A greeting gets "
+              "a greeting; if the officer gives his name, he takes it in and may give his own; a joke may get a laugh or a "
+              "dry answer; a question gets an answer. Now and then he adds a small remark of his own or asks something "
+              "back - not every time. "
+              "Usually one or two sentences, sometimes three; the talkative sort says more. "
+              "When asked about himself - home, family, work, the war - he answers truthfully from his life above, in his "
+              "own words, plainly or briefly if that's his way. What he doesn't do is volunteer his whole story unasked: "
+              "asked about his unit, he talks about the unit, not necessarily about his friend. His secret he keeps "
+              "unless he trusts the officer. He warms up as he comes to trust the officer. "
               "No narration, no actions in asterisks, no quotation marks round your words. Only speak of events you have "
-              "seen or that are listed above; never invent battles, deaths or names of men in his unit. If he doesn't "
-              "know, he says so in his own way. Never repeat an earlier answer or one of the example lines word for word. "
+              "seen or that are listed above; never invent battles, deaths, ranks or names of men in his unit. If he "
+              "doesn't know something, he says so in his own way. Don't repeat an earlier answer. "
               "Write only the words he says - begin speaking at once. Never plan, explain or describe the reply, "
               "never mention the character, the officer's question or these instructions.")
 
@@ -655,9 +699,9 @@ class Bridge:
                     parts = [w.lower() for w in re.findall(r"[^\W\d_]+", s.get("name") or "") if len(w) > 2]
                     text = self.model.say(talk_messages(req), CFG["talk_max_tokens"])
                     low = " " + re.sub(r"[^\w]+", " ", text.lower()) + " "
-                    ok = any(f" {w} " in low for w in parts)
+                    ok = any(f" {w} " in low for w in parts) and not wrong_rank(text, s.get("rank") or "")
                     if not ok and text:
-                        log(f"talk #{rid}: the model gave a wrong name ({text[:60]}) - using his real one")
+                        log(f"talk #{rid}: the model gave a wrong name or rank ({text[:60]}) - using his real ones")
                     fields["text"] = text if ok else fallback
                 elif kind == "talk" and CFG["stream"]:
                     def partial(text: str) -> None:
