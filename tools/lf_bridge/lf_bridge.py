@@ -1,67 +1,52 @@
-"""Living Front bridge: Project Zomboid <-> Chasm.
+"""Living Front bridge (0.58): Project Zomboid <-> a local language model. Text only, no Chasm.
 
-Project Zomboid's Lua can't make web requests or play sound files. This helper sits beside the
-game and does both for Living Front:
+Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
-  * The mod drops requests in Zomboid\\Lua\\LivingFront\\chasm\\out\\ (talk to a soldier, word a
-    radio report). The bridge asks the language model Chasm runs (llama-server, an OpenAI-style
-    API on 127.0.0.1:5001) for the words, asks Chasm for the voice (its TTS on 127.0.0.1:7341),
-    writes the answer to ...\\chasm\\in\\ and plays the voice - from where the speaker stands,
-    louder or quieter and left or right by the listener's position (state.json, which the mod
-    rewrites twice a second), or over the radio for a report.
-  * It writes Chasm's game heartbeat (%LOCALAPPDATA%\\chasm\\bridge\\runtime_heartbeat.json, with
-    Project Zomboid's process id) so Chasm starts its models while the game runs and stops them
-    when it closes, as it does for its own Fallout bridge.
-  * It installs your reference voice clips (voices\\GER\\*.wav, voices\\SOV\\*.wav beside this
-    file) into Chasm's voices folder, so its TTS can clone them, and gives each soldier one of
-    his side's voices (always the same one).
+  * It runs the language model itself: llama.cpp's llama-server with a GGUF model (by default
+    the copies Chasm downloaded; or put llama-server.exe and a .gguf in this folder, or name them
+    in lf_bridge.json). It starts the model when Project Zomboid is running and stops it when the
+    game has been closed for a minute, so it only uses your graphics card while you play.
+  * The mod drops requests in Zomboid\\Lua\\LivingFront\\chasm\\out\\: a soldier to answer
+    ("talk" - he is played from the life Living Front gave him), a conversation to sum up when
+    it ends ("summarize"), or a radio report to word ("report"). The answer goes to ...\\in\\.
+  * Without a model it answers with the words the mod sent along (plain, but never silent).
 
-Standard library only (Python 3.9+). Windows for sound; elsewhere it runs silent (for testing).
-Run it with run_lf_bridge.bat, or: python lf_bridge.py [--once] [--zomboid DIR] [--verbose]
+Standard library only (Python 3.9+). Run it with run_lf_bridge.bat, or:
+    python lf_bridge.py [--once] [--zomboid DIR] [--verbose] [--no-model]
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import io
 import json
-import math
 import os
-import queue
-import shutil
+import re
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
-import wave
-from array import array
 from pathlib import Path
 
-try:
-    import winsound  # type: ignore
-except ImportError:  # (not Windows: no sound - the rest still works)
-    winsound = None
-
-VERSION = "0.57.0"
+VERSION = "0.58.0"
 HERE = Path(__file__).resolve().parent
-LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
 
 CFG = {
-    "chasm": os.environ.get("LF_CHASM_URL", "http://127.0.0.1:7341"),
-    "llm": os.environ.get("LF_LLM_URL", "http://127.0.0.1:5001"),
-    "chasm_bridge_root": Path(os.environ.get("CHASM_BRIDGE_ROOT", str(LOCALAPPDATA / "chasm" / "bridge"))),
-    "chasm_app_dir": Path(os.environ.get("LF_CHASM_APP_DIR", str(APPDATA / "com.chasm.app"))),
-    "game_exe": ("ProjectZomboid64.exe", "ProjectZomboid32.exe", "ProjectZomboid.exe"),
-    "hear_range": 40.0,        # tiles: a voice fades to its quietest this far from you
-    "min_volume": 0.12,
-    "llm_timeout": 45,
-    "tts_timeout": 60,
-    "talk_max_tokens": 110,
+    "llm": "http://127.0.0.1:5001",
+    "port": 5001,
+    "llama_server": None,       # path to llama-server.exe (None: look for it)
+    "model": None,              # path to a .gguf (None: look for one)
+    "gpu_layers": 999,          # all on the graphics card; lower it (or 0) if the game stutters
+    "ctx": 8192,
+    "game_exe": ["ProjectZomboid64.exe", "ProjectZomboid32.exe", "ProjectZomboid.exe"],
+    "stop_after": 60,           # seconds after the game closes before the model is stopped
+    "timeout": 60,
+    "talk_max_tokens": 160,
+    "summary_max_tokens": 90,
     "report_max_tokens": 70,
+    "temperature": 0.85,
 }
 
 LOG_PATH = HERE / "lf_bridge.log"
@@ -83,7 +68,16 @@ def vlog(msg: str) -> None:
         log(msg)
 
 
-# ---- HTTP -----------------------------------------------------------------------------------------
+def load_settings() -> None:
+    p = HERE / "lf_bridge.json"
+    if p.exists():
+        try:
+            CFG.update(json.loads(p.read_text(encoding="utf-8")))
+            log(f"settings from {p.name}")
+        except (OSError, ValueError) as e:
+            log(f"couldn't read {p.name}: {e}")
+    CFG["llm"] = f"http://127.0.0.1:{CFG['port']}"
+
 
 def http_json(url: str, body: dict | None = None, timeout: float = 10) -> dict:
     data = None if body is None else json.dumps(body).encode("utf-8")
@@ -103,179 +97,233 @@ class Mailbox:
         self.inn = self.root / "in"
         for d in (self.out, self.inn):
             d.mkdir(parents=True, exist_ok=True)
-        self.alive_n = 0
+        self.n = 0
 
-    def write_status(self, llm: str, tts: str, chasm: str) -> None:
-        self.alive_n += 1
-        text = f"alive={self.alive_n}\nversion={VERSION}\nchasm={chasm}\nllm={llm}\ntts={tts}\n"
+    def write_status(self, llm: str) -> None:
+        self.n += 1
+        text = f"alive={self.n}\nversion={VERSION}\nllm={llm}\ntts=off\n"
         tmp = self.root / "bridge.tmp"
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, self.root / "bridge.txt")
 
     def requests(self) -> list[Path]:
-        files = [p for p in self.out.glob("req_*.json")]
-        files.sort(key=lambda p: int(p.stem.split("_")[1]) if p.stem.split("_")[1].isdigit() else 0)
-        return files
+        def num(p: Path) -> int:
+            tail = p.stem.split("_")[-1]
+            return int(tail) if tail.isdigit() else 0
+        return sorted(self.out.glob("req_*.json"), key=num)
 
     def answer(self, rid: int, fields: dict) -> None:
-        def esc(v: str) -> str:
+        def esc(v) -> str:
             return str(v).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
-        text = "".join(f"{k}={esc(v)}\n" for k, v in fields.items())
         tmp = self.inn / f"res_{rid}.tmp"
-        tmp.write_text(text, encoding="utf-8")
+        tmp.write_text("".join(f"{k}={esc(v)}\n" for k, v in fields.items()), encoding="utf-8")
         os.replace(tmp, self.inn / f"res_{rid}.txt")
 
     def clean(self) -> None:
         now = time.time()
         for p in self.inn.glob("res_*.txt"):
             try:
-                body = p.read_text(encoding="utf-8", errors="replace")
-                if body.startswith("done=1") or now - p.stat().st_mtime > 300:
+                if p.read_text(encoding="utf-8", errors="replace").startswith("done=1") or now - p.stat().st_mtime > 300:
                     p.unlink()
             except OSError:
                 pass
 
-    def state(self) -> dict:
-        try:
-            return json.loads((self.root / "state.json").read_text(encoding="utf-8", errors="replace"))
-        except (OSError, ValueError):
-            return {}
 
+# ---- the model ---------------------------------------------------------------------------------------------
 
-# ---- Chasm's heartbeat --------------------------------------------------------------------------------
-
-def game_pid() -> int | None:
+def game_running() -> bool:
     if os.name != "nt":
-        return None
+        return True
     for exe in CFG["game_exe"]:
         try:
-            out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH", "/FO", "CSV"],
-                                 capture_output=True, text=True, timeout=5,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {exe}", "/NH"], capture_output=True, text=True,
+                                 timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         except (OSError, subprocess.SubprocessError):
             continue
-        for line in out.splitlines():
-            parts = [p.strip('"') for p in line.split('","')]
-            if len(parts) > 1 and parts[1].strip('"').isdigit():
-                return int(parts[1].strip('"'))
-    return None
+        if exe.lower() in out.lower():
+            return True
+    return False
 
 
-def write_heartbeat(pid: int | None) -> None:
-    root: Path = CFG["chasm_bridge_root"]
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        body = {"pid": pid, "game": "project-zomboid-living-front", "bridge": "lf_bridge " + VERSION,
-                "time": time.time()}
-        tmp = root / "runtime_heartbeat.tmp"
-        tmp.write_text(json.dumps(body), encoding="utf-8")
-        os.replace(tmp, root / "runtime_heartbeat.json")
-    except OSError as e:
-        vlog(f"heartbeat: {e}")
+def find_files() -> tuple[Path | None, Path | None]:
+    exe = Path(CFG["llama_server"]) if CFG.get("llama_server") else None
+    model = Path(CFG["model"]) if CFG.get("model") else None
+    if not exe:
+        for cand in (HERE / "llama" / "llama-server.exe", HERE / "llama-server.exe",
+                     CHASM_MODELS / "llamacpp" / "llama-server.exe"):
+            if cand.exists():
+                exe = cand
+                break
+    if not model:
+        for folder in (HERE, HERE / "models", CHASM_MODELS / "llm"):
+            ggufs = sorted(folder.glob("*.gguf")) if folder.is_dir() else []
+            if ggufs:
+                model = ggufs[0]
+                break
+    return exe, model
 
 
-# ---- voices -------------------------------------------------------------------------------------------
+class Model:
+    """llama-server, started and stopped by the bridge."""
 
-def chasm_voices_dirs() -> list[Path]:
-    """Where Chasm's TTS looks for voices: the active profile's voices folder, and the shared one."""
-    app: Path = CFG["chasm_app_dir"]
-    out = []
-    profile = None
-    for settings in (LOCALAPPDATA / "chasm" / "chasm.settings.json", app / "chasm.settings.json"):
+    def __init__(self, use: bool) -> None:
+        self.use = use
+        self.proc: subprocess.Popen | None = None
+        self.state = "off"
+        self.ready_at = 0.0
+        self.failed_args = False
+
+    def up(self) -> bool:
         try:
-            profile = json.loads(settings.read_text(encoding="utf-8")).get("profile") or profile
-        except (OSError, ValueError):
-            pass
-    if profile:
-        out.append(app / "profiles" / profile / "voices")
-    out.append(app / "voices")
-    return out
+            http_json(CFG["llm"] + "/health", timeout=2)
+            return True
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
+
+    def start(self) -> None:
+        if self.proc:
+            return
+        if self.up():
+            if self.state != "ok":
+                log("a language model is already running on port " + str(CFG["port"]) + " - using it")
+            self.state = "ok"     # (one is already running - Chasm's, or one you started)
+            return
+        if not self.use:
+            self.state = "off"
+            return
+        exe, model = find_files()
+        if not exe or not model:
+            if self.state != "missing":
+                log(f"no language model to run: llama-server {'found' if exe else 'NOT found'}, "
+                    f"model {'found' if model else 'NOT found'} - put them in {HERE} or name them in lf_bridge.json")
+            self.state = "missing"
+            return
+        args = [str(exe), "-m", str(model), "--host", "127.0.0.1", "--port", str(CFG["port"]),
+                "-ngl", str(CFG["gpu_layers"]), "-c", str(CFG["ctx"]), "-np", "1"]
+        if not self.failed_args:
+            args += ["--jinja", "--cache-reuse", "256", "--reasoning-budget", "0"]
+        logf = open(HERE / "llama_server.log", "ab")
+        log(f"starting the language model: {model.name} ({CFG['gpu_layers']} layers on the graphics card)")
+        self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdout=logf, stderr=subprocess.STDOUT,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.state = "starting"
+        self.ready_at = time.time()
+
+    def stop(self) -> None:
+        if self.proc:
+            log("game closed - stopping the language model")
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+        if self.state != "missing":
+            self.state = "off"
+
+    def check(self) -> None:
+        if self.proc and self.proc.poll() is not None:
+            code = self.proc.returncode
+            self.proc = None
+            if time.time() - self.ready_at < 20 and not self.failed_args:
+                log(f"the language model exited at once (code {code}) - trying again with plain settings")
+                self.failed_args = True
+                self.start()
+                return
+            log(f"the language model stopped (code {code}) - see llama_server.log")
+            self.state = "off"
+            return
+        if self.state == "starting" and self.up():
+            log(f"the language model is ready ({time.time() - self.ready_at:.0f} s)")
+            self.state = "ok"
+
+    def chat(self, messages: list[dict], max_tokens: int) -> str:
+        body = {"messages": messages, "max_tokens": max_tokens, "temperature": CFG["temperature"],
+                "top_p": 0.95, "repeat_penalty": 1.1, "cache_prompt": True, "stream": False}
+        res = http_json(CFG["llm"] + "/v1/chat/completions", body, timeout=CFG["timeout"])
+        return clean(res["choices"][0]["message"]["content"])
 
 
-class Voices:
-    """Your reference clips, one list per side; each soldier always gets the same one."""
-
-    def __init__(self) -> None:
-        self.by_side: dict[str, list[str]] = {}
-
-    def install(self) -> None:
-        src = HERE / "voices"
-        self.by_side = {}
-        targets = chasm_voices_dirs()
-        for side in ("GER", "SOV", "ANY"):
-            for wav in sorted((src / side).glob("*.wav")) if (src / side).is_dir() else []:
-                name = f"LF {side} {wav.stem}"
-                for t in targets:
-                    try:
-                        d = t / name
-                        d.mkdir(parents=True, exist_ok=True)
-                        dst = d / "reference.wav"
-                        if not dst.exists() or dst.stat().st_size != wav.stat().st_size:
-                            shutil.copyfile(wav, dst)
-                    except OSError as e:
-                        vlog(f"voice {name} -> {t}: {e}")
-                self.by_side.setdefault(side, []).append(name)
-        n = sum(len(v) for v in self.by_side.values())
-        log(f"voices: {n} reference clip(s) ({', '.join(f'{k} {len(v)}' for k, v in self.by_side.items()) or 'none - add WAVs to voices/GER and voices/SOV'})")
-
-    def for_soldier(self, soldier: dict) -> str | None:
-        side = soldier.get("faction") or "ANY"
-        names = self.by_side.get(side) or self.by_side.get("ANY")
-        if not names:
-            return None
-        sid = int(soldier.get("id") or 0)
-        return names[(sid * 2654435761) % (2 ** 32) % len(names)]
-
-
-# ---- the words -----------------------------------------------------------------------------------------
-
-SIDE_NOTE = {
-    "GER": "a German soldier of the Wehrmacht",
-    "SOV": "a Soviet soldier of the Red Army",
-}
-RANKS = {"PVT": "Private", "CPL": "Corporal", "SGT": "Sergeant", "SSG": "Staff Sergeant", "LT": "Lieutenant"}
-
-
-def llm_chat(messages: list[dict], max_tokens: int) -> str:
-    body = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.8, "stream": False}
-    res = http_json(CFG["llm"] + "/v1/chat/completions", body, timeout=CFG["llm_timeout"])
-    text = res["choices"][0]["message"]["content"]
-    return clean_line(text)
-
-
-def clean_line(text: str) -> str:
+def clean(text: str) -> str:
     text = (text or "").strip()
-    # (Thinking models: drop the thinking; quotes and stage directions round the line.)
     if "</think>" in text:
-        text = text.split("</think>", 1)[1].strip()
-    text = text.strip().strip('"').strip()
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    text = " ".join(lines)
-    for prefix in ("Reply:", "Answer:", "Radio:"):
-        if text.startswith(prefix):
-            text = text[len(prefix):].strip()
-    return text[:400]
+        text = text.split("</think>", 1)[1]
+    text = re.sub(r"\*[^*]{1,80}\*", "", text)            # (*stage directions*)
+    text = re.sub(r"^\s*[\w .'-]{1,40}:\s*", "", text) if re.match(r"^\s*(Pvt|Cpl|Sgt|SSgt|Lt)\.?\s", text) else text
+    text = " ".join(l.strip() for l in text.splitlines() if l.strip())
+    return text.strip().strip('"').strip()[:600]
+
+
+# ---- prompts ------------------------------------------------------------------------------------------------
+
+SIDE = {"GER": ("German", "the Wehrmacht"), "SOV": ("Soviet", "the Red Army")}
+RANKS = {"PVT": "private", "CPL": "corporal", "SGT": "sergeant", "SSG": "staff sergeant", "LT": "lieutenant"}
+TRUST = {-3: "He resents the officer.", -2: "He doesn't trust the officer.", -1: "He's wary of the officer.",
+         0: "He doesn't know the officer well.", 1: "He's warming to the officer.", 2: "He trusts the officer.",
+         3: "He'd follow the officer anywhere."}
+
+
+def character(req: dict) -> str:
+    """Who he is, written about him (the third person keeps a small model from mixing 'you' and 'he')."""
+    s = req.get("soldier") or {}
+    p = req.get("persona") or {}
+    name = s.get("name", "a soldier")
+    adj, army = SIDE.get(s.get("faction"), ("", "the army"))
+    rank = RANKS.get(s.get("rank") or "", "soldier")
+    lines = [f"You are playing {name}: {p.get('age', 'about 25')} years old, a {adj} {rank} in {army}, serving in "
+             f"{s.get('unit') or 'his unit'}" + (f" of {s.get('platoon')}" if s.get("platoon") else "") + "."]
+    if p:
+        lines.append(f"He comes from {p.get('home')}. Before the war he was {p.get('job')}. He has {p.get('family')}. "
+                     f"He {p.get('past')}.")
+        lines.append(f"His nature: {p.get('traits')}. About the war, he {p.get('war')}.")
+        lines.append(f"What he wants most: {p.get('want')}. What he fears: {p.get('fear')}.")
+        lines.append(f"His secret (he lets it slip only if he trusts the officer, or is pushed hard): {p.get('secret')}.")
+        if p.get("friend"):
+            lines.append(p["friend"][0].upper() + p["friend"][1:] + ".")
+        if p.get("rival"):
+            lines.append("He " + p["rival"][3:] + "." if p["rival"].startswith("he ") else p["rival"] + ".")
+        lines.append(f"How he talks: {p.get('speech')}. Lines in his voice:")
+        for ex in p.get("examples") or []:
+            lines.append(f'  "{ex}"')
+    state = [f"His morale right now: {s.get('morale', 'steady')}."]
+    if s.get("wounded"):
+        state.append("He is wounded and in pain.")
+    if s.get("lost"):
+        state.append(f"He has lost {s['lost']} comrades.")
+    if s.get("kills"):
+        state.append(f"He has killed {s['kills']} of the enemy.")
+    if s.get("doing"):
+        state.append(f"Right now his unit is {s['doing']}.")
+    lines.append(" ".join(state))
+    mems = req.get("memories") or []
+    if mems:
+        lines.append("What he has seen lately ('your squad' there means his own squad):")
+        lines += [f"- {m}" for m in mems[:6]]
+    try:
+        trust = int(p.get("trust") or 0)
+    except (TypeError, ValueError):
+        trust = 0
+    lines.append("The officer talking to him: " + TRUST.get(max(-3, min(3, trust)), ""))
+    notes = p.get("notes") or []
+    if notes:
+        lines.append("From earlier talks with this officer:")
+        lines += [f"- {n}" for n in notes[-4:]]
+    return "\n".join(lines)
+
+
+TALK_RULES = ("An officer of his own army is talking to him face to face, in a pause in the fighting. Reply as "
+              "him, in the first person, and stay in character the whole time. Answer in English, as he would say it out loud: "
+              "usually one to three sentences, more only if he is the talkative sort or it's a story worth telling. "
+              "No narration, no actions in asterisks, no quotation marks round your words. Talk about yourself, your "
+              "home, your mates and the war in your own way when asked. Only speak of events you have seen or that are "
+              "listed above; never invent battles, deaths or names of men in his unit. If he doesn't know, he says so in "
+              "his own way. Don't repeat earlier answers word for word.")
 
 
 def talk_messages(req: dict) -> list[dict]:
-    s = req.get("soldier") or {}
-    rank = RANKS.get(s.get("rank") or "", s.get("rank") or "soldier")
-    who = (f"You are {s.get('name', 'a soldier')}, a {rank.lower()}, {SIDE_NOTE.get(s.get('faction'), 'a soldier')}, "
-           f"serving in {s.get('unit') or 'your unit'}" + (f" ({s.get('platoon')})" if s.get("platoon") else "") + ". ")
-    state = (f"Your role: {s.get('role', 'rifleman')}. Your morale: {s.get('morale', 'steady')}. "
-             + ("You are wounded. " if s.get("wounded") else "")
-             + (f"You have lost {s.get('lost')} comrades. " if s.get("lost") else "")
-             + (f"You have {s.get('kills')} kills. " if s.get("kills") else "")
-             + (f"Right now your unit is {s.get('doing')}. " if s.get("doing") else ""))
-    mems = req.get("memories") or []
-    mem = ("What you have seen (newest first; 'your squad' is your own squad):\n- " + "\n- ".join(mems)) if mems else \
-        "Nothing much has happened around you lately."
-    rules = ("The player is an officer talking to you face to face, in the middle of a war. Answer as this man would: "
-             "in English, in one to three short spoken sentences, plain soldier's speech, no stage directions, no "
-             "quotation marks. Only speak of what you have seen or know; never invent events, names or places. "
-             "If asked something you don't know, say so as he would.")
-    msgs = [{"role": "system", "content": who + state + "\n" + mem + "\n\n" + rules}]
-    for h in req.get("history") or []:
+    msgs = [{"role": "system", "content": character(req) + "\n\n" + TALK_RULES}]
+    hist = req.get("history")
+    for h in hist if isinstance(hist, list) else []:
         if isinstance(h, dict) and h.get("you") and h.get("him"):
             msgs.append({"role": "user", "content": h["you"]})
             msgs.append({"role": "assistant", "content": h["him"]})
@@ -283,174 +331,38 @@ def talk_messages(req: dict) -> list[dict]:
     return msgs
 
 
+def summary_messages(req: dict) -> list[dict]:
+    s = req.get("soldier") or {}
+    hist = req.get("history") if isinstance(req.get("history"), list) else []
+    talk = "\n".join(f"Officer: {h.get('you')}\n{s.get('name', 'Soldier')}: {h.get('him')}" for h in hist if isinstance(h, dict))
+    sys_msg = (f"You keep notes for {s.get('name', 'a soldier')}. Read the conversation below between him and an officer. "
+               "Reply in exactly this form, on two lines:\n"
+               "NOTE: <one or two short sentences, written about him in the third person, of what was said that he would "
+               "remember - facts he learned or told, promises, insults, kindness>\n"
+               "TRUST: <+1 if he now thinks better of the officer, -1 if worse, 0 if no change>")
+    return [{"role": "system", "content": sys_msg}, {"role": "user", "content": talk}]
+
+
 def report_messages(req: dict) -> list[dict]:
     s = req.get("speaker") or {}
-    rank = RANKS.get(s.get("rank") or "", "soldier")
-    facts = req.get("facts") or []
-    sys_msg = (f"You are {s.get('name', 'a radio operator')}, a {rank.lower()} and the radio operator of "
-               f"{req.get('unit', 'your platoon')}, {SIDE_NOTE.get(s.get('faction'), 'a soldier')}. You are sending a short "
-               "situation report over the radio to company headquarters. Use only the facts given - never add events, "
-               "numbers or places. One or two short sentences in English, the way a radio operator speaks: terse, "
-               "callsign first, ending with 'Over.' No quotation marks, no stage directions.")
+    adj, army = SIDE.get(s.get("faction"), ("", "the army"))
+    sys_msg = (f"You are {s.get('name', 'a radio operator')}, the radio operator of {req.get('unit', 'your platoon')}, "
+               f"{adj} {army}. Send a short situation report over the radio to company headquarters. Use only the "
+               "facts given - never add events, numbers or places. One or two terse sentences in English, the way a "
+               "radio operator speaks, callsign first, ending with 'Over.' No quotation marks.")
     return [{"role": "system", "content": sys_msg},
-            {"role": "user", "content": "Facts:\n- " + "\n- ".join(facts)}]
-
-
-# ---- sound ------------------------------------------------------------------------------------------------
-
-def decode_wav(data: bytes) -> tuple[array, int, int]:
-    with wave.open(io.BytesIO(data), "rb") as w:
-        ch, rate, width, n = w.getnchannels(), w.getframerate(), w.getsampwidth(), w.getnframes()
-        frames = w.readframes(n)
-    if width != 2:
-        raise ValueError("only 16-bit WAV")
-    pcm = array("h")
-    pcm.frombytes(frames)
-    if sys.byteorder == "big":
-        pcm.byteswap()
-    if ch == 2:  # (to mono: the bridge places it itself)
-        pcm = array("h", ((pcm[i] + pcm[i + 1]) // 2 for i in range(0, len(pcm) - 1, 2)))
-    return pcm, rate, 1
-
-
-def encode_stereo(left: array, right: array, rate: int) -> bytes:
-    out = array("h", bytes(len(left) * 4))
-    out[0::2] = left
-    out[1::2] = right
-    if sys.byteorder == "big":
-        out.byteswap()
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(out.tobytes())
-    return buf.getvalue()
-
-
-def clamp16(v: float) -> int:
-    return -32768 if v < -32768 else (32767 if v > 32767 else int(v))
-
-
-def place_voice(pcm: array, rate: int, gain: float, pan: float) -> bytes:
-    """Mono -> stereo with an equal-power pan (-1 left .. 1 right) and a gain."""
-    a = (pan + 1) * math.pi / 4
-    gl, gr = math.cos(a) * gain * 1.41, math.sin(a) * gain * 1.41
-    left = array("h", (clamp16(s * gl) for s in pcm))
-    right = array("h", (clamp16(s * gr) for s in pcm))
-    return encode_stereo(left, right, rate)
-
-
-def radio_voice(pcm: array, rate: int, gain: float = 0.9) -> bytes:
-    """Over the radio: a narrow band (high-pass ~300 Hz, low-pass ~3 kHz), a little drive, static."""
-    hp_a = 1 / (1 + 2 * math.pi * 300 / rate)
-    lp_a = (2 * math.pi * 3000 / rate) / (1 + 2 * math.pi * 3000 / rate)
-    out = array("h")
-    prev_x = prev_hp = lp = 0.0
-    seed = 12345
-    for s in pcm:
-        x = float(s)
-        hp = hp_a * (prev_hp + x - prev_x)
-        prev_x, prev_hp = x, hp
-        lp += lp_a * (hp - lp)
-        y = math.tanh(lp / 12000.0 * 1.8) * 14000.0
-        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-        y += ((seed >> 16) % 900) - 450
-        out.append(clamp16(y * gain))
-    return encode_stereo(out, out, rate)
-
-
-class Player:
-    """Plays one voice at a time, in order (a man finishes before the next speaks)."""
-
-    def __init__(self) -> None:
-        self.q: queue.Queue = queue.Queue()
-        self.t = threading.Thread(target=self.run, daemon=True)
-        self.t.start()
-
-    def add(self, wav: bytes) -> None:
-        self.q.put(wav)
-
-    def run(self) -> None:
-        while True:
-            wav = self.q.get()
-            if winsound is None:
-                vlog(f"(no sound here: {len(wav)} bytes of voice)")
-                continue
-            try:
-                winsound.PlaySound(wav, winsound.SND_MEMORY | winsound.SND_NODEFAULT)
-            except Exception as e:  # noqa: BLE001
-                log(f"playback failed: {e}")
-
-
-def tts(text: str, voice: str | None) -> bytes:
-    body = {"text": text, "characterName": voice or "", "nonPositional": False}
-    res = http_json(CFG["chasm"] + "/api/headless/v1/speech/synthesize", body, timeout=CFG["tts_timeout"])
-    return base64.b64decode(res["audio"]["data"])
+            {"role": "user", "content": "Facts:\n- " + "\n- ".join(req.get("facts") or [])}]
 
 
 # ---- the bridge -------------------------------------------------------------------------------------------
 
 class Bridge:
-    def __init__(self, zomboid: Path) -> None:
+    def __init__(self, zomboid: Path, use_model: bool) -> None:
         self.box = Mailbox(zomboid)
-        self.voices = Voices()
-        self.player = Player()
-        self.llm_ok = "unknown"
-        self.tts_ok = "unknown"
-        self.chasm_ok = "unknown"
-        self.last_probe = 0.0
+        self.model = Model(use_model)
         self.last_beat = 0.0
-        self.pid: int | None = None
-        self.stack_started = False
-
-    def probe(self) -> None:
-        try:
-            http_json(CFG["chasm"] + "/health", timeout=3)
-            self.chasm_ok = "ok"
-        except (OSError, ValueError, urllib.error.URLError):
-            self.chasm_ok = "off"
-        try:
-            http_json(CFG["llm"] + "/v1/models", timeout=3)
-            self.llm_ok = "ok"
-        except (OSError, ValueError, urllib.error.URLError):
-            self.llm_ok = "off"
-        if self.chasm_ok == "ok" and not self.stack_started and self.pid:
-            self.stack_started = True
-            try:
-                http_json(CFG["chasm"] + "/api/stack/start", {}, timeout=10)
-                log("asked Chasm to start its models")
-            except (OSError, ValueError, urllib.error.URLError) as e:
-                log(f"couldn't ask Chasm to start its models: {e}")
-        if self.tts_ok == "unknown" and self.chasm_ok == "off":
-            self.tts_ok = "off"
-
-    def speak(self, text: str, voice: str | None, how: str, speaker_id: str | None) -> bool:
-        if not text or self.chasm_ok != "ok":
-            return False
-        try:
-            wav = tts(text, voice)
-            pcm, rate, _ = decode_wav(wav)
-        except Exception as e:  # noqa: BLE001
-            self.tts_ok = "off"
-            log(f"voice failed ({voice or 'default'}): {e}")
-            return False
-        self.tts_ok = "ok"
-        if how == "radio":
-            self.player.add(radio_voice(pcm, rate))
-            return True
-        st = self.box.state()
-        gain, pan = 1.0, 0.0
-        lis = st.get("listener") or {}
-        spk = (st.get("speakers") or {}).get(str(speaker_id)) if speaker_id is not None else None
-        if lis and spk:
-            dx, dy = spk["x"] - lis["x"], spk["y"] - lis["y"]
-            d = math.hypot(dx, dy)
-            gain = max(CFG["min_volume"], 1 - d / CFG["hear_range"])
-            # Screen right in Project Zomboid's isometric view is +x -y.
-            pan = max(-1.0, min(1.0, (dx - dy) / max(1.0, d) / 1.414)) * min(1.0, d / 6)
-        self.player.add(place_voice(pcm, rate, gain, pan))
-        return True
+        self.last_game = 0.0
+        self.game_seen = 0.0
 
     def handle(self, path: Path) -> None:
         try:
@@ -464,68 +376,78 @@ class Bridge:
         kind = req.get("kind")
         fallback = req.get("fallback") or ""
         t0 = time.time()
-        text, worded = fallback, "no"
-        try:
-            if kind == "talk":
-                text = llm_chat(talk_messages(req), CFG["talk_max_tokens"]) or fallback
-            elif kind == "report":
-                text = llm_chat(report_messages(req), CFG["report_max_tokens"]) or fallback
-            worded = "yes" if text != fallback else "no"
-            self.llm_ok = "ok"
-        except Exception as e:  # noqa: BLE001
-            self.llm_ok = "off"
-            vlog(f"language model unavailable ({e}) - using Living Front's words")
-        voiced = "no"
-        if kind == "talk":
-            s = req.get("soldier") or {}
-            voiced = "yes" if self.speak(text, self.voices.for_soldier(s), "positional", s.get("id")) else "no"
-        elif kind == "report":
-            s = req.get("speaker") or {}
-            voiced = "yes" if self.speak(text, self.voices.for_soldier(s), "radio", None) else "no"
-        self.box.answer(rid, {"status": "ok", "text": text, "worded": worded, "voiced": voiced})
-        log(f"{kind} #{rid}: {'worded' if worded == 'yes' else 'plain'}, {'voiced' if voiced == 'yes' else 'text'}"
-            f" ({time.time() - t0:.1f} s): {text[:90]}")
+        fields = {"status": "ok", "text": fallback, "worded": "no", "voiced": "no"}
+        if self.model.state == "ok":
+            try:
+                if kind == "talk":
+                    fields["text"] = self.model.chat(talk_messages(req), CFG["talk_max_tokens"]) or fallback
+                elif kind == "report":
+                    fields["text"] = self.model.chat(report_messages(req), CFG["report_max_tokens"]) or fallback
+                elif kind == "summarize":
+                    raw = self.model.chat(summary_messages(req), CFG["summary_max_tokens"])
+                    note = re.search(r"NOTE:\s*(.+?)(?:TRUST:|$)", raw, re.S)
+                    trust = re.search(r"TRUST:\s*([+-]?\d)", raw)
+                    fields["text"] = (note.group(1).strip() if note else raw).strip()[:300] or fallback
+                    fields["trust"] = trust.group(1) if trust else "0"
+                fields["worded"] = "yes" if fields["text"] != fallback else "no"
+            except Exception as e:  # noqa: BLE001
+                log(f"the language model didn't answer ({e}) - Living Front's own words this time")
+                if not self.model.proc:
+                    self.model.state = "off"        # (someone else's server went away: look again)
+        log(f"{kind} #{rid} ({time.time() - t0:.1f} s, {'model' if fields['worded'] == 'yes' else 'plain'}): {fields['text'][:100]}")
+        self.box.answer(rid, fields)
 
     def tick(self) -> None:
         now = time.time()
         if now - self.last_beat >= 1.0:
             self.last_beat = now
-            self.pid = game_pid() if os.name == "nt" else self.pid
-            if self.pid or os.name != "nt":
-                write_heartbeat(self.pid)
-            self.box.write_status(self.llm_ok, self.tts_ok, self.chasm_ok)
+            self.box.write_status(self.model.state)
             self.box.clean()
-        if now - self.last_probe >= 15:
-            self.last_probe = now
-            self.probe()
+            self.model.check()
+        if now - self.last_game >= 5.0:
+            self.last_game = now
+            if game_running():
+                self.game_seen = now
+                self.model.start()
+            elif self.model.proc and now - self.game_seen > CFG["stop_after"]:
+                self.model.stop()
+        # (While the model is loading - up to two minutes - requests wait for it rather than getting
+        # plain answers.)
+        if self.model.state == "starting" and now - self.model.ready_at < 120:
+            return
         for p in self.box.requests():
             self.handle(p)
 
     def run(self, once: bool = False) -> None:
-        log(f"Living Front bridge {VERSION}: game folder {self.box.root}")
-        log(f"Chasm at {CFG['chasm']}, language model at {CFG['llm']}, Chasm heartbeat in {CFG['chasm_bridge_root']}")
-        self.voices.install()
-        self.probe()
-        log(f"Chasm {self.chasm_ok}, language model {self.llm_ok}")
-        while True:
-            try:
-                self.tick()
-            except Exception as e:  # noqa: BLE001
-                log(f"error: {e}")
-            if once:
-                return
-            time.sleep(0.2)
+        log(f"Living Front bridge {VERSION} (text, no Chasm): game folder {self.box.root}")
+        exe, model = find_files()
+        log(f"llama-server: {exe or 'not found'}")
+        log(f"model: {model or 'not found'}")
+        try:
+            while True:
+                try:
+                    self.tick()
+                except Exception as e:  # noqa: BLE001
+                    log(f"error: {e}")
+                if once:
+                    return
+                time.sleep(0.2)
+        finally:
+            if not once:
+                self.model.stop()
 
 
 def main() -> None:
     global VERBOSE
-    ap = argparse.ArgumentParser(description="Living Front bridge to Chasm")
-    ap.add_argument("--zomboid", default=str(Path.home() / "Zomboid"), help="the Zomboid user folder")
-    ap.add_argument("--once", action="store_true", help="one pass, then exit (testing)")
+    ap = argparse.ArgumentParser(description="Living Front bridge (text)")
+    ap.add_argument("--zomboid", default=str(Path.home() / "Zomboid"))
+    ap.add_argument("--once", action="store_true")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--no-model", action="store_true", help="never start a language model (use one already running)")
     args = ap.parse_args()
     VERBOSE = args.verbose
-    Bridge(Path(args.zomboid)).run(once=args.once)
+    load_settings()
+    Bridge(Path(args.zomboid), not args.no_model).run(once=args.once)
 
 
 if __name__ == "__main__":

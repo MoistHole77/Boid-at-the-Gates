@@ -1,23 +1,29 @@
-# Living Front bridge
+# Living Front bridge (text)
 
-Connects Living Front (Project Zomboid) to [Chasm](https://github.com/chasmlol/chasm), so soldiers
-answer you in their own words and voices, and radio operators send voiced reports.
+Lets you talk to Living Front's soldiers in your own words: each man answers in character, from
+the life the mod gave him (home, trade, family, temperament, how he talks), what he has seen, and
+what you have said to him before. Radio operators word their own reports.
 
-The game's Lua can't make web requests or play sound files, so this helper does it. It talks to
-the mod through files in `Zomboid\Lua\LivingFront\chasm\`, to Chasm's language model
-(`127.0.0.1:5001`) and voices (`127.0.0.1:7341`), and plays the voices itself (placed by where
-the speaker stands, or over the radio).
+Project Zomboid's Lua can't make web requests, so this helper does it. It runs a local language
+model (llama.cpp's `llama-server`) while the game is running and passes text between it and the
+mod through files in `Zomboid\Lua\LivingFront\chasm\`. No Chasm, no voices, no internet.
 
 ## Use
 
-1. In Chasm: choose and download a language model (Settings - LLM) and select **faster-qwen3-tts**
-   as the voice engine (Settings - TTS).
-2. Put a few reference voice clips in `voices\GER` and `voices\SOV` (see `voices\README.md`).
-3. Start `run_lf_bridge.bat` and leave its window open. Start the game.
+Start `run_lf_bridge.bat` and leave its window open, then play. In game, right-click a soldier,
+**Talk to ...**, type and press Enter. The Living Front debug tools show whether the bridge and
+the language model are ready (the model takes a little while to load the first time).
 
-It writes Chasm's game heartbeat while Project Zomboid runs, so Chasm starts its models for you.
-In the game, the Living Front debug tools show whether the bridge is running. Without the bridge,
-everything still works - soldiers and radio operators speak in Living Front's own words, as text.
+## The model
 
-Log: `lf_bridge.log` beside this file. Standard library only (Python 3.9+); `run_lf_bridge.bat`
-uses Chasm's own `uv` to provide Python if needed.
+By default it uses `llama-server.exe` and the `.gguf` model Chasm downloaded. To use others, put
+`llama-server.exe` (with its DLLs) in a `llama` folder here and a `.gguf` in a `models` folder,
+or name them in `lf_bridge.json`:
+
+```json
+{ "llama_server": "C:/path/to/llama-server.exe", "model": "C:/path/to/model.gguf",
+  "gpu_layers": 999, "ctx": 8192 }
+```
+
+If the game stutters while the model is loaded, lower `gpu_layers` (0 runs it on the processor:
+slower replies, no load on the graphics card). Logs: `lf_bridge.log`, `llama_server.log`.
