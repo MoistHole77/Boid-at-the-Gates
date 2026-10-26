@@ -622,6 +622,18 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
         end)
     end
+    if LF.Map and LF.Map.CFG and LF.Front then
+        local ORDER = { "truth", "GER", "SOV", "off" }
+        local cur = LF.Map.CFG.warView or "truth"
+        local words = LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[cur] or (cur == "off" and "off")
+        tools:addOption("Front on the map: " .. (words or "off") .. " (click to change)", nil, function()
+            local i = 1
+            for k, v in ipairs(ORDER) do if v == cur then i = k end end
+            local nxt = ORDER[i % #ORDER + 1]
+            LF.Map.CFG.warView = nxt
+            LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
+        end)
+    end
     if LF.Radio then
         local cur = LF.Radio.SIDES[LF.Radio.listening()] or "?"
         tools:addOption("Radio: listening to " .. cur .. " (click to change)", nil, function()

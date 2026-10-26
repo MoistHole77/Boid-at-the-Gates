@@ -292,6 +292,7 @@ local function update()
                               seen = witnesses(e, e.targets[1].t) })
         end
         u.offContactAt = LF.simTime
+        u.offContactBy = e.targets[1] and e.targets[1].t.u.id or u.offContactBy     -- (whom: for LF_Front)
         -- (A squad marching in a platoon's file: its whole file halts.)
         local M = LF.March.get(u.id)
         if M and not M.arrived and not fleeing(u) then

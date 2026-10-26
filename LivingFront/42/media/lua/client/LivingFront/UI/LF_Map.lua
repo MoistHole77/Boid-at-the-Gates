@@ -18,6 +18,7 @@ require "LivingFront/Core/LF_Core"
 require "LivingFront/Units/LF_Objective"
 require "LivingFront/Tactics/LF_Platoon"
 require "LivingFront/Units/LF_March"
+require "LivingFront/World/LF_Front"
 
 LF.Map = LF.Map or {}
 
@@ -29,6 +30,9 @@ local CFG = {
     nameScale = 2,          -- names drawn at twice the small font
     trackers = true,        -- unit markers on the maps (for following off-screen fights)
     unitLabelZoom = 13.5,   -- unit names and status from this zoom in (world map)
+    warView = "truth",      -- the front on the map: "truth", "GER" / "SOV" (what that side believes), "off"
+    sectorFill = 0.10,
+    frontWidth = 3,
 }
 LF.Map.CFG = CFG
 
@@ -212,8 +216,84 @@ local function drawUnits(ui, api, mini)
     end
 end
 
+-- ---- the front ---------------------------------------------------------------------------------------
+-- Sectors tinted by who holds them (or, in a side's view, who that side believes holds them), the
+-- front line between the two, and - in a side's view - its sightings of the enemy, faded by age.
+
+local VIEW_WORDS = { truth = "The front as it really is", GER = "What the Germans believe", SOV = "What the Soviets believe" }
+LF.Map.VIEW_WORDS = VIEW_WORDS
+
+local function sectorQuad(api, key)
+    local x1, y1, x2, y2 = LF.Front.bounds(key)
+    return corners(api, x1, y1, x2, y2)
+end
+
+local function drawFront(ui, api, mini)
+    local view = CFG.warView
+    if view == "off" or not LF.Front then return end
+    local side = (view == "GER" or view == "SOV") and view or nil
+    -- Sectors.
+    local list = {}
+    if side then
+        for key, b in pairs(LF.Front.belief(side)) do list[key] = b.owner end
+    else
+        for key, sec in pairs(LF.Front.sectors()) do list[key] = sec.contested and "contested" or sec.owner end
+    end
+    for key, o in pairs(list) do
+        local c = o and (COLORS[o] or (o == "contested" and COLORS.contested)) or nil
+        if c then
+            local x1, y1, x2, y2, x3, y3, x4, y4 = sectorQuad(api, key)
+            local a = o == "contested" and CFG.sectorFill * 1.6 or CFG.sectorFill
+            ui:drawPolygon(nil, x1, y1, x2, y2, x3, y3, x4, y4, c[1], c[2], c[3], a)
+            if o == "contested" and not mini then
+                line(ui, x1, y1, x2, y2, 1, c[1], c[2], c[3], 0.6)
+                line(ui, x2, y2, x3, y3, 1, c[1], c[2], c[3], 0.6)
+                line(ui, x3, y3, x4, y4, 1, c[1], c[2], c[3], 0.6)
+                line(ui, x4, y4, x1, y1, 1, c[1], c[2], c[3], 0.6)
+            end
+        end
+    end
+    -- The front line.
+    local w = mini and 2 or CFG.frontWidth
+    for _, e in ipairs(LF.Front.line(side or "truth")) do
+        local ax, ay = api:worldToUIX(e[1], e[2]), api:worldToUIY(e[1], e[2])
+        local bx, by = api:worldToUIX(e[3], e[4]), api:worldToUIY(e[3], e[4])
+        line(ui, ax, ay, bx, by, w + 2, 0, 0, 0, 0.7)
+        line(ui, ax, ay, bx, by, w, 1, 0.95, 0.85, 0.95)
+    end
+    if mini then return end
+    -- A side's sightings of the enemy: hollow markers, fading as the news gets old.
+    if side then
+        local enemy = LF.Front.ENEMY[side]
+        local c = COLORS[enemy]
+        local labels = api:getZoomF() >= CFG.unitLabelZoom
+        local tm = getTextManager()
+        local fh = tm:getFontHeight(UIFont.Small)
+        for _, sgt in pairs(LF.Front.sightings(side)) do
+            local age = LF.simTime - sgt.at
+            local a = math.max(0.25, 1 - age / LF.Front.CFG.forget)
+            local sx, sy = api:worldToUIX(sgt.x, sgt.y), api:worldToUIY(sgt.x, sgt.y)
+            line(ui, sx, sy - 6, sx + 6, sy, 2, c[1], c[2], c[3], a)
+            line(ui, sx + 6, sy, sx, sy + 6, 2, c[1], c[2], c[3], a)
+            line(ui, sx, sy + 6, sx - 6, sy, 2, c[1], c[2], c[3], a)
+            line(ui, sx - 6, sy, sx, sy - 6, 2, c[1], c[2], c[3], a)
+            if labels then
+                local mins = math.floor(age / 60)
+                local text = "~" .. sgt.men .. "  " .. (mins < 1 and "now" or (mins .. " min ago"))
+                ui:drawText(text, sx + 10, sy - fh / 2 + 1, 0, 0, 0, 0.8 * a, UIFont.Small)
+                ui:drawText(text, sx + 9, sy - fh / 2, c[1], c[2], c[3], a, UIFont.Small)
+            end
+        end
+    end
+    -- Which view this is.
+    local title = VIEW_WORDS[view] or ""
+    ui:drawText(title, 21, 61, 0, 0, 0, 0.8, UIFont.Medium)
+    ui:drawText(title, 20, 60, 1, 1, 1, 1, UIFont.Medium)
+end
+
 -- Draw every objective on a map UI (world map or minimap), and the unit trackers.
 local function drawAll(ui, api, mini)
+    LF.guard("map front", drawFront, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
     local list = LF.Objective.all()
     local any = false

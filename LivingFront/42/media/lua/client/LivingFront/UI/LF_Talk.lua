@@ -102,29 +102,71 @@ end
 
 local RANK_WORD = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant" }
 
-function LF.Talk.knowsName(rec) return rec and rec.talk and rec.talk.knowName or false end
+-- Only what you have heard him say reaches the screen: his forename and surname are learned
+-- separately ("Yakov, just Yakov" tells you Yakov, not his surname), and what he tells you of
+-- himself is kept in his own words.
+local function T(rec)
+    rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }
+    return rec.talk
+end
 
--- "Pvt. Moroz" if you know his name, else "Private".
+function LF.Talk.knowsName(rec)
+    local t = rec and rec.talk
+    return t and (t.heardFore or t.heardSur) or false
+end
+
+-- The name as you know it: "Cpl. Belov" (surname heard), "Yakov" (only his forename), or nil.
+local function knownName(rec)
+    local t = rec and rec.talk
+    if not t then return nil end
+    local rank = LF.Units.title(rec):gsub(" .*", "")
+    if t.heardFore and t.heardSur then return rec.forename .. " " .. rec.surname, rank .. " " .. rec.surname end
+    if t.heardSur then return rank .. " " .. rec.surname, rank .. " " .. rec.surname end
+    if t.heardFore then return rec.forename, rec.forename end
+    return nil
+end
+
+-- What you call him: his name as you know it, else his rank ("Corporal").
 function LF.Talk.label(rec)
     if not rec then return "?" end
-    if LF.Talk.knowsName(rec) then
-        return (LF.Units.title(rec):gsub(" .*", "")) .. " " .. rec.surname
-    end
-    return RANK_WORD[rec.rank or ""] or "Soldier"
+    local _, short = knownName(rec)
+    return short or RANK_WORD[rec.rank or ""] or "Soldier"
+end
+
+-- His full name as far as you know it (for the panel), or nil.
+function LF.Talk.fullKnown(rec)
+    local full = knownName(rec)
+    return full
+end
+
+-- Text written by the model about him (notes on your talks) with the parts of his name you
+-- haven't heard taken out.
+function LF.Talk.scrub(rec, text)
+    if not (rec and text) then return text end
+    local t = rec.talk or {}
+    local known = LF.Talk.label(rec)
+    local function plain(s) return (s:gsub("(%W)", "%%%1")) end
+    text = text:gsub(plain(rec.forename .. " " .. rec.surname), known)
+    -- (Word by word - letters and the bytes of accented ones - since Kahlua may lack %f.)
+    local hide = {}
+    if not t.heardSur then hide[rec.surname] = true end
+    if not t.heardFore then hide[rec.forename] = true end
+    text = text:gsub("[%a\128-\255]+", function(w) if hide[w] then return known end end)
+    return text
 end
 
 local function learnName(rec, words)
-    if LF.Talk.knowsName(rec) or not words then return end
+    if not words then return end
     local w = " " .. words:lower():gsub("[^%a]", " ") .. " "
     local function said(n)
         if not n or n == "" then return false end
         return w:find(" " .. (n:lower():gsub("[^%a]", " ")) .. " ", 1, true) ~= nil
     end
-    if said(rec.surname) or said(rec.forename) then
-        rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }
-        rec.talk.knowName = true
-        LF.log("TALK you now know #" .. rec.id .. "'s name: " .. LF.Units.title(rec))
-    end
+    local t = T(rec)
+    local was = LF.Talk.label(rec)
+    if not t.heardFore and said(rec.forename) then t.heardFore = true end
+    if not t.heardSur and said(rec.surname) then t.heardSur = true end
+    if LF.Talk.label(rec) ~= was then LF.log("TALK you now know #" .. rec.id .. " as " .. LF.Talk.label(rec)) end
 end
 
 -- What he has told you of himself: a fact is learned once his answer to a question on it carries
@@ -145,26 +187,37 @@ local function words(s)
     return out
 end
 
+-- The sentence of what he said that carries word w (his own words, for the panel).
+local function sentenceWith(said, w)
+    for sent in (said .. " "):gmatch("[^%.!%?]+[%.!%?]*") do
+        local low = " " .. sent:lower():gsub("[^%a%d']", " ") .. " "
+        if not w or low:find(" " .. w .. " ", 1, true) then
+            return (sent:gsub("^%s+", ""):gsub("%s+$", ""))
+        end
+    end
+    return said:sub(1, 140)
+end
+
 local function learnFacts(rec, question, said)
     local p = LF.Persona.of(rec)
     if not (p and said and said ~= "") then return end
-    rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }
-    local k = rec.talk.known or {}
+    local k = T(rec).known or {}
     rec.talk.known = k
     local topic = topicOf(question or "")
     local heard = " " .. said:lower():gsub("[^%a%d']", " ") .. " "
     for field in pairs(FACT_TOPICS) do
-        if not k[field] then
+        if type(k[field]) ~= "string" then
             if field == "age" then
-                if heard:find(" " .. tostring(p.age) .. " ", 1, true) then k.age = true end
+                local a = tostring(p.age)
+                if heard:find(" " .. a .. " ", 1, true) then k.age = sentenceWith(said, a) end
             else
-                local hits = 0
+                local hits, first = 0, nil
                 for _, w in ipairs(words(p[field] or "")) do
-                    if heard:find(" " .. w .. " ", 1, true) then hits = hits + 1 end
+                    if heard:find(" " .. w .. " ", 1, true) then hits = hits + 1; first = first or w end
                 end
-                if hits >= 2 or (hits >= 1 and topic == field) then k[field] = true end
+                if hits >= 2 or (hits >= 1 and topic == field) then k[field] = sentenceWith(said, first) end
             end
-            if k[field] then LF.log("TALK you learned #" .. rec.id .. "'s " .. field) end
+            if type(k[field]) == "string" then LF.log("TALK you learned #" .. rec.id .. "'s " .. field .. ": " .. k[field]) end
         end
     end
     if topic and VIEW_TOPICS[topic] then
@@ -246,11 +299,15 @@ local function finish(id)
     local first = s.exchanges[1].you
     local plainNote = "The officer talked with him" .. (first and (" (he asked: \"" .. first:sub(1, 60) .. "\")") or "") .. "."
     local function keep(note, delta)
+        note = LF.Talk.scrub(rec, note)
         LF.Persona.remember(rec, note, delta)
         LF.log("TALK " .. LF.Units.title(rec) .. " #" .. id .. " remembers: " .. note .. " (trust " .. tostring(rec.talk.trust) .. ")")
     end
     if LF.Chasm.alive() then
-        local sent = LF.Chasm.request({ kind = "summarize", soldier = LF.Memory.profile(rec), persona = LF.Persona.card(rec),
+        -- (The note is about him as you know him: the name you've heard, or "the soldier".)
+        local prof = LF.Memory.profile(rec)
+        prof.name = LF.Talk.fullKnown(rec) or "the soldier"
+        local sent = LF.Chasm.request({ kind = "summarize", soldier = prof, persona = LF.Persona.card(rec),
                                         history = s.exchanges, fallback = plainNote },
             function(ans)
                 if ans and ans.text and ans.text ~= "" then
@@ -332,8 +389,7 @@ local function infoRows(rec)
     local body = LF.Bodies and LF.Bodies.get(rec.id)
     local u = rec.squad and LF.Units.get(rec.squad)
     local plt = u and u.platoon and LF.Units.get(u.platoon)
-    if LF.Talk.knowsName(rec) then head(LF.Records.fullName(rec))
-    else head("Name unknown") end
+    head(LF.Talk.fullKnown(rec) or "Name unknown")
     line((rec.faction == "GER" and "Wehrmacht" or rec.faction == "SOV" and "Red Army" or "") .. " - " .. LF.Units.title(rec):gsub(" .*", "") .. ", " .. roleOf(rec))
     if u then
         head("Unit")
@@ -355,24 +411,25 @@ local function infoRows(rec)
     local p = LF.Persona.of(rec)
     if k and p then
         local any = false
-        local function fact(field, label, value)
-            if k[field] and value then
+        -- (In his own words: only what you heard him say.)
+        local function fact(field, label)
+            local v = k[field]
+            if type(v) == "string" and v ~= "" then
                 if not any then head("What he's told you"); any = true end
-                line(label .. ": " .. value)
+                line(label .. ": \"" .. LF.Talk.scrub(rec, v) .. "\"")
             end
         end
-        local function cap(v) return (tostring(v):gsub("^%l", string.upper)) end
-        fact("home", "From", p.home)
-        fact("age", "Age", tostring(p.age))
-        fact("job", "Before the war", p.job)
-        fact("family", "Family", cap(p.family))
-        fact("past", "Service", cap(p.past:gsub("^has ", "")))
+        fact("home", "Home")
+        fact("age", "Age")
+        fact("job", "Before the war")
+        fact("family", "Family")
+        fact("past", "Service")
         local V = { war = "On the war", want = "What he wants", fear = "What he fears" }
         for _, t in ipairs({ "war", "want", "fear" }) do
             local v = k.views and k.views[t]
             if v then
                 if not any then head("What he's told you"); any = true end
-                line(V[t] .. ": \"" .. v .. "\"", true)
+                line(V[t] .. ": \"" .. LF.Talk.scrub(rec, v) .. "\"", true)
             end
         end
     end
@@ -383,7 +440,7 @@ local function infoRows(rec)
     else
         line("Spoken with him " .. (n == 1 and "once" or (n .. " times")) .. " before")
         line("He " .. (REGARD[math.max(-3, math.min(3, t.trust or 0))] or REGARD[0]))
-        for i = #(t.notes or {}), 1, -1 do line(t.notes[i], true) end
+        for i = #(t.notes or {}), 1, -1 do line(LF.Talk.scrub(rec, t.notes[i]), true) end
     end
     return rows
 end
@@ -413,6 +470,10 @@ function LF_TalkWindow:createChildren()
     self.entry:instantiate()
     local win = self
     self.entry.onCommandEntered = function() win:send() end
+    -- Esc while typing: the conversation ends (the text box has the key, so no game menu).
+    self.entry.onOtherKey = function(_, key)
+        if key == Keyboard.KEY_ESCAPE then win:close() end
+    end
     self:addChild(self.entry)
     self.button = ISButton:new(self.width - CFG.PAD - bw, self.height - eh - CFG.PAD, bw, eh, "Say", self, LF_TalkWindow.send)
     self.button:initialise()
@@ -586,6 +647,11 @@ local function talkTarget()
     return hover or best
 end
 
+local function anyOpen()
+    for _ in pairs(open) do return true end
+    return false
+end
+
 local function typing()
     for _, w in pairs(open) do
         local f = false
@@ -597,13 +663,19 @@ end
 
 Events.OnTick.Add(function()
     if LF.tick % 2 ~= 0 then return end
-    facingId = LF.try("talk target", talkTarget)
+    -- (Mid-conversation: no prompt on anyone else.)
+    facingId = not anyOpen() and LF.try("talk target", talkTarget) or nil
 end)
 
 Events.OnKeyPressed.Add(function(key)
+    -- Esc ends the conversation (also when the text box isn't selected).
+    if key == Keyboard.KEY_ESCAPE and anyOpen() then
+        for _, w in pairs(open) do LF.guard("talk close", function() w:close() end) end
+        return
+    end
     local want = (Keyboard and Keyboard.KEY_E) or 18
     pcall(function() want = getCore():getKey("Interact") end)
-    if key ~= want or not facingId or typing() then return end
+    if key ~= want or not facingId or typing() or anyOpen() then return end
     if open[facingId] then open[facingId]:bringToTop(); return end
     LF.guard("talk key", LF.Talk.open, facingId, true)
 end)
