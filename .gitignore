@@ -10,3 +10,4 @@ desktop.ini
 console*.txt
 dist/
 __pycache__/
+llama_server.pid

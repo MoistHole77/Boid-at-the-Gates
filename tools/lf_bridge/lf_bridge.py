@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.61.2"
+VERSION = "0.61.3"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -168,6 +168,70 @@ def game_running() -> bool:
     return False
 
 
+PID_FILE = HERE / "llama_server.pid"
+
+
+def pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
+                                 timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return "llama-server" in out.lower()
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def our_server_pid() -> int | None:
+    """The llama-server an earlier run of the bridge started, if it is still running."""
+    try:
+        pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        return pid if pid_alive(pid) else None
+    except (OSError, ValueError):
+        pass
+    # (No note of one: a bridge before 0.61.3 started it. If it's the only llama-server and Chasm
+    # isn't running, it's ours.)
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pids, chasm = [], False
+    for row in out.splitlines():
+        cols = [c.strip('"') for c in row.split('","')]
+        if len(cols) < 2:
+            continue
+        name = cols[0].lower()
+        if name == "llama-server.exe" and cols[1].isdigit():
+            pids.append(int(cols[1]))
+        elif name.startswith("chasm"):
+            chasm = True
+    if len(pids) == 1 and not chasm:
+        try:
+            PID_FILE.write_text(str(pids[0]), encoding="utf-8")
+        except OSError:
+            pass
+        return pids[0]
+    return None
+
+
+def kill_pid(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+
+
 def find_files() -> tuple[Path | None, Path | None]:
     exe = Path(CFG["llama_server"]) if CFG.get("llama_server") else None
     model = Path(CFG["model"]) if CFG.get("model") else None
@@ -195,6 +259,7 @@ class Model:
         self.state = "off"
         self.ready_at = 0.0
         self.failed_args = False
+        self.adopted: int | None = None     # (a llama-server an earlier run of the bridge started)
 
     def up(self) -> bool:
         try:
@@ -208,8 +273,13 @@ class Model:
             return
         if self.up():
             if self.state != "ok":
-                log("a language model is already running on port " + str(CFG["port"]) + " - using it")
-            self.state = "ok"     # (one is already running - Chasm's, or one you started)
+                pid = our_server_pid()
+                if pid:
+                    self.adopted = pid
+                    log(f"the language model is already loaded (started by the bridge before, process {pid}) - carrying on with it")
+                else:
+                    log("a language model is already running on port " + str(CFG["port"]) + " - using it")
+            self.state = "ok"     # (one is already running - ours from before, Chasm's, or one you started)
             return
         if not self.use:
             self.state = "off"
@@ -229,6 +299,10 @@ class Model:
         log(f"starting the language model: {model.name} ({CFG['gpu_layers']} layers on the graphics card)")
         self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdout=logf, stderr=subprocess.STDOUT,
                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            PID_FILE.write_text(str(self.proc.pid), encoding="utf-8")
+        except OSError:
+            pass
         self.state = "starting"
         self.ready_at = time.time()
 
@@ -241,10 +315,24 @@ class Model:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
             self.proc = None
+            PID_FILE.unlink(missing_ok=True)
+        elif self.adopted:
+            log("game closed - stopping the language model")
+            kill_pid(self.adopted)
+            self.adopted = None
+            PID_FILE.unlink(missing_ok=True)
         if self.state != "missing":
             self.state = "off"
 
+    def owned(self) -> bool:
+        return bool(self.proc or self.adopted)
+
     def check(self) -> None:
+        if self.adopted and not pid_alive(self.adopted):
+            log("the language model stopped")
+            self.adopted = None
+            self.state = "off"
+            return
         if self.proc and self.proc.poll() is not None:
             code = self.proc.returncode
             self.proc = None
@@ -582,7 +670,7 @@ class Bridge:
                     log(f"the language model broke off ({e}) - his words so far stand")
                 else:
                     log(f"the language model didn't answer ({e}) - Living Front's own words this time")
-                if not self.model.proc:
+                if not self.model.proc and not self.model.adopted:
                     self.model.state = "off"        # (someone else's server went away: look again)
         log(f"{kind} #{rid} ({time.time() - t0:.1f} s, {'model' if fields['worded'] == 'yes' else 'plain'}): {fields['text'][:100]}")
         self.box.answer(rid, fields)
@@ -601,7 +689,7 @@ class Bridge:
                 if on:
                     self.game_seen = now
                     self.model.start()
-                elif self.model.proc and now - self.game_seen > CFG["stop_after"]:
+                elif self.model.owned() and now - self.game_seen > CFG["stop_after"]:
                     self.model.stop()
         if not self.game_on:
             return
@@ -622,12 +710,8 @@ class Bridge:
             self.mtime = m
         if m == self.mtime or time.time() - m < 2:      # (wait for the copy to finish)
             return False
-        log("lf_bridge.py was updated - restarting with the new version")
-        self.model.stop()
-        for _ in range(40):                 # (let the old model let go of its port first)
-            if not self.model.up():
-                break
-            time.sleep(0.25)
+        log("lf_bridge.py was updated - restarting with the new version (the model stays loaded)")
+        self.handing_over = True
         if _LOCK:
             _LOCK.close()
         subprocess.Popen([sys.executable] + sys.argv, cwd=str(HERE),
@@ -655,7 +739,7 @@ class Bridge:
                     return
                 time.sleep(0.2 if self.game_on else 1.0)
         finally:
-            if not once:
+            if not once and not getattr(self, "handing_over", False):
                 self.model.stop()
 
 
