@@ -806,8 +806,11 @@ local function holdFile(id, body, rec, m, sx, sy, sz, face, gait, pick, threatId
         -- Now and then: keep walking but bring the rifle up and scan his own outboard side (the
         -- way he would face at a halt) for a second or two.
         local first = m.nextScan == nil
-        m.nextScan = LF.tick + 600 + ZombRand(1200)          -- every ~10-30 s
-        if not first then m.scanDir, m.scanUntil = scanDir, LF.tick + 90 + ZombRand(90) end
+        m.nextScan = LF.tick + 360 + ZombRand(540)           -- every ~6-15 s (0.56: was 10-30 s)
+        if not first then
+            m.scanDir, m.scanUntil = scanDir, LF.tick + 120 + ZombRand(120)   -- for 2-4 s
+            LF.Brain.scans = (LF.Brain.scans or 0) + 1
+        end
     end
     if m.scanUntil and LF.tick < m.scanUntil then carryScan(body, m) end
     if walkGait == "patrol" then
@@ -1522,3 +1525,11 @@ function LF.Brain.report()
 end
 
 Events.OnTick.Add(onTick)
+
+-- Once a minute: how many scans marching men started (to check patrols scan as they walk).
+Events.OnTick.Add(function()
+    if LF.tick % 3600 ~= 1800 then return end
+    local n = LF.Brain.scans or 0
+    if n > 0 then LF.log("PATROL " .. n .. " scans started by marching men in the last minute") end
+    LF.Brain.scans = 0
+end)

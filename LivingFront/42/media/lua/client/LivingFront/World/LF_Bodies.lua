@@ -14,6 +14,12 @@ require "LivingFront/Core/LF_Perf"
 LF.Bodies = LF.Bodies or {}
 
 local bodies = {}      -- record id -> IsoPlayer
+local wanted = {}      -- squad id -> tick until which its men should have bodies (an off-screen fight met you)
+
+-- A unit near a fight you are in: its men get bodies where the ground is loaded (LF_Clash).
+function LF.Bodies.want(squadId)
+    if squadId then wanted[squadId] = LF.tick + 600 end
+end
 
 local function readStat(body, name)
     return body:getStats():get(CharacterStat[name])
@@ -108,6 +114,12 @@ function LF.Bodies.spawn(rec)
     -- Soldiers (and anyone recorded as armed) carry their rifle from the start.
     if (rec.faction ~= "CIV" or rec.armed) and LF.Combat then LF.guard("arm on spawn", LF.Combat.arm, body) end
 
+    -- Wounded off-screen (LF_Clash): the wound is on him now.
+    if rec.offWound and LF.Combat and LF.Combat.blastWound then
+        local w = rec.offWound
+        rec.offWound = nil
+        LF.Combat.blastWound(body, w.part, w.severity, w.impact)
+    end
     bodies[rec.id] = body
     LF.Perf.stop("spawn", t0)
     LF.log("spawned #" .. rec.id .. " " .. LF.Records.fullName(rec) .. " (" .. rec.faction .. ") at "
@@ -162,6 +174,9 @@ local function managerPass()
             and LF.distSq(body:getX(), body:getY(), px, py) <= despawnSq then
             near[rec.squad] = true
         end
+    end
+    for sid, untilTick in pairs(wanted) do
+        if untilTick > LF.tick then near[sid] = true else wanted[sid] = nil end
     end
     local cell = getCell()
     local function loaded(x, y, z)

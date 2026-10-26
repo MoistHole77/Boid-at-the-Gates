@@ -24,7 +24,15 @@ local function store()
     return data
 end
 
-Events.OnInitGlobalModData.Add(function() cached = nil end)
+Events.OnInitGlobalModData.Add(function()
+    cached = nil
+    -- The simulated clock (LF.simTime) carries on from the save, so times kept against it - an
+    -- expected arrival, the last contact - stay true across a reload.
+    LF.simTime = store().simTime or 0
+end)
+Events.OnTick.Add(function()
+    if cached and LF.tick % 60 == 0 then cached.simTime = LF.simTime end
+end)
 
 -- The whole saved table (records, units, id counters), for other modules that store data.
 function LF.Records.data()

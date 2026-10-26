@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.55.0"
+LF.VERSION = "0.56.0"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -102,7 +102,7 @@ Events.OnTick.Add(function() LF.tick = LF.tick + 1 end)
 -- paused. What the off-screen war is timed by - a squad walking 0.75 tiles a second walks that
 -- many tiles per simulated second whether you can see it or not.
 LF.simTime = 0
-local SPEEDS = { [1] = 1, [2] = 5, [3] = 20, [4] = 40 }
+local SPEEDS = { [0] = 0, [1] = 1, [2] = 5, [3] = 20, [4] = 40 }   -- (0: paused - the map can do that)
 local lastMs = nil
 Events.OnTick.Add(function()
     local now = getTimestampMs and getTimestampMs() or nil

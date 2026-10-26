@@ -1013,6 +1013,7 @@ local function updateTake(p, m)
         -- The assault has failed?
         local mainShare = main and fitShare(main) or 0
         local broken = not main or mainShare < 0.4 or (LF.Tactics.state(main) and LF.Tactics.state(main).broken)
+            or (main.offBroken and main.offBroken <= LF.simTime and LF.simTime - main.offBroken < 120)
         if broken then
             local pf = platoonFit(p)
             -- Who is left to send in: the reserve first, then a rifle support squad.
@@ -1221,7 +1222,10 @@ function LF.Platoon.place(rec)
                 if rec.hqRole == "rto" then hx, hy = fy, -fx else hx, hy = -fx, -fy end
             end
             face.x, face.y, face.z = x + hx * 6, y + hy * 6, z
-            return "file", x, y, z, face, moving and "march" or "halt"
+            -- (On the move they scan as the squads' men do: the lieutenant ahead, his radio
+            -- operator to the right, the platoon sergeant to the left.)
+            local scan = isCmd and "fwd" or (rec.hqRole == "rto" and "right" or "left")
+            return "file", x, y, z, face, moving and "march" or "halt", scan
         end
     end
     local point = focus(p, body:getX(), body:getY())

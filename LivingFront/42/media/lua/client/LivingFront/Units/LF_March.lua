@@ -608,8 +608,10 @@ local function advanceOffscreen(squad, M)
     M.simAt = LF.simTime
     if M.arrived then return end
     if M.halted then
-        M.halted = false            -- (whatever stopped it isn't being fought out here)
-        LF.log("PATROL " .. squad.name .. ": off-screen - moving on")
+        -- In an off-screen fight (LF_Clash): it stays halted until it has been quiet a while.
+        if LF.Clash and LF.Clash.inContact(squad) then return end
+        M.halted = false
+        LF.log("PATROL " .. squad.name .. ": off-screen - quiet again, moving on")
     end
     if dt > 0 then M.head = math.min(M.total, M.head + (LF.Move and LF.Move.PATROL_PACE or 0.75) * dt) end
     for _, rid in ipairs(M.order) do
