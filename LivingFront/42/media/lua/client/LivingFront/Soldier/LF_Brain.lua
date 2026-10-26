@@ -633,7 +633,11 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
     post = post and post.posts and post.posts[id]
     local quiet = not pick and post and REST_POSTS[post.kind]
         and not LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.quietRest, 80)
-    if quiet and LF.Idle and (m.rest or LF.dist(body:getX(), body:getY(), sx, sy) <= 2) then
+    -- (Resting means resting near his post: a man still at his ease somewhere else - he was
+    -- standing by outside when the order to hold came - gets up and goes to it. A seat a few tiles
+    -- off counts as near.)
+    local fromPost = LF.dist(body:getX(), body:getY(), sx, sy)
+    if quiet and LF.Idle and (fromPost <= 2 or (m.rest and fromPost <= (LF.Idle.SEAT_RANGE or 6) + 1)) then
         if not m.keepPost then
             m.keepPost = function() local mm = minds[id]; return mm ~= nil and mm.rest ~= nil end
         end

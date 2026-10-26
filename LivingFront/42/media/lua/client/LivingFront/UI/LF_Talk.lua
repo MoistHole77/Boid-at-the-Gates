@@ -19,6 +19,7 @@ require "LivingFront/Soldier/LF_Persona"
 require "ISUI/ISCollapsableWindow"
 require "ISUI/ISTextEntryBox"
 require "ISUI/ISButton"
+require "ISUI/ISToolTip"
 
 LF.Talk = LF.Talk or {}
 
@@ -445,6 +446,33 @@ local function infoRows(rec)
     return rows
 end
 
+-- ---- when he can't talk ---------------------------------------------------------------------------------
+-- A man on the march, in a fight, taking a building, down or seeing to a wounded man has no time
+-- for a chat: no talk prompt over him, and a conversation under way ends if it comes to that.
+
+local BUSY_STATES = { alert = "on the alert", assist = "helping a wounded man", bound = "moving under fire",
+                      down = "down", engage = "in a fight", file = "on the march", flee = "falling back" }
+
+-- Why he can't talk now (a few words), or nil if he can.
+function LF.Talk.busy(rec)
+    if not (rec and rec.alive) then return "dead" end
+    if rec.captured then return "a prisoner" end
+    if LF.Medic and LF.Medic.busy and LF.Medic.busy(rec.id) then return "busy with the wounded" end
+    local st = LF.Brain and LF.Brain.stateOf and LF.Brain.stateOf(rec.id)
+    if st and BUSY_STATES[st] then return BUSY_STATES[st] end
+    local u = rec.squad and LF.Units.get(rec.squad)
+    if u then
+        if LF.Clash and LF.Clash.inContact(u) then return "in a fight" end
+        local M = LF.March and LF.March.get(u.id)
+        if M and not M.arrived then return "on the march" end
+        local t = u.objTask
+        if t and t.kind == "take" then return "taking " .. ((LF.Objective and LF.Objective.get(t.obj) or {}).name or "a building") end
+    end
+    return nil
+end
+
+local NOT_NOW = { GER = "Not now, sir!", SOV = "Not now, comrade!" }
+
 -- ---- the window -----------------------------------------------------------------------------------------
 
 LF_TalkWindow = ISCollapsableWindow:derive("LF_TalkWindow")
@@ -573,6 +601,10 @@ function LF_TalkWindow:prerender()
 end
 
 function LF_TalkWindow:close()
+    -- (Let go of the keyboard first: a text box removed while it has the keys leaves you unable
+    -- to move until you click somewhere.)
+    pcall(function() self.entry:unfocus() end)
+    pcall(function() self.entry:setFocused(false) end)
     open[self.recId] = nil
     LF.guard("talk finish", finish, self.recId)
     self:setVisible(false)
@@ -580,6 +612,7 @@ function LF_TalkWindow:close()
 end
 
 function LF.Talk.open(id, keyed)
+    if LF.Talk.busy(LF.Records.get(id)) then return end
     if open[id] then open[id]:bringToTop(); return end
     local x = math.min(getMouseX() + 20, getCore():getScreenWidth() - CFG.W - 10)
     local y = math.min(math.max(10, getMouseY() - 80), getCore():getScreenHeight() - CFG.H - 10)
@@ -595,13 +628,15 @@ end
 
 -- He walked off, died, or you walked away: the conversation ends.
 Events.OnTick.Add(function()
-    if LF.tick % 60 ~= 31 then return end
+    if LF.tick % 30 ~= 11 then return end
     local p = getPlayer()
     for id, w in pairs(open) do
         local rec = LF.Records.get(id)
         local b = LF.Bodies and LF.Bodies.get(id)
         local far = b and p and LF.dist(b:getX(), b:getY(), p:getX(), p:getY()) > 12
-        if not (rec and rec.alive) or not b or far then
+        local busy = rec and rec.alive and LF.Talk.busy(rec)
+        if not (rec and rec.alive) or not b or far or busy then
+            if busy and b and LF.Tactics and LF.Tactics.say then LF.Tactics.say(id, NOT_NOW[rec.faction] or "Not now, sir!", 3) end
             LF.guard("talk close", function() w:close() end)
         end
     end
@@ -628,7 +663,7 @@ local function talkTarget()
             local dx, dy = body:getX() - px, body:getY() - py
             local d = math.sqrt(dx * dx + dy * dy)
             local rec = d <= CFG.talkRange and LF.Records.get(id)
-            if rec and rec.alive and rec.faction ~= "CIV" and not rec.captured then
+            if rec and rec.alive and rec.faction ~= "CIV" and not rec.captured and not LF.Talk.busy(rec) then
                 -- The mouse on him (his figure on screen, feet to head) ...
                 local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
                 local top = sy - (LF.headHeight(body) + 10) / zoom
@@ -724,7 +759,19 @@ local function onMenu(playerNum, context, worldObjects, test)
         local rec = LF.Records.get(f.id)
         if rec and rec.alive and rec.faction ~= "CIV" then
             local id = f.id
-            context:addOption("Talk to " .. LF.Talk.label(rec), nil, function() LF.Talk.open(id) end)
+            local why = LF.Talk.busy(rec)
+            local opt = context:addOption("Talk to " .. LF.Talk.label(rec), nil, function() LF.Talk.open(id) end)
+            if why then
+                -- (Greyed out, with why: he has no time for it now.)
+                opt.notAvailable = true
+                pcall(function()
+                    local tip = ISToolTip:new()
+                    tip:initialise()
+                    tip:setVisible(false)
+                    tip.description = "He's " .. why .. "."
+                    opt.toolTip = tip
+                end)
+            end
         end
     end
 end

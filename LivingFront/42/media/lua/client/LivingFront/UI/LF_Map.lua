@@ -132,10 +132,39 @@ local function label(ui, lines, sx, sy, c)
     end
 end
 
+-- The side whose picture the map shows (nil: the truth).
+local function viewSide()
+    local v = CFG.warView
+    return (v == "GER" or v == "SOV") and v or nil
+end
+
+-- An objective as the map shows it: the truth, or - in a side's view - what that side believes
+-- (who holds it, its name), with only that side's units listed.
+local function asViewed(obj)
+    local side = viewSide()
+    if not side or not LF.Front then return obj end
+    local b = LF.Front.objectiveBelief(side, obj.id)
+    local v = setmetatable({}, { __index = obj })
+    v.lfReal = obj
+    -- (false, not nil: a nil would fall through to the real objective and show the truth.)
+    v.holder = b and b.holder or false
+    v.contested = b and b.contested or false
+    v.name = b and b.name or obj.name
+    return v
+end
+
 local function detailLines(obj)
     local lines = { obj.name .. (obj.kind and (" - " .. obj.kind) or ""), holderWords(obj) }
-    for _, t in ipairs(LF.Objective.tasked(obj)) do
-        lines[#lines + 1] = t.unit.name .. ": " .. t.words
+    local side = viewSide()
+    for _, t in ipairs(LF.Objective.tasked(obj.lfReal or obj)) do
+        if not side or t.unit.faction == side then
+            lines[#lines + 1] = t.unit.name .. ": " .. t.words
+        end
+    end
+    if side then
+        local b = LF.Front and LF.Front.objectiveBelief(side, (obj.lfReal or obj).id)
+        local mins = b and math.floor((LF.simTime - b.at) / 60) or nil
+        if mins and mins >= 1 then lines[#lines + 1] = "(as last seen " .. mins .. " min ago)" end
     end
     return lines
 end
@@ -187,8 +216,10 @@ local function drawUnits(ui, api, mini)
     local labels = not mini and zoom >= CFG.unitLabelZoom
     local font = UIFont.Small
     local tm = getTextManager()
+    local side = viewSide()
     for _, u in pairs(LF.Units.all()) do
-        if ((u.kind == "squad" and not u.joined) or u.kind == "hq") then
+        -- (In a side's view only its own units: the enemy is where its sightings say.)
+        if ((u.kind == "squad" and not u.joined) or u.kind == "hq") and (not side or u.faction == side) then
             local wx, wy, fit, total, alive = unitPos(u)
             if wx then
                 local c = COLORS[u.faction] or COLORS.none
@@ -295,9 +326,9 @@ end
 local function drawAll(ui, api, mini)
     LF.guard("map front", drawFront, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
-    local list = LF.Objective.all()
+    local list = {}
     local any = false
-    for _ in pairs(list) do any = true; break end
+    for id, obj in pairs(LF.Objective.all()) do list[id] = asViewed(obj); any = true end
     if not any then return end
     local mx, my = nil, nil
     if not mini and ui:isMouseOver() and not ui:isMouseOverChild() then mx, my = ui:getMouseX(), ui:getMouseY() end
@@ -327,7 +358,7 @@ local function drawAll(ui, api, mini)
         local sx, sy = centre(api, hovered)
         label(ui, detailLines(hovered), sx, sy, colorOf(hovered))
     end
-    ui.lfHoveredObjective = hovered
+    ui.lfHoveredObjective = hovered and (hovered.lfReal or hovered) or nil
 end
 
 -- ---- orders from the map ----------------------------------------------------------------------

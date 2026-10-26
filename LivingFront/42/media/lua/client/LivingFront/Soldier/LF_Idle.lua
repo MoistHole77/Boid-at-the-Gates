@@ -36,6 +36,9 @@ local CFG = {
     seatRange = 5,                           -- a seat this close to his place
     seatFailTicks = 900,                     -- not sitting on it after ~15 s: the ground instead
 }
+LF.Idle = LF.Idle or {}
+LF.Idle.SEAT_RANGE = CFG.seatRange
+
 LF.Idle.CFG = CFG
 
 -- anim: the clip; gun: he keeps the rifle in his hands (else he slings it first); ticks: a fixed

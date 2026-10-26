@@ -46,6 +46,7 @@ local function store()
     f.sectors = f.sectors or {}
     f.sight = f.sight or { GER = {}, SOV = {} }
     f.belief = f.belief or { GER = {}, SOV = {} }
+    f.objBelief = f.objBelief or { GER = {}, SOV = {} }
     return f
 end
 
@@ -241,12 +242,47 @@ local function updateBelief()
     end
 end
 
+-- What each side believes of each objective: who holds it and what it is called. Its own it
+-- knows; another it learns by having a unit within sight of it; otherwise it remembers what it
+-- last saw (a new objective: as it stood when it appeared).
+local function updateObjectives()
+    local sightSq = CFG.sight * CFG.sight
+    for _, side in ipairs(SIDES) do
+        local OB = store().objBelief[side]
+        for id, obj in pairs(LF.Objective.all()) do
+            local knows = obj.holder == side or not OB[id]
+            if not knows then
+                for _, e in ipairs(units) do
+                    if e.faction == side and e.fit > 0 and LF.distSq(e.x, e.y, obj.x, obj.y) <= sightSq then
+                        knows = true
+                        break
+                    end
+                end
+            end
+            if knows then
+                local b = OB[id]
+                if not b or b.holder ~= obj.holder or b.name ~= obj.name or (b.contested or false) ~= (obj.contested or false) then
+                    OB[id] = { holder = obj.holder, name = obj.name, contested = obj.contested or nil, at = LF.simTime }
+                end
+            end
+        end
+        for id in pairs(OB) do if not LF.Objective.get(id) then OB[id] = nil end end
+    end
+end
+
 local function pass()
     units = survey()
     updateSectors()
     readEvents()
     updateSightings()
     updateBelief()
+    updateObjectives()
+end
+
+-- What a side believes of an objective: { holder, name, contested, at } (nil: never heard of it).
+function LF.Front.objectiveBelief(side, id)
+    local OB = store().objBelief[side]
+    return OB and OB[id] or nil
 end
 
 Events.OnTick.Add(function()
