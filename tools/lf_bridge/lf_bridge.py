@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.63.0"
+VERSION = "0.63.1"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -502,7 +502,8 @@ def clean(text: str) -> str:
 # ---- prompts ------------------------------------------------------------------------------------------------
 
 SIDE = {"GER": ("German", "the Wehrmacht"), "SOV": ("Soviet", "the Red Army")}
-RANKS = {"PVT": "private", "CPL": "corporal", "SGT": "sergeant", "SSG": "staff sergeant", "LT": "lieutenant"}
+RANKS = {"PVT": "private", "CPL": "corporal", "SGT": "sergeant", "SSG": "staff sergeant", "LT": "lieutenant",
+         "1SG": "first sergeant", "CPT": "captain"}
 TRUST = {-3: "He resents the officer.", -2: "He doesn't trust the officer.", -1: "He's wary of the officer.",
          0: "He doesn't know the officer well.", 1: "He's warming to the officer.", 2: "He trusts the officer.",
          3: "He'd follow the officer anywhere."}
@@ -530,7 +531,8 @@ def unit_words(text: str) -> str:
 
 
 RANK_WORDS = {"PVT": ("private", "pvt"), "CPL": ("corporal", "cpl"), "SGT": ("sergeant", "sgt"),
-              "SSG": ("staff sergeant", "ssgt", "ssg"), "LT": ("lieutenant", "lt")}
+              "SSG": ("staff sergeant", "ssgt", "ssg"), "LT": ("lieutenant", "lt"),
+              "1SG": ("first sergeant", "1stsgt", "stsgt"), "CPT": ("captain", "capt", "cpt")}
 
 
 def wrong_rank(text: str, rank: str) -> bool:

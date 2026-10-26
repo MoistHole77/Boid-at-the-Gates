@@ -18,8 +18,9 @@ require "LivingFront/Core/LF_Records"
 
 LF.Units = LF.Units or {}
 
-LF.Units.RANKS = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant" }
-local RANK_SHORT = { PVT = "Pvt.", CPL = "Cpl.", SGT = "Sgt.", SSG = "SSgt.", LT = "Lt." }
+LF.Units.RANKS = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant",
+                   ["1SG"] = "First Sergeant", CPT = "Captain" }
+local RANK_SHORT = { PVT = "Pvt.", CPL = "Cpl.", SGT = "Sgt.", SSG = "SSgt.", LT = "Lt.", ["1SG"] = "1stSgt.", CPT = "Capt." }
 
 local function units()
     local data = LF.Records.data()

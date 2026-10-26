@@ -101,7 +101,8 @@ end
 -- ---- who you take him for -------------------------------------------------------------------------------
 -- His rank you can see; his name you know only once he has told you (or said it in your hearing).
 
-local RANK_WORD = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant" }
+local RANK_WORD = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant",
+                    ["1SG"] = "First Sergeant", CPT = "Captain" }
 
 -- Only what you have heard him say reaches the screen: his forename and surname are learned
 -- separately ("Yakov, just Yakov" tells you Yakov, not his surname), and what he tells you of
@@ -327,6 +328,8 @@ end
 -- passed between the two of them. Not his past, his kills, his thoughts - unless he told you.
 
 local ROLE = { lt = "platoon commander", ssgt = "platoon sergeant", rto = "radio operator",
+               cpt = "company commander", firstsgt = "company first sergeant", xo = "executive officer",
+               surgeon = "company surgeon", security = "headquarters security",
                gunner = "machine gunner", assistant = "assistant gunner", ammo = "ammunition bearer" }
 local REGARD = { [-3] = "resents you", [-2] = "doesn't trust you", [-1] = "is wary of you", [0] = "doesn't know you well",
                  [1] = "is warming to you", [2] = "trusts you", [3] = "would follow you anywhere" }
@@ -394,7 +397,7 @@ local function infoRows(rec)
     line((rec.faction == "GER" and "Wehrmacht" or rec.faction == "SOV" and "Red Army" or "") .. " - " .. LF.Units.title(rec):gsub(" .*", "") .. ", " .. roleOf(rec))
     if u then
         head("Unit")
-        line(u.kind == "hq" and "Platoon headquarters" or (u.name:gsub("^.* / ", "")))
+        line(u.kind == "hq" and "Platoon headquarters" or u.companyHQ and "Company headquarters" or (u.name:gsub("^.* / ", "")))
         if plt then line((plt.name:gsub("^.* / ", ""))) end
         local cid = u.kind ~= "hq" and LF.Units.commander(u)
         local c = cid and cid ~= rec.id and LF.Records.get(cid)

@@ -2,8 +2,8 @@
 --
 -- No messenger exists in the game: a message is just something that arrives later - as long as a
 -- man running would take to cover the ground. Within earshot it is passed at once, by voice;
--- beyond, the delay is the distance at the moment it was sent over the running pace (measured in
--- play: LF.Move.RUN_PACE, else CFG.runPace). (Radio, for headquarters further up: a fixed delay
+-- beyond, the delay is the distance at the moment it was sent over a running pace of 3 tiles a
+-- simulated second (CFG.runPace). (Radio, for headquarters further up: a fixed delay
 -- for the operator to get through - LF.Comms.radioDelay.) The same for both sides.
 --
 -- What a message says is fixed when it sets out: a report describes things as they were then, not
@@ -19,7 +19,7 @@ require "LivingFront/Core/LF_Records"
 LF.Comms = LF.Comms or {}
 
 local CFG = {
-    runPace = 3.0,          -- tiles a simulated second, until a run has been measured (LF_MoveAction)
+    runPace = 3.0,          -- tiles a simulated second: a man running
     radioDelay = 45,        -- simulated seconds for a radio message to get through
     checkTicks = 15,
 }
@@ -32,12 +32,9 @@ local function store()
     return d.comms
 end
 
--- How fast a man runs (tiles per simulated second).
-function LF.Comms.runPace()
-    local m = LF.Move and LF.Move.RUN_PACE
-    if type(m) == "number" and m > 0.5 then return m end
-    return CFG.runPace
-end
+-- How fast a message travels (tiles per simulated second): a man running, fixed at CFG.runPace.
+-- (LF_MoveAction also measures soldiers' real running pace - LF.Move.RUN_PACE - for the log only.)
+function LF.Comms.runPace() return CFG.runPace end
 
 -- The delay for a message carried over d tiles (0 within earshot).
 function LF.Comms.delayFor(d, earshot)

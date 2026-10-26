@@ -12,6 +12,7 @@
 --                           report, delete all,
 --                           reset world
 
+require "LivingFront/Tactics/LF_Company"
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
 require "LivingFront/World/LF_Bodies"
@@ -349,6 +350,11 @@ local function spawnUnit(faction, x, y, z, size, playerNum)
     local p = getSpecificPlayer(playerNum)
     local fx, fy = 1, 0
     if p then fx, fy = x + 0.5 - p:getX(), y + 0.5 - p:getY() end
+    if size == "companyHQ" then
+        local c, taken = LF.Company.create(faction, x + 0.5, y + 0.5, z, fx, fy)
+        LF.say("Spawned " .. c.name .. " HQ (10)" .. (#taken > 0 and (" - in command of " .. table.concat(taken, ", ")) or " - no platoons near to take command of"))
+        return
+    end
     if size == "platoon" or size == "platoonMG" then
         local plt = LF.Platoon.create(faction, x + 0.5, y + 0.5, z, fx, fy, size == "platoonMG")
         LF.say("Spawned " .. plt.name .. " (23)")
@@ -498,6 +504,8 @@ local function onMenu(playerNum, context, worldObjects, test)
             function() spawnUnit(key, x, y, z, "mg", playerNum) end)
         fm:addOption("Platoon (43: HQ + 4 rifle squads)", nil, function() spawnUnit(key, x, y, z, "platoon", playerNum) end)
         fm:addOption("Platoon (43: HQ + 3 rifle squads + MG squad)", nil, function() spawnUnit(key, x, y, z, "platoonMG", playerNum) end)
+        fm:addOption("Company HQ (10: Capt., 1stSgt., XO, radio, surgeon, security team - takes the nearest 3 platoons)", nil,
+            function() spawnUnit(key, x, y, z, "companyHQ", playerNum) end)
     end
     spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 

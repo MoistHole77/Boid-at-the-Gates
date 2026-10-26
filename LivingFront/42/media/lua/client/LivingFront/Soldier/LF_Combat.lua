@@ -279,6 +279,9 @@ function LF.Combat.unsling(body) return LF.guard("unsling rifle", doUnsling, bod
 -- Make sure a body holds its own weapon (LF_Weapons: Kar98k, Mosin, MP40 or PPSh), loaded and in
 -- both hands. Returns the gun. (A slung rifle comes off his back first.)
 function LF.Combat.arm(body)
+    -- (Some men carry no weapon at all - a company commander, his first sergeant, the surgeon.)
+    local rec = LF.Records.get(body:getModData().LF_id)
+    if rec and rec.unarmed then return nil end
     local profile = LF.Weapons.profileOf(body)
     local gun = body:getPrimaryHandItem()
     if not gun and LF.Combat.slungGun(body) then

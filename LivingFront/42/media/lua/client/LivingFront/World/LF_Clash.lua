@@ -118,7 +118,8 @@ local function firepower(e)
     for _, r in ipairs(e.men) do
         if fitOf(r) then
             n = n + 1
-            if r.mgRole == "gunner" then f = f + 5
+            if r.unarmed then f = f + 0
+            elseif r.mgRole == "gunner" then f = f + 5
             elseif r.rank == "LT" then f = f + 0.3
             else f = f + 1 end
         end

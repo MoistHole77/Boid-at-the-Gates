@@ -101,7 +101,7 @@ end
 
 function LF.Morale.died(rec)
     if not rec.squad then return end
-    if rec.rank == "LT" then
+    if rec.rank == "LT" and rec.hqRole ~= "xo" then
         for _, uid in ipairs(platoonUnits(rec.squad)) do eachIn(uid, function(r) LF.Morale.add(r, CFG.ltDeath) end) end
         LF.log("MORALE the platoon " .. CFG.ltDeath .. " (" .. LF.Units.title(rec) .. " killed)")
         return

@@ -205,7 +205,7 @@ end
 
 -- Queue a reload (unless already busy). Returns true if one was queued.
 function LF.Weapons.reload(body, gun, why)
-    if body:isPerformingAnAction() then return false end
+    if not gun or body:isPerformingAnAction() then return false end
     local profile = LF.Weapons.profileOf(body)
     ISTimedActionQueue.add(LF_ReloadAction:new(body, gun, profile))
     if LF.Config.logShots then

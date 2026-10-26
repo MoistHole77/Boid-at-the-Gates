@@ -137,7 +137,8 @@ local SECRET = {
     young = { "he lied about his age to get in" },
 }
 
-local AGE = { PVT = { 18, 27 }, CPL = { 21, 31 }, SGT = { 24, 38 }, SSG = { 27, 41 }, LT = { 21, 30 } }
+local AGE = { PVT = { 18, 27 }, CPL = { 21, 31 }, SGT = { 24, 38 }, SSG = { 27, 41 }, LT = { 21, 30 },
+              ["1SG"] = { 30, 45 }, CPT = { 25, 38 } }
 
 local PAST = {
     GER = { young = { "joined last spring", "came to the front this year with a replacement draft" },
@@ -194,7 +195,8 @@ function LF.Persona.of(rec)
     local p = {
         age = age,
         home = pick(r, HOME[side]),
-        job = rec.rank == "LT" and (side == "GER" and "a law student" or "an engineering student") or pick(r, JOB[side]),
+        job = (rec.rank == "LT" or rec.rank == "CPT") and (side == "GER" and "a law student" or "an engineering student")
+            or (rec.hqRole == "surgeon" and "a doctor") or pick(r, JOB[side]),
         family = familyOf(r, rec, age),
         traits = traits,
         style = pick(r, STYLE_KEYS),
