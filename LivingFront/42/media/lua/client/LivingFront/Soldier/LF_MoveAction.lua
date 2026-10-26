@@ -166,6 +166,7 @@ function LF_MoveAction:update()
     end
     ISWalkToTimedAction.update(self)
     if self.gait == "patrol" then LF.guard("patrol walk", self.patrolStep, self) end
+    if self.gait == "run" then LF.guard("run pace", self.runSample, self) end
     LF.guard("steer", self.steer, self)
     LF.guard("jam check", self.jamCheck, self)
     -- The game could not find a path (a locked gate, a wall): tell the brain, so the soldier
@@ -500,13 +501,62 @@ local function saveScales()
     if not data then return end
     data.moveScales = data.moveScales or {}
     data.moveScalesV = 6
-    for _, k in ipairs({ "PATROL_PACE" }) do data.moveScales[k] = LF.Move[k] end
+    for _, k in ipairs({ "PATROL_PACE", "RUN_PACE" }) do data.moveScales[k] = LF.Move[k] end
 end
 Events.OnInitGlobalModData.Add(function()
     local data = LF.Records and LF.Records.data and LF.Records.data()
     local s = data and data.moveScalesV == 6 and data.moveScales
     if s and type(s.PATROL_PACE) == "number" then LF.Move.PATROL_PACE = s.PATROL_PACE end
+    if s and type(s.RUN_PACE) == "number" then LF.Move.RUN_PACE = s.RUN_PACE end
 end)
+
+-- How fast a man really runs (LF.Move.RUN_PACE, tiles per second): measured like the patrol pace -
+-- a sample is 1 to 3 s of steady running at normal game speed, along the ground covered; the median
+-- of the last readings is kept and saved. Messages (LF_Comms) travel at this pace.
+local RUN_KEEP = 15
+function LF_MoveAction.runSample(self)
+    local c = self.character
+    local px, py = c:getX(), c:getY()
+    local step = 0
+    if self.runLastX then
+        local mx, my = px - self.runLastX, py - self.runLastY
+        step = math.sqrt(mx * mx + my * my)
+    end
+    self.runLastX, self.runLastY = px, py
+    local ms = now()
+    local running = false
+    pcall(function() running = c:isRunning() end)
+    if not running or step < 0.0005 or step > 0.5 or not self.runMs or ms <= 0 then
+        self.runMs, self.runLen = ms, 0                  -- broken: start a new sample
+        return
+    end
+    self.runLen = (self.runLen or 0) + step
+    local secs = (ms - self.runMs) / 1000
+    local normalSpeed = not (getGameSpeed and getGameSpeed() ~= 1) and not (isGamePaused and isGamePaused())
+    if secs >= 1.0 and secs < 3 and normalSpeed then
+        local speed = self.runLen / secs
+        if speed > 1.0 and speed < 8 then
+            LF.Move.runReadings = LF.Move.runReadings or {}
+            local list = LF.Move.runReadings
+            list[#list + 1] = speed
+            while #list > RUN_KEEP do table.remove(list, 1) end
+            local sorted = {}
+            for i, v in ipairs(list) do sorted[i] = v end
+            table.sort(sorted)
+            local med = sorted[math.floor((#sorted + 1) / 2)]
+            local was = LF.Move.RUN_PACE
+            LF.Move.RUN_PACE = med
+            if #list == 1 or #list % 5 == 0 then
+                LF.log(string.format("PACE run %.2f tiles/s (median of %d: %.2f%s)", speed, #list, med,
+                    was and string.format(", was %.2f", was) or ""))
+            end
+            saveScales()
+        end
+        self.runMs, self.runLen = ms, 0
+    elseif secs >= 3 then
+        self.runMs, self.runLen = ms, 0
+    end
+end
 
 function LF_MoveAction.patrolStep(self)
     local c = self.character

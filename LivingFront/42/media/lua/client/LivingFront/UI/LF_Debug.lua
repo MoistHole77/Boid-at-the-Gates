@@ -622,6 +622,13 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
         end)
     end
+    if LF.Map and LF.Map.CFG then
+        local on = LF.Map.CFG.platoonPicture
+        tools:addOption("Lieutenants' picture on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
+            LF.Map.CFG.platoonPicture = not LF.Map.CFG.platoonPicture
+            LF.say("Lieutenants' picture on the map: " .. (LF.Map.CFG.platoonPicture and "ON" or "OFF"))
+        end)
+    end
     if LF.Map and LF.Map.CFG and LF.Front then
         local ORDER = { "truth", "GER", "SOV", "off" }
         local cur = LF.Map.CFG.warView or "truth"

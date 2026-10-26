@@ -30,6 +30,7 @@ local CFG = {
     nameScale = 2,          -- names drawn at twice the small font
     trackers = true,        -- unit markers on the maps (for following off-screen fights)
     unitLabelZoom = 13.5,   -- unit names and status from this zoom in (world map)
+    platoonPicture = false, -- what each lieutenant believes of his squads, beside where they really are
     warView = "truth",      -- the front on the map: "truth", "GER" / "SOV" (what that side believes), "off"
     sectorFill = 0.10,
     frontWidth = 3,
@@ -316,10 +317,46 @@ local function drawFront(ui, api, mini)
     ui:drawText(title, 20, 60, 1, 1, 1, 1, UIFont.Medium)
 end
 
+-- What each lieutenant believes of his squads: a hollow square where he thinks each is, with how
+-- old his news is, and a thin line to where the squad really is.
+local function drawPictures(ui, api)
+    local labels = api:getZoomF() >= CFG.unitLabelZoom
+    local tm = getTextManager()
+    local fh = tm:getFontHeight(UIFont.Small)
+    local side = viewSide()
+    for _, p in pairs(LF.Units.all()) do
+        if p.kind == "platoon" and p.known and (not side or p.faction == side) then
+            local c = COLORS[p.faction] or COLORS.none
+            for sid, k in pairs(p.known) do
+                local sq = LF.Units.get(sid)
+                if sq and k.x then
+                    local sx, sy = api:worldToUIX(k.x, k.y), api:worldToUIY(k.x, k.y)
+                    local tx, ty = unitPos(sq)
+                    if tx then
+                        line(ui, sx, sy, api:worldToUIX(tx, ty), api:worldToUIY(tx, ty), 1, 1, 1, 1, 0.35)
+                    end
+                    ui:drawRectBorder(sx - 6, sy - 6, 12, 12, 1, c[1], c[2], c[3])
+                    ui:drawRectBorder(sx - 5, sy - 5, 10, 10, 1, 1, 1, 1)
+                    if labels then
+                        local age = math.floor(LF.simTime - (k.at or LF.simTime))
+                        local what = k.broken and "broken" or (k.contact and "in contact") or (k.holding and "holding")
+                            or (k.arrived == false and "on the move") or (k.task or "")
+                        local text = shortName(sq) .. "  " .. tostring(k.fit or "?") .. "/" .. tostring(k.total or "?")
+                            .. "  " .. what .. "  (" .. (age < 2 and "seen now" or (age .. " s old")) .. ")"
+                        ui:drawText(text, sx + 10, sy + 4, 0, 0, 0, 0.8, UIFont.Small)
+                        ui:drawText(text, sx + 9, sy + 3, 1, 1, 1, 0.9, UIFont.Small)
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- Draw every objective on a map UI (world map or minimap), and the unit trackers.
 local function drawAll(ui, api, mini)
     LF.guard("map front", drawFront, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
+    if CFG.platoonPicture and not mini then LF.guard("map pictures", drawPictures, ui, api) end
     local list = {}
     local any = false
     for id, obj in pairs(LF.Objective.all()) do list[id] = asViewed(obj); any = true end

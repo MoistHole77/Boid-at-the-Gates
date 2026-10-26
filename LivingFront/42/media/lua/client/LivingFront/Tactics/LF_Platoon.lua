@@ -47,12 +47,15 @@ require "LivingFront/World/LF_Building"
 require "LivingFront/World/LF_Cover"
 require "LivingFront/Soldier/LF_Morale"
 require "LivingFront/Tactics/LF_Command"
+require "LivingFront/Tactics/LF_Comms"
 
 LF.Platoon = LF.Platoon or {}
 
 local CFG = {
     updateTicks = 60,
     earshot = 30,           -- the lieutenant's voice
+    seeSquad = 40,          -- tiles: the lieutenant sees for himself how a squad this close is doing
+    reportEvery = 300,      -- simulated seconds: a squad with nothing new still sends word this often
     runnerReach = 5,        -- the platoon sergeant hands an order over this close
     runnerPace = 2.5,       -- a runner (or the lieutenant) off-screen covers this many tiles a simulated second
     runnerGiveUp = 300,     -- simulated seconds: an order still not delivered is dropped
@@ -294,7 +297,6 @@ function LF.Platoon.handOver(hq, rec, why)
     LF.Units.dirty(hq.id)
     if p then
         local s = S(p)
-        if s.runner then table.insert(s.queue, 1, s.runner.order); s.runner = nil end
         LF.log("PLATOON " .. p.name .. ": " .. title(new) .. " takes command (" .. why .. ")")
     end
     shout(new.id, "The lieutenant's down - I have the platoon!")
@@ -485,7 +487,8 @@ local function walkOffscreen(id, tx, ty, at)
     return LF.simTime
 end
 
--- Give an order: by voice if its sergeant can hear the lieutenant, else by runner.
+-- Give an order: by voice if its sergeant can hear the lieutenant, else it is sent by messenger
+-- (LF_Comms: no one walks it over - it simply arrives as long after as a man running would take).
 local function issue(p, o)
     local cmd = commander(p)
     local squad = LF.Units.get(o.squad)
@@ -494,78 +497,173 @@ local function issue(p, o)
     if not cmd or near then
         if cmd then shout(cmd.id, o.words) end
         apply(p, o)
+        squad.lastOrderAt = LF.simTime
         return
     end
-    LF.log("PLATOON " .. p.name .. ": " .. squad.name .. " is out of earshot (" .. math.floor(d) .. " tiles) - the order goes by runner")
-    local s = S(p)
-    -- (A newer order to the same squad replaces one still waiting.)
-    for i = #s.queue, 1, -1 do if s.queue[i].squad == o.squad then table.remove(s.queue, i) end end
-    s.queue[#s.queue + 1] = o
+    -- (A newer order to the same squad replaces one still on its way.)
+    LF.Comms.cancel("order", p.id, squad.id)
+    local delay = LF.Comms.delayFor(d)
+    LF.log(string.format("PLATOON %s: %s is out of earshot (%d tiles) - the order goes by messenger, there in %.0f s",
+        p.name, squad.name, math.floor(d), delay))
+    if cmd then shout(cmd.id, "Get this to " .. (squad.name:gsub("^.* / ", "")) .. ": " .. o.words) end
+    LF.Comms.post("order", { platoon = p.id, squad = squad.id, order = o }, delay)
 end
+
+-- An order arrives: the squad's sergeant calls it out and the squad carries it out.
+LF.Comms.on("order", function(msg)
+    local p = LF.Units.get(msg.platoon)
+    local squad = LF.Units.get(msg.squad)
+    if not (p and squad and msg.order) then return end
+    shout(LF.Units.commander(squad), "From the lieutenant: " .. (msg.order.words or ""))
+    LF.log(string.format("PLATOON %s: the order reaches %s (%.0f s after it was sent)", p.name, squad.name,
+        LF.simTime - (msg.sentAt or LF.simTime)))
+    apply(p, msg.order)
+    squad.lastOrderAt = LF.simTime
+end)
 
 local function short(squad) return (squad.name:gsub("^.* / ", "")) end
 
--- Orders on their way: the platoon sergeant runs them over; without him the lieutenant walks
--- until his sergeant can hear him. Off-screen the runner (or the lieutenant) walks on his record
--- at CFG.runnerPace, so a far order takes as long to arrive as it would in front of you.
+-- Orders saved before 0.65 (a queue, a runner, the lieutenant walking one over): sent again the
+-- new way, by messenger.
 local function deliver(p)
     local s = S(p)
+    s.waiting, s.walkTo = nil, nil
+    local old = {}
+    if s.runner then old[#old + 1] = s.runner.order end
+    for _, o in ipairs(s.queue or {}) do old[#old + 1] = o end
+    s.runner, s.queue = nil, {}
+    for _, o in ipairs(old) do issue(p, o) end
+end
+
+-- ---- what the lieutenant knows of his squads -------------------------------------------------
+-- He sees for himself how a squad within CFG.seeSquad is doing. Of the rest he knows what their
+-- reports have told him: a squad sends word when something changes (it has arrived, broken, met
+-- the enemy, taken or been given a task, lost men) and otherwise every CFG.reportEvery seconds;
+-- the word arrives as long after as a runner would take (LF_Comms), and says how things were when
+-- it was sent. His decisions - when to deploy, whether a squad is late, whether the objective is
+-- taken or the assault has failed, whether to withdraw - are made on this, not on the truth.
+-- p.known[squad id] = { x, y, fit, total, arrived, broken, contact, task, taskObj, holding,
+--                       withdrawing, at (when it was true), heard (when he learned it) }
+
+local function knownOf(p)
+    p.known = p.known or {}
+    return p.known
+end
+
+-- How a squad is, now (what a report would say).
+local function snapshot(sq)
+    local x, y = posOf(sq)
+    local share, f = fitShare(sq)
+    local total = 0
+    for _ in ipairs(LF.Units.members(sq.id)) do total = total + 1 end
+    local M = LF.March.get(sq.id)
+    local t = sq.objTask
+    local obj = t and LF.Objective.get(t.obj)
+    local st = LF.Tactics.state(sq)
+    return {
+        x = x and math.floor(x), y = y and math.floor(y), fit = f, total = total,
+        arrived = (M == nil or M.arrived == true), broken = (st and st.broken) or
+            (sq.offBroken ~= nil and sq.offBroken <= LF.simTime and LF.simTime - sq.offBroken < 120) or nil,
+        contact = (LF.Clash and LF.Clash.inContact(sq)) or nil,
+        task = t and t.kind or sq.platoonTask, taskObj = t and t.obj or nil,
+        holding = (t and t.kind == "hold" and obj and obj.holder == sq.faction) or nil,
+        withdrawing = sq.withdrawTo ~= nil or nil,
+        at = LF.simTime,
+    }
+end
+
+local function signature(k)
+    return table.concat({ tostring(k.arrived), tostring(k.broken), tostring(k.contact), tostring(k.task),
+        tostring(k.taskObj), tostring(k.holding), tostring(k.withdrawing), tostring(math.floor((k.fit or 0) / 2)) }, "|")
+end
+
+LF.Comms.on("report", function(msg)
+    local p = LF.Units.get(msg.platoon)
+    if not (p and msg.snap) then return end
+    local K = knownOf(p)
+    local old = K[msg.squad]
+    if old and old.at and old.at > msg.snap.at then return end      -- (he already knows better)
+    msg.snap.heard = LF.simTime
+    K[msg.squad] = msg.snap
+    local sq = LF.Units.get(msg.squad)
+    LF.log(string.format("PLATOON %s: word from %s (%.0f s old): %s", p.name, sq and sq.name or "?",
+        LF.simTime - msg.snap.at, signature(msg.snap)))
+end)
+
+-- Bring his picture up to date: what he sees, and the squads' reports going out.
+local function updatePicture(p)
     local cmd = commander(p)
-    s.waiting = nil                 -- (orders waiting for bodies: before 0.55)
-    if s.runner then
-        local r = s.runner
-        local rr = LF.Records.get(r.id)
-        local squad = LF.Units.get(r.order.squad)
-        if not (rr and rr.alive and fit(rr)) or not squad then
-            -- The runner is down: the order waits for another way.
-            table.insert(s.queue, 1, r.order)
-            s.runner = nil
-            return
-        end
-        local rx, ry = recPos(r.id)
-        local sx, sy = posOf(squad)
-        if not sx then apply(p, r.order); s.runner = nil; return end
-        if LF.dist(rx, ry, sx, sy) <= CFG.runnerReach then
-            shout(r.id, "From the lieutenant: " .. r.order.words)
-            LF.log("PLATOON " .. p.name .. ": " .. title(rr) .. " delivers the order to " .. squad.name
-                .. string.format(" (%.0f s after setting off%s)", LF.simTime - (r.sinceSim or LF.simTime), bodyOf(r.id) and "" or ", off-screen"))
-            apply(p, r.order)
-            s.runner = nil
-        elseif LF.simTime - (r.sinceSim or LF.simTime) > CFG.runnerGiveUp then
-            LF.log("PLATOON " .. p.name .. ": the runner never got through to " .. squad.name .. " - order dropped")
-            s.runner = nil
+    local cx, cy = nil, nil
+    if cmd then cx, cy = recPos(cmd.id) end
+    local K = knownOf(p)
+    local rt = RT(p)
+    rt.sentSig, rt.sentAt = rt.sentSig or {}, rt.sentAt or {}
+    for _, sq in ipairs(squadsOf(p)) do
+        local snap = snapshot(sq)
+        local d = (cx and snap.x) and LF.dist(cx, cy, snap.x, snap.y) or nil
+        if not cmd or (d and d <= CFG.seeSquad) then
+            snap.heard = LF.simTime
+            K[sq.id] = snap                                         -- (he can see them)
+            rt.sentSig[sq.id], rt.sentAt[sq.id] = signature(snap), LF.simTime
         else
-            r.simAt = walkOffscreen(r.id, sx, sy, r.simAt)
+            local sig = signature(snap)
+            if sig ~= rt.sentSig[sq.id] or LF.simTime - (rt.sentAt[sq.id] or -1e9) >= CFG.reportEvery
+                or (rt.sentAt[sq.id] or 0) > LF.simTime then
+                rt.sentSig[sq.id], rt.sentAt[sq.id] = sig, LF.simTime
+                LF.Comms.post("report", { platoon = p.id, squad = sq.id, snap = snap },
+                    LF.Comms.delayFor(d or 0, CFG.earshot))
+            end
         end
-        return
-    end
-    local o = s.queue[1]
-    if not o then s.walkTo = nil; return end
-    local squad = LF.Units.get(o.squad)
-    if not squad then table.remove(s.queue, 1); return end
-    local near = inEarshot(cmd, squad)
-    if not cmd or near then
-        table.remove(s.queue, 1)
-        s.walkTo = nil
-        if cmd then shout(cmd.id, o.words) end
-        apply(p, o)
-        return
-    end
-    local ss = ssgtOf(p)
-    if ss and fit(ss) then
-        table.remove(s.queue, 1)
-        s.runner = { id = ss.id, order = o, sinceSim = LF.simTime, simAt = LF.simTime }
-        s.walkTo = nil
-        LF.log("PLATOON " .. p.name .. ": " .. title(ss) .. " runs the order to " .. squad.name .. (bodyOf(ss.id) and "" or " (off-screen)"))
-        shout(ss.id, "I'll take it to " .. short(squad) .. "!")
-    else
-        -- No runner: the lieutenant goes himself (off-screen, on his record).
-        if s.walkTo ~= squad.id then s.walkAt = LF.simTime end
-        s.walkTo = squad.id
-        local sx, sy = posOf(squad)
-        if sx then s.walkAt = walkOffscreen(cmd.id, sx, sy, s.walkAt) end
     end
 end
+
+-- What he knows of a squad (nil: nothing yet - he takes it as he last left it).
+local function known(p, sq) return sq and knownOf(p)[sq.id] or nil end
+
+-- Share of a squad's men fit, as far as he knows.
+local function knownShare(p, sq)
+    local k = known(p, sq)
+    if not k then return fitShare(sq) end
+    return (k.total or 0) > 0 and (k.fit or 0) / k.total or 0, k.fit or 0
+end
+
+local function knownPlatoonFit(p)
+    local n, f = 0, 0
+    for _, sq in ipairs(squadsOf(p)) do
+        local k = known(p, sq)
+        if k then n, f = n + (k.total or 0), f + (k.fit or 0)
+        else
+            local share, ff = fitShare(sq)
+            local t = 0
+            for _ in ipairs(LF.Units.members(sq.id)) do t = t + 1 end
+            n, f = n + t, f + ff
+        end
+    end
+    return n > 0 and f / n or 0
+end
+
+-- Does he know every squad has got there?
+local function knownArrived(p)
+    for _, sq in ipairs(squadsOf(p)) do
+        local k = known(p, sq)
+        if not (k and k.arrived) then return false end
+    end
+    return true
+end
+
+-- He has just sent them off: he knows they are on the move.
+local function markMoving(p)
+    local K = knownOf(p)
+    for _, sq in ipairs(squadsOf(p)) do
+        local k = K[sq.id] or {}
+        k.arrived, k.at, k.heard = false, LF.simTime, LF.simTime
+        K[sq.id] = k
+    end
+    local rt = RT(p)
+    rt.sentSig = {}
+end
+
+function LF.Platoon.known(p) return knownOf(p) end
 
 -- ---- missions -------------------------------------------------------------------------------
 
@@ -604,6 +702,7 @@ function LF.Platoon.take(p, obj)
     if not hx then hx, hy, hz = posOf(main) end
     p.home = hx and { x = math.floor(hx), y = math.floor(hy), z = hz } or nil
     S(p).queue, S(p).runner = {}, nil
+    LF.Comms.cancel("order", p.id)
     setHQStance(p, "offensive")
     LF.log("PLATOON " .. p.name .. " ordered to take " .. obj.name .. ": main effort " .. main.name
         .. (sup and (", support " .. sup.name) or "") .. ", " .. #reserve .. " squad(s) in reserve")
@@ -680,6 +779,7 @@ function LF.Platoon.hold(p, obj)
         seconds = {} }
     p.mainEffort = main.id
     S(p).queue, S(p).runner = {}, nil
+    LF.Comms.cancel("order", p.id)
     setHQStance(p, "offensive")
     issue(p, { squad = main.id, kind = "hold", obj = obj.id, words = short(main) .. ", hold that " .. (obj.building and "building" or "ground") .. "!" })
     -- Each other squad: the nearest building within reach not already given out; else it digs in.
@@ -809,6 +909,7 @@ function LF.Platoon.expect(p)
     end
     mv.expectAt = LF.simTime + worst
     mv.expectFor = worst
+    markMoving(p)
     LF.log(string.format("PLATOON %s expects to be in place in %.0f s", p.name, worst))
 end
 
@@ -877,6 +978,7 @@ function LF.Platoon.patrol(p, x, y, z)
     if not ok then return false, why end
     p.mission = { kind = "patrol", x = math.floor(x), y = math.floor(y), z = z or 0, phase = "moving", since = LF.tick }
     S(p).queue, S(p).runner = {}, nil
+    LF.Comms.cancel("order", p.id)
     setHQStance(p, "offensive")
     local cmd = commander(p)
     if cmd then shout(cmd.id, "Platoon - move out!") end
@@ -1010,15 +1112,16 @@ local function updateTake(p, m)
         local hx, hy = posOf(hqOf(p))
         local c = hx and platoonContact(p, hx, hy, 40)
         if c then LF.Platoon.deploy(p, m, "contact on the way in"); return end
-        if moveArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area"); return end
+        moveArrived(p)                  -- (the file closing up: the march itself)
+        if knownArrived(p) then LF.Platoon.deploy(p, m, "at the assembly area (every squad has reported in)"); return end
         local mv = p.move
         if mv and not mv.expectAt then LF.Platoon.expect(p) end       -- (a move from before this)
         if mv and mv.expectAt and LF.simTime > mv.expectAt + CFG.lateBy then
             local n, inN, late = 0, 0, {}
             for _, sq in ipairs(squadsOf(p)) do
                 n = n + 1
-                local M = LF.March.get(sq.id)
-                if M == nil or M.arrived == true then inN = inN + 1 else late[#late + 1] = short(sq) end
+                local k = known(p, sq)
+                if k and k.arrived then inN = inN + 1 else late[#late + 1] = short(sq) end
             end
             LF.Platoon.deploy(p, m, string.format("%d of %d squads in, %s %ds overdue - going without them",
                 inN, n, table.concat(late, ", "), math.floor(LF.simTime - mv.expectAt)))
@@ -1029,8 +1132,9 @@ local function updateTake(p, m)
     local sup = m.support and LF.Units.get(m.support)
     local cmd = commander(p)
     if m.phase == "assault" then
-        -- Taken?
-        if main and main.objTask and main.objTask.kind == "hold" and main.objTask.obj == obj.id and obj.holder == main.faction then
+        -- Taken? (When word of it reaches him.)
+        local km = known(p, main)
+        if main and km and km.task == "hold" and km.taskObj == obj.id and km.holding then
             m.phase = "taken"
             LF.log("PLATOON " .. p.name .. ": " .. obj.name .. " taken by " .. main.name)
             LF.Morale.taskDone(main, "took " .. obj.name .. " as the lieutenant ordered")
@@ -1048,20 +1152,19 @@ local function updateTake(p, m)
             return
         end
         -- The assault has failed?
-        local mainShare = main and fitShare(main) or 0
-        local broken = not main or mainShare < 0.4 or (LF.Tactics.state(main) and LF.Tactics.state(main).broken)
-            or (main.offBroken and main.offBroken <= LF.simTime and LF.simTime - main.offBroken < 120)
+        local mainShare = main and knownShare(p, main) or 0
+        local broken = not main or mainShare < 0.4 or (km and km.broken)
         if broken then
-            local pf = platoonFit(p)
+            local pf = knownPlatoonFit(p)
             -- Who is left to send in: the reserve first, then a rifle support squad.
             m.committed = m.committed or {}
             local fresh = nil
             for _, rid in ipairs(m.reserve or {}) do
                 local r = LF.Units.get(rid)
-                if not fresh and r and not m.committed[rid] and fitShare(r) >= CFG.takeOverFit then fresh = r end
+                if not fresh and r and not m.committed[rid] and knownShare(p, r) >= CFG.takeOverFit then fresh = r end
             end
             local fromReserve = fresh ~= nil
-            if not fresh and sup and not sup.mg and not m.swapped and fitShare(sup) >= CFG.takeOverFit then fresh = sup end
+            if not fresh and sup and not sup.mg and not m.swapped and knownShare(p, sup) >= CFG.takeOverFit then fresh = sup end
             if fresh and pf >= CFG.withdrawTake then
                 m.committed[fresh.id] = true
                 if fromReserve then
@@ -1084,7 +1187,7 @@ local function updateTake(p, m)
             end
             return
         end
-        if platoonFit(p) < CFG.withdrawTake then
+        if knownPlatoonFit(p) < CFG.withdrawTake then
             local x, y, z = rallyPoint(p)
             if x then LF.Platoon.withdraw(p, x, y, z, "the platoon is too badly cut up to go on") end
         end
@@ -1092,7 +1195,7 @@ local function updateTake(p, m)
 end
 
 local function updateHold(p, m)
-    if platoonFit(p) >= CFG.withdrawHold then return end
+    if knownPlatoonFit(p) >= CFG.withdrawHold then return end
     local hq = hqOf(p)
     local x, y = posOf(hq)
     if not (x and platoonContact(p, x, y, 40)) then return end
@@ -1129,7 +1232,7 @@ local function hqMissionOffscreen(p, hq)
     end
     for _, rid in ipairs(LF.Units.members(hq.id)) do
         local r = LF.Records.get(rid)
-        local busy = (s.runner and s.runner.id == rid) or (s.walkTo and rid == hq.leader)
+        local busy = false
         if r and r.alive and not bodyOf(rid) and not busy then
             local tx, ty = lx, ly
             if rid ~= hq.leader then
@@ -1175,13 +1278,14 @@ local function updatePlatoon(p)
     -- Missions only run with someone in command; without, the squads carry on alone.
     if not cmd then return end
     deliver(p)
+    LF.guard("platoon picture", updatePicture, p)
     if p.move and p.move.mode == "file" then moveArrived(p) end     -- (the file closes up when its head arrives)
     local m = p.mission
     if not m then return end
     if m.kind == "take" then updateTake(p, m)
     elseif m.kind == "hold" then updateHold(p, m)
     elseif m.kind == "withdraw" then
-        if updateWithdrawals(p) and #S(p).queue == 0 and not S(p).runner then
+        if updateWithdrawals(p) and LF.Comms.count("order", p.id) == 0 then
             LF.log("PLATOON " .. p.name .. ": withdrawal complete")
             p.mission = { kind = "rally", x = m.x, y = m.y, z = m.z, phase = "hold", since = LF.tick }
         end
