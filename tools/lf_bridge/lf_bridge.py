@@ -1,4 +1,4 @@
-"""Living Front bridge (0.61): Project Zomboid <-> a local language model. Text only, no Chasm.
+"""Living Front bridge (0.62): Project Zomboid <-> a local language model. Text only, no Chasm.
 
 Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.61.3"
+VERSION = "0.62.0"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -47,7 +47,7 @@ CFG = {
     "game_exe": ["ProjectZomboid64.exe", "ProjectZomboid32.exe", "ProjectZomboid.exe"],
     "stop_after": 60,           # seconds after the game closes before the model is stopped
     "timeout": 60,
-    "talk_max_tokens": 110,
+    "talk_max_tokens": 140,
     "summary_max_tokens": 90,
     "report_max_tokens": 70,
     "temperature": 0.85,
@@ -527,9 +527,10 @@ def character(req: dict) -> str:
             lines.append(p["friend"][0].upper() + p["friend"][1:] + ".")
         if p.get("rival"):
             lines.append("He " + p["rival"][3:] + "." if p["rival"].startswith("he ") else p["rival"] + ".")
-        lines.append(f"How he talks: {p.get('speech')}. Lines in his voice:")
+        lines.append(f"How he talks: {p.get('speech')}. Lines that show his manner (never repeat them word for word):")
         for ex in p.get("examples") or []:
             lines.append(f'  "{ex}"')
+    lines.append(f"His name is {name} - he never gives any other name.")
     state = [f"His morale right now: {s.get('morale', 'steady')}."]
     if s.get("wounded"):
         state.append("He is wounded and in pain.")
@@ -558,16 +559,16 @@ def character(req: dict) -> str:
 
 TALK_RULES = ("An officer of his own army is talking to him face to face, in a pause in the fighting. Reply as "
               "him, in the first person, and stay in character the whole time. Answer in English, as he would say it out loud. "
-              "Keep it short: usually a single sentence, two at most - a soldier doesn't make speeches to an officer. Only the "
-              "talkative sort says more, and only to an officer he trusts. "
-              "Answer just what was asked, the way a real man would - plainly, often in few words, sometimes guarded or "
-              "evasive. Everything above about his life is background for playing him, not things to tell: he doesn't "
-              "volunteer his family, his friend, his fears, his hopes or his past, and never his secret. Asked about his "
-              "unit, he says what he thinks of it, not who his friend is; asked how he is, he says how he is. He opens up "
-              "slowly, and only as far as he trusts the officer. If asked his name, he gives his rank and name. "
+              "Usually one or two sentences; three if there's something worth saying, or if he's the talkative sort. "
+              "Answer what was asked, the way a real man would - in his own manner, sometimes plainly, sometimes "
+              "guarded. Everything above about his life is background for playing him: he can let a detail slip now "
+              "and then when it fits, but he doesn't lay out his life story, and he doesn't always bring up his family, "
+              "his friend, his fears or his past - only when it's natural to the question. His secret he keeps unless "
+              "he trusts the officer. He opens up more as he comes to trust the officer. If asked his name, he gives "
+              "his rank and his real name, above. "
               "No narration, no actions in asterisks, no quotation marks round your words. Only speak of events you have "
               "seen or that are listed above; never invent battles, deaths or names of men in his unit. If he doesn't "
-              "know, he says so in his own way. Don't repeat earlier answers. "
+              "know, he says so in his own way. Never repeat an earlier answer or one of the example lines word for word. "
               "Write only the words he says - begin speaking at once. Never plan, explain or describe the reply, "
               "never mention the character, the officer's question or these instructions.")
 
@@ -648,7 +649,17 @@ class Bridge:
         self.model.shown = ""
         if self.model.state == "ok":
             try:
-                if kind == "talk" and CFG["stream"]:
+                if kind == "talk" and req.get("asks") == "name":
+                    # (Small models make names up: no streaming here, and his real name or the mod's words.)
+                    s = req.get("soldier") or {}
+                    parts = [w.lower() for w in re.findall(r"[^\W\d_]+", s.get("name") or "") if len(w) > 2]
+                    text = self.model.say(talk_messages(req), CFG["talk_max_tokens"])
+                    low = " " + re.sub(r"[^\w]+", " ", text.lower()) + " "
+                    ok = any(f" {w} " in low for w in parts)
+                    if not ok and text:
+                        log(f"talk #{rid}: the model gave a wrong name ({text[:60]}) - using his real one")
+                    fields["text"] = text if ok else fallback
+                elif kind == "talk" and CFG["stream"]:
                     def partial(text: str) -> None:
                         self.box.answer(rid, {"status": "partial", "text": text})
                     fields["text"] = self.model.say_stream(talk_messages(req), CFG["talk_max_tokens"], partial) or fallback

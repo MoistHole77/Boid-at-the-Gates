@@ -127,6 +127,52 @@ local function learnName(rec, words)
     end
 end
 
+-- What he has told you of himself: a fact is learned once his answer to a question on it carries
+-- its words (or, unasked, two of them); for his views (the war, what he wants, what he fears) his
+-- own words are kept. Shown in the panel, live.
+local STOP = { ["with"] = true, ["from"] = true, ["near"] = true, ["back"] = true, ["home"] = true, ["they"] = true,
+               ["them"] = true, ["that"] = true, ["this"] = true, ["have"] = true, ["been"] = true, ["since"] = true,
+               ["every"] = true, ["week"] = true, ["year"] = true, ["seen"] = true, ["hasn't"] = true, ["hasnt"] = true,
+               ["your"] = true, ["their"] = true, ["there"] = true, ["into"] = true, ["over"] = true, ["town"] = true }
+local FACT_TOPICS = { home = "home", job = "job", family = "family", past = "past", age = "age" }
+local VIEW_TOPICS = { war = "war", want = "want", fear = "fear" }
+
+local function words(s)
+    local out = {}
+    for w in s:lower():gmatch("[%a']+") do
+        if #w >= 4 and not STOP[w] then out[#out + 1] = w end
+    end
+    return out
+end
+
+local function learnFacts(rec, question, said)
+    local p = LF.Persona.of(rec)
+    if not (p and said and said ~= "") then return end
+    rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }
+    local k = rec.talk.known or {}
+    rec.talk.known = k
+    local topic = topicOf(question or "")
+    local heard = " " .. said:lower():gsub("[^%a%d']", " ") .. " "
+    for field in pairs(FACT_TOPICS) do
+        if not k[field] then
+            if field == "age" then
+                if heard:find(" " .. tostring(p.age) .. " ", 1, true) then k.age = true end
+            else
+                local hits = 0
+                for _, w in ipairs(words(p[field] or "")) do
+                    if heard:find(" " .. w .. " ", 1, true) then hits = hits + 1 end
+                end
+                if hits >= 2 or (hits >= 1 and topic == field) then k[field] = true end
+            end
+            if k[field] then LF.log("TALK you learned #" .. rec.id .. "'s " .. field) end
+        end
+    end
+    if topic and VIEW_TOPICS[topic] then
+        k.views = k.views or {}
+        k.views[topic] = said:sub(1, 160)
+    end
+end
+
 -- ---- a conversation ---------------------------------------------------------------------------------
 
 local sessions = {}         -- record id -> { lines = { {who, text} }, exchanges = { {you, him} }, waiting }
@@ -160,6 +206,7 @@ function LF.Talk.say(id, text)
         s.waiting = nil
         s.partial = nil
         learnName(rec, words)
+        LF.guard("talk learn", learnFacts, rec, text, words)
         s.exchanges[#s.exchanges + 1] = { you = text, him = words }
         while #s.exchanges > CFG.keep do table.remove(s.exchanges, 1) end
         addLine(id, "him", words)
@@ -171,7 +218,8 @@ function LF.Talk.say(id, text)
         prof.doing = doing(rec)
         s.waiting = true
         local sent = LF.Chasm.request({ kind = "talk", soldier = prof, persona = LF.Persona.card(rec), memories = mems,
-                                        history = s.exchanges, player_text = text, fallback = fallback },
+                                        history = s.exchanges, player_text = text, fallback = fallback,
+                                        asks = topicOf(text) or "" },
             function(ans)
                 if ans and ans.text and ans.text ~= "" then answer(ans.text, ans.worded == "yes" and "language model" or nil)
                 else answer(fallback, "plain") end
@@ -303,6 +351,31 @@ local function infoRows(rec)
     head("Condition")
     line((condition(rec, body):gsub("^%l", string.upper)))
     for _, w in ipairs(body and wounds(body) or {}) do line(w, true) end
+    local k = rec.talk and rec.talk.known
+    local p = LF.Persona.of(rec)
+    if k and p then
+        local any = false
+        local function fact(field, label, value)
+            if k[field] and value then
+                if not any then head("What he's told you"); any = true end
+                line(label .. ": " .. value)
+            end
+        end
+        local function cap(v) return (tostring(v):gsub("^%l", string.upper)) end
+        fact("home", "From", p.home)
+        fact("age", "Age", tostring(p.age))
+        fact("job", "Before the war", p.job)
+        fact("family", "Family", cap(p.family))
+        fact("past", "Service", cap(p.past:gsub("^has ", "")))
+        local V = { war = "On the war", want = "What he wants", fear = "What he fears" }
+        for _, t in ipairs({ "war", "want", "fear" }) do
+            local v = k.views and k.views[t]
+            if v then
+                if not any then head("What he's told you"); any = true end
+                line(V[t] .. ": \"" .. v .. "\"", true)
+            end
+        end
+    end
     head("Between you")
     local t = rec.talk
     local n = t and t.n or 0
@@ -528,12 +601,12 @@ end)
 Events.OnPostUIDraw.Add(function()
     if not facingId or open[facingId] then return end
     LF.guard("talk prompt", function()
-        -- Where your own words appear over your head (as the game's messages do), in the same font:
-        -- "[E] Talk", or "[E] Talk to Pvt. Moroz" once you know him, his name in his side's colour.
-        local p = getPlayer()
-        if not p then return end
+        -- Over his head, in the font of the game's messages: "[E] Talk", or "[E] Talk to Pvt. Moroz"
+        -- once you know him, his name in his side's colour.
+        local body = LF.Bodies.get(facingId)
+        if not (body and body:isOnScreen()) then return end
         local rec = LF.Records.get(facingId)
-        local x, y, z = p:getX(), p:getY(), p:getZ()
+        local x, y, z = body:getX(), body:getY(), body:getZ()
         local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
         local zoom = getCore():getZoom(0)
         local key = "E"
