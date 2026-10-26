@@ -109,9 +109,12 @@ local function lift(g)
     if wio then
         pcall(function()
             local sq = wio:getSquare() or g.sq
-            if sq then sq:transmitRemoveItemFromSquare(wio) end
-            wio:removeFromWorld()
-            wio:removeFromSquare()
+            -- (Only on a square still in a loaded chunk: the game's pathfinder throws otherwise.)
+            if sq and sq:getChunk() then
+                sq:transmitRemoveItemFromSquare(wio)
+                wio:removeFromWorld()
+                wio:removeFromSquare()
+            end
             wio:setSquare(nil)
         end)
         pcall(function() g.gun:setWorldItem(nil) end)
@@ -133,6 +136,16 @@ local function doGround(body)
     return true
 end
 function LF.Combat.ground(body) return LF.guard("ground rifle", doGround, body) end
+
+-- Picked up with him, the moment he is put away (LF_Bodies.despawn calls this first, while his
+-- square is still loaded).
+function LF.Combat.liftGrounded(body)
+    local g = grounded[body]
+    if g then
+        grounded[body] = nil
+        LF.guard("lift rifle", lift, g)
+    end
+end
 
 -- A body that went away (despawned, dead) leaves no rifle lying about for ever: a dead man's stays
 -- where it is (it's his), a despawned man's is picked up with him.

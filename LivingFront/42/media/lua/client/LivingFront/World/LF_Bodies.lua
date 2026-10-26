@@ -132,6 +132,7 @@ function LF.Bodies.despawn(id)
     if not body then return end
     local rec = LF.Records.get(id)
     if rec then LF.Bodies.sync(rec, body) end
+    if LF.Combat and LF.Combat.liftGrounded then LF.Combat.liftGrounded(body) end
     LF.try("remove body", function()
         body:removeFromWorld()
         -- (Only from a square still in a loaded chunk: the game's pathfinder throws on one whose
