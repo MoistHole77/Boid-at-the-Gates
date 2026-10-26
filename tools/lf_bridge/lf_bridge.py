@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.61.1"
+VERSION = "0.61.2"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -98,6 +98,17 @@ def http_json(url: str, body: dict | None = None, timeout: float = 10) -> dict:
 
 # ---- the game folder ------------------------------------------------------------------------------
 
+def replace(tmp: Path, dest: Path, tries: int) -> bool:
+    """os.replace, again a moment later if Windows says no (the game has the file open for reading)."""
+    for i in range(tries):
+        try:
+            os.replace(tmp, dest)
+            return True
+        except PermissionError:
+            time.sleep(0.03)
+    return False
+
+
 class Mailbox:
     def __init__(self, zomboid: Path):
         self.root = zomboid / "Lua" / "LivingFront" / "chasm"
@@ -112,7 +123,7 @@ class Mailbox:
         text = f"alive={self.n}\nversion={VERSION}\nllm={llm}\ntts=off\n"
         tmp = self.root / "bridge.tmp"
         tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, self.root / "bridge.txt")
+        replace(tmp, self.root / "bridge.txt", 10)
 
     def requests(self) -> list[Path]:
         def num(p: Path) -> int:
@@ -125,7 +136,11 @@ class Mailbox:
             return str(v).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
         tmp = self.inn / f"res_{rid}.tmp"
         tmp.write_text("".join(f"{k}={esc(v)}\n" for k, v in fields.items()), encoding="utf-8")
-        os.replace(tmp, self.inn / f"res_{rid}.txt")
+        # (Words so far: if the game is reading the file, the next lot will do. The finished answer:
+        # keep trying for a few seconds.)
+        partial = fields.get("status") == "partial"
+        if not replace(tmp, self.inn / f"res_{rid}.txt", 3 if partial else 150) and not partial:
+            log(f"couldn't write answer #{rid} - the game kept the file open")
 
     def clean(self) -> None:
         now = time.time()
