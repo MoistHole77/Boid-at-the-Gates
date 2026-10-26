@@ -9,3 +9,4 @@ desktop.ini
 *.log
 console*.txt
 dist/
+__pycache__/
