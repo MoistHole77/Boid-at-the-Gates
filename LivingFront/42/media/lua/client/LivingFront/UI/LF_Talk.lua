@@ -24,7 +24,10 @@ LF.Talk = LF.Talk or {}
 
 local CFG = {
     keep = 8,               -- exchanges sent back to the model within a conversation
-    W = 460, H = 380, PAD = 10,
+    W = 820, H = 520, PAD = 12,
+    INFO_W = 270,           -- the panel on the left: what you know about him
+    talkRange = 2.6,        -- tiles: close enough to talk with E
+    talkCone = 0.55,        -- ... and roughly in front of you (cos of the angle off your facing)
 }
 
 -- ---- what he says with no language model ----------------------------------------------------------
@@ -179,6 +182,105 @@ local function finish(id)
     keep(plainNote, 0)
 end
 
+-- ---- what you know about him (the panel beside the conversation) ------------------------------------
+-- Only what an officer standing in front of him would know: what he can see (rank, kit, wounds,
+-- what the man is doing and how he bears up), what he knows of his own units, and what has
+-- passed between the two of them. Not his past, his kills, his thoughts - unless he told you.
+
+local ROLE = { lt = "platoon commander", ssgt = "platoon sergeant", rto = "radio operator",
+               gunner = "machine gunner", assistant = "assistant gunner", ammo = "ammunition bearer" }
+local REGARD = { [-3] = "resents you", [-2] = "doesn't trust you", [-1] = "is wary of you", [0] = "doesn't know you well",
+                 [1] = "is warming to you", [2] = "trusts you", [3] = "would follow you anywhere" }
+
+local function roleOf(rec)
+    local r = ROLE[rec.hqRole or ""] or ROLE[rec.mgRole or ""]
+    if r then return r end
+    if rec.medic then return "medic" end
+    if LF.Units.leads(rec) then return "squad leader" end
+    return "rifleman"
+end
+
+-- What you can see of his wounds: each hurt part, and how (bleeding, bandaged, broken...).
+local function wounds(body)
+    local out = {}
+    local ok = pcall(function()
+        local parts = body:getBodyDamage():getBodyParts()
+        for i = 0, parts:size() - 1 do
+            local bp = parts:get(i)
+            local what = {}
+            local function has(f) local ok2, v = pcall(f); return ok2 and v end
+            if has(function() return bp:bleeding() end) then what[#what + 1] = "bleeding" end
+            if has(function() return bp:haveBullet() end) then what[#what + 1] = "bullet wound" end
+            if has(function() return bp:isDeepWounded() end) then what[#what + 1] = "deep wound" end
+            if has(function() return bp:getFractureTime() > 0 end) then what[#what + 1] = "broken" end
+            if has(function() return bp:isBurnt() end) then what[#what + 1] = "burnt" end
+            if #what == 0 and has(function() return bp:scratched() or bp:isCut() end) then what[#what + 1] = "cut" end
+            if has(function() return bp:bandaged() end) then what[#what + 1] = "bandaged" end
+            if #what > 0 then
+                local name = "?"
+                pcall(function() name = BodyPartType.getDisplayName(bp:getType()) end)
+                out[#out + 1] = name .. ": " .. table.concat(what, ", ")
+            end
+        end
+    end)
+    return ok and out or {}
+end
+
+local function condition(rec, body)
+    if not rec.alive then return "dead" end
+    if LF.Medic and LF.Medic.busy and LF.Medic.busy(rec.id) and rec.wounded then return "down, being seen to" end
+    local h = body and LF.Combat and LF.Combat.health(body) or 100
+    if h >= 95 then return rec.wounded and "wounded, patched up" or "unhurt" end
+    if h >= 70 then return "lightly wounded" end
+    if h >= 40 then return "wounded" end
+    return "badly wounded"
+end
+
+local function weaponOf(body)
+    local g = body and (body:getPrimaryHandItem() or (LF.Combat and LF.Combat.slungGun(body)))
+    local name = nil
+    if g then pcall(function() name = g:getDisplayName() end) end
+    return name
+end
+
+-- The panel, as { {head=...} | {text=..., dim=bool} } rows.
+local function infoRows(rec)
+    local rows = {}
+    local function head(t) rows[#rows + 1] = { head = t } end
+    local function line(t, dim) if t and t ~= "" then rows[#rows + 1] = { text = t, dim = dim } end end
+    local body = LF.Bodies and LF.Bodies.get(rec.id)
+    local u = rec.squad and LF.Units.get(rec.squad)
+    local plt = u and u.platoon and LF.Units.get(u.platoon)
+    head(LF.Records.fullName(rec))
+    line((rec.faction == "GER" and "Wehrmacht" or rec.faction == "SOV" and "Red Army" or "") .. " - " .. LF.Units.title(rec):gsub(" .*", "") .. ", " .. roleOf(rec))
+    if u then
+        head("Unit")
+        line(u.kind == "hq" and "Platoon headquarters" or (u.name:gsub("^.* / ", "")))
+        if plt then line((plt.name:gsub("^.* / ", ""))) end
+        local cid = u.kind ~= "hq" and LF.Units.commander(u)
+        local c = cid and cid ~= rec.id and LF.Records.get(cid)
+        if c then line("Squad leader: " .. LF.Units.title(c)) end
+    end
+    head("Now")
+    local d = doing(rec)
+    line(d ~= "" and ((d:gsub("^%l", string.upper))) or "Standing by")
+    if LF.Morale then line("Morale: " .. LF.Morale.word(LF.Morale.get(rec))) end
+    line(weaponOf(body) and ("Armed with: " .. weaponOf(body)))
+    head("Condition")
+    line((condition(rec, body):gsub("^%l", string.upper)))
+    for _, w in ipairs(body and wounds(body) or {}) do line(w, true) end
+    head("Between you")
+    local t = rec.talk
+    local n = t and t.n or 0
+    if n == 0 then line("You haven't spoken with him before.", true)
+    else
+        line("Spoken with him " .. (n == 1 and "once" or (n .. " times")) .. " before")
+        line("He " .. (REGARD[math.max(-3, math.min(3, t.trust or 0))] or REGARD[0]))
+        for i = #(t.notes or {}), 1, -1 do line(t.notes[i], true) end
+    end
+    return rows
+end
+
 -- ---- the window -----------------------------------------------------------------------------------------
 
 LF_TalkWindow = ISCollapsableWindow:derive("LF_TalkWindow")
@@ -198,7 +300,8 @@ function LF_TalkWindow:createChildren()
     local th = self:titleBarHeight()
     local eh = 24
     local bw = 64
-    self.entry = ISTextEntryBox:new("", CFG.PAD, self.height - eh - CFG.PAD, self.width - CFG.PAD * 3 - bw, eh)
+    self.chatX = CFG.PAD * 2 + CFG.INFO_W
+    self.entry = ISTextEntryBox:new("", self.chatX, self.height - eh - CFG.PAD, self.width - self.chatX - CFG.PAD * 2 - bw, eh)
     self.entry:initialise()
     self.entry:instantiate()
     local win = self
@@ -240,9 +343,33 @@ function LF_TalkWindow:prerender()
     local font = UIFont.Small
     local tm = getTextManager()
     local fh = tm:getFontHeight(font)
-    local w = self.width - CFG.PAD * 2
+    local cx = self.chatX or CFG.PAD
+    local w = self.width - cx - CFG.PAD
     local bottom = self.height - 24 - CFG.PAD * 2
     local s = sessions[self.recId]
+    -- What you know about him, on the left.
+    if rec then
+        self:drawRect(CFG.PAD, self.top, CFG.INFO_W, self.height - self.top - CFG.PAD, 0.35, 0, 0, 0)
+        self:drawRectBorder(CFG.PAD, self.top, CFG.INFO_W, self.height - self.top - CFG.PAD, 0.5, 0.6, 0.6, 0.6)
+        local y = self.top + 6
+        local limit = self.height - CFG.PAD - fh
+        for _, row in ipairs(infoRows(rec)) do
+            if y > limit then break end
+            if row.head then
+                y = y + (y > self.top + 6 and 6 or 0)
+                self:drawText(row.head, CFG.PAD + 8, y, 0.95, 0.85, 0.55, 1, UIFont.Medium)
+                y = y + tm:getFontHeight(UIFont.Medium)
+            else
+                for _, part in ipairs(wrapPx(row.text, font, CFG.INFO_W - 24)) do
+                    if y > limit then break end
+                    local c = row.dim and 0.72 or 0.95
+                    self:drawText(part, CFG.PAD + 12, y, c, c, c, 1, font)
+                    y = y + fh
+                end
+            end
+        end
+    end
+    self:drawRect(cx, self.top, w, bottom - self.top + fh, 0.2, 0, 0, 0)
     -- Lay out the conversation from the bottom up; the oldest lines scroll off the top.
     local rows = {}
     local shown = s and s.lines or {}
@@ -266,12 +393,12 @@ function LF_TalkWindow:prerender()
     local y = bottom - fh
     for _, row in ipairs(rows) do
         if y < self.top then break end
-        self:drawText(row.text, CFG.PAD + (row.x or 0), y, row.r, row.g, row.b, 1, font)
+        self:drawText(row.text, cx + 6 + (row.x or 0), y, row.r, row.g, row.b, 1, font)
         y = y - fh
     end
     if not s or #s.lines == 0 then
         local hint = rec and rec.alive and "Type and press Enter to speak to him." or "He can't answer you."
-        self:drawText(hint, CFG.PAD, self.top, 0.7, 0.7, 0.7, 1, font)
+        self:drawText(hint, cx + 6, self.top + 4, 0.7, 0.7, 0.7, 1, font)
     end
 end
 
@@ -282,10 +409,13 @@ function LF_TalkWindow:close()
     self:removeFromUIManager()
 end
 
-function LF.Talk.open(id)
+function LF.Talk.open(id, keyed)
     if open[id] then open[id]:bringToTop(); return end
     local x = math.min(getMouseX() + 20, getCore():getScreenWidth() - CFG.W - 10)
     local y = math.min(math.max(10, getMouseY() - 80), getCore():getScreenHeight() - CFG.H - 10)
+    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    if keyed then x, y = math.floor((sw - CFG.W) / 2), math.floor(sh - CFG.H - sh * 0.12) end
+    x, y = math.max(10, x), math.max(10, y)
     local w = LF_TalkWindow:new(x, y, id)
     w:initialise()
     w:addToUIManager()
@@ -305,6 +435,75 @@ Events.OnTick.Add(function()
             LF.guard("talk close", function() w:close() end)
         end
     end
+end)
+
+-- ---- E to talk ---------------------------------------------------------------------------------------
+-- The soldier you're next to and facing: "[E] Talk" over his head, and E opens the conversation.
+
+local facingId = nil
+
+local function talkTarget()
+    local p = getPlayer()
+    if not p or p:isDead() or p:getVehicle() or p:isAiming() then return nil end
+    local px, py, pz = p:getX(), p:getY(), math.floor(p:getZ())
+    local fx, fy = 0, 0
+    pcall(function() local v = p:getForwardDirection(); fx, fy = v:getX(), v:getY() end)
+    local best, bestScore = nil, nil
+    for id, body in pairs(LF.Bodies.all()) do
+        if math.floor(body:getZ()) == pz and not body:isDead() then
+            local dx, dy = body:getX() - px, body:getY() - py
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d <= CFG.talkRange then
+                local dot = d > 0.01 and (dx * fx + dy * fy) / d or 1
+                local rec = LF.Records.get(id)
+                if dot >= CFG.talkCone and rec and rec.alive and rec.faction ~= "CIV" and not rec.captured then
+                    local score = d - dot          -- (nearest, most in front)
+                    if not bestScore or score < bestScore then best, bestScore = id, score end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function typing()
+    for _, w in pairs(open) do
+        local f = false
+        pcall(function() f = w.entry:isFocused() end)
+        if f then return true end
+    end
+    return false
+end
+
+Events.OnTick.Add(function()
+    if LF.tick % 6 ~= 2 then return end
+    facingId = LF.try("talk target", talkTarget)
+end)
+
+Events.OnKeyPressed.Add(function(key)
+    local want = (Keyboard and Keyboard.KEY_E) or 18
+    pcall(function() want = getCore():getKey("Interact") end)
+    if key ~= want or not facingId or typing() then return end
+    if open[facingId] then open[facingId]:bringToTop(); return end
+    LF.guard("talk key", LF.Talk.open, facingId, true)
+end)
+
+Events.OnPostUIDraw.Add(function()
+    if not facingId or open[facingId] then return end
+    LF.guard("talk prompt", function()
+        local body = LF.Bodies.get(facingId)
+        if not (body and body:isOnScreen()) then return end
+        local x, y, z = body:getX(), body:getY(), body:getZ()
+        local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
+        local zoom = getCore():getZoom(0)
+        local key = "E"
+        pcall(function() key = Keyboard.getKeyName(getCore():getKey("Interact")) end)
+        local text = "[" .. key .. "] Talk"
+        local tm = getTextManager()
+        local ty = sy - 112 / zoom
+        tm:DrawStringCentre(UIFont.Small, sx + 1, ty + 1, text, 0, 0, 0, 0.8)
+        tm:DrawStringCentre(UIFont.Small, sx, ty, text, 1, 0.9, 0.55, 1)
+    end)
 end)
 
 -- Right-click: "Talk to ..." for the soldiers right there.

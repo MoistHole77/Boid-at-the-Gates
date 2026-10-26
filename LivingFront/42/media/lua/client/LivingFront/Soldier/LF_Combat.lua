@@ -100,24 +100,69 @@ end
 
 -- (A man sitting down at rest may lay his rifle on the ground beside him instead: it lies there
 -- as a real item in the world and he picks it up when he gets up.)
+-- Which body has which gun down is runtime only, so each grounded rifle is also tagged with its
+-- owner (item mod data LF_owner) and listed in the save (data.groundGuns): a rifle whose owner
+-- no longer has it down - the game was quit with him sitting, he was put away far off, a pick-up
+-- went wrong - is swept up when its square is loaded (and he gets his own back from his kit).
 local grounded = {}         -- body -> { gun, sq } (runtime)
+
+local function groundList()
+    local d = LF.Records.data()
+    d.groundGuns = d.groundGuns or {}
+    return d.groundGuns
+end
+
+-- Take a world item off its square, each step on its own (one failing mustn't leave it half there).
+local function removeWorldItem(wio, sq)
+    sq = sq or wio:getSquare()
+    -- (Only on a square still in a loaded chunk: the game's pathfinder throws otherwise.)
+    if not (sq and sq:getChunk()) then return false end
+    pcall(function() sq:transmitRemoveItemFromSquare(wio) end)
+    pcall(function() wio:removeFromWorld() end)
+    pcall(function() wio:removeFromSquare() end)
+    pcall(function() wio:setSquare(nil) end)
+    return true
+end
 
 -- Take the gun off the ground (the world item goes, the gun back into his inventory).
 local function lift(g)
     local wio = nil
     pcall(function() wio = g.gun:getWorldItem() end)
     if wio then
-        pcall(function()
-            local sq = wio:getSquare() or g.sq
-            -- (Only on a square still in a loaded chunk: the game's pathfinder throws otherwise.)
-            if sq and sq:getChunk() then
-                sq:transmitRemoveItemFromSquare(wio)
-                wio:removeFromWorld()
-                wio:removeFromSquare()
-            end
-            wio:setSquare(nil)
-        end)
+        if not removeWorldItem(wio, g.sq) then return end       -- (left for the sweep)
         pcall(function() g.gun:setWorldItem(nil) end)
+    end
+    pcall(function() g.gun:getModData().LF_owner = nil end)
+end
+
+-- Rifles left lying: an owner who no longer has it down. Every couple of seconds.
+local function sweep()
+    local list = groundList()
+    local cell = getCell()
+    for i = #list, 1, -1 do
+        local e = list[i]
+        local sq = cell and cell:getGridSquare(e.x, e.y, e.z)
+        if sq and sq:getChunk() then
+            local body = LF.Bodies and LF.Bodies.get(e.id)
+            local g = body and grounded[body]
+            local live = g and g.sq == sq
+            if not live then
+                local objs = sq:getWorldObjects()
+                for k = objs:size() - 1, 0, -1 do
+                    local wio = objs:get(k)
+                    local item = wio and wio:getItem()
+                    local md = item and item:getModData()
+                    if md and md.LF_owner == e.id then
+                        md.LF_owner = nil
+                        removeWorldItem(wio, sq)
+                        LF.log("swept up #" .. e.id .. "'s rifle left on the ground at " .. e.x .. "," .. e.y)
+                    end
+                end
+                table.remove(list, i)
+            end
+        elseif LF.simTime and e.t and LF.simTime - e.t > 86400 then
+            table.remove(list, i)       -- (a day on and still never loaded: forget it)
+        end
     end
 end
 
@@ -131,8 +176,14 @@ local function doGround(body)
     body:setSecondaryHandItem(nil)
     body:getInventory():Remove(gun)
     local ox, oy = 0.25 + ZombRand(30) / 100, 0.25 + ZombRand(30) / 100
+    local id = body:getModData().LF_id
+    gun:getModData().LF_owner = id
     sq:AddWorldInventoryItem(gun, ox, oy, 0)
     grounded[body] = { gun = gun, sq = sq }
+    if id then
+        local list = groundList()
+        list[#list + 1] = { id = id, x = sq:getX(), y = sq:getY(), z = sq:getZ(), t = LF.simTime }
+    end
     return true
 end
 function LF.Combat.ground(body) return LF.guard("ground rifle", doGround, body) end
@@ -150,11 +201,16 @@ end
 -- A body that went away (despawned, dead) leaves no rifle lying about for ever: a dead man's stays
 -- where it is (it's his), a despawned man's is picked up with him.
 Events.OnTick.Add(function()
+    if LF.tick % 120 == 61 then LF.guard("sweep rifles", sweep) end
     if LF.tick % 60 ~= 23 then return end
     for b, g in pairs(grounded) do
         local id = b:getModData().LF_id
         if b:isDead() then
             grounded[b] = nil
+            -- (His now: it stays where he left it, out of the sweep.)
+            pcall(function() g.gun:getModData().LF_owner = nil end)
+            local list = groundList()
+            for i = #list, 1, -1 do if list[i].id == id then table.remove(list, i) end end
         elseif not (id and LF.Bodies and LF.Bodies.get(id) == b) then
             LF.guard("lift rifle", lift, g)
             grounded[b] = nil
