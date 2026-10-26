@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.61.0"
+VERSION = "0.61.1"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -609,6 +609,10 @@ class Bridge:
             return False
         log("lf_bridge.py was updated - restarting with the new version")
         self.model.stop()
+        for _ in range(40):                 # (let the old model let go of its port first)
+            if not self.model.up():
+                break
+            time.sleep(0.25)
         if _LOCK:
             _LOCK.close()
         subprocess.Popen([sys.executable] + sys.argv, cwd=str(HERE),
