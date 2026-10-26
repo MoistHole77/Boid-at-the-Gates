@@ -665,6 +665,12 @@ end
 
 -- Hold an objective.
 function LF.Platoon.hold(p, obj)
+    -- Held by the enemy: it has to be taken first - that is the order (then the platoon holds it).
+    if LF.Objective.enemyHeld and LF.Objective.enemyHeld(p.faction, obj) then
+        LF.log("PLATOON " .. p.name .. " told to hold " .. obj.name .. ", which the enemy holds - it takes it first")
+        return LF.Platoon.take(p, obj)
+    end
+    LF.log("PLATOON " .. p.name .. " ordered to hold " .. obj.name)
     local rifles, mg = rolesFor(p)
     local main = rifles[1] or mg
     if not main then return false, "it has no squad left" end

@@ -334,8 +334,20 @@ local function settleInside(squad, obj)
 end
 LF.Objective.settleInside = settleInside
 
--- Hold it: the defensive stance on the objective. (Men off-screen are put inside it.)
+-- Is the objective in the enemy's hands (held by a hostile side, or contested)?
+local function enemyHeld(faction, obj)
+    return (obj.holder ~= nil and obj.holder ~= faction and LF.isHostile(faction, obj.holder)) or obj.contested == true
+end
+LF.Objective.enemyHeld = enemyHeld
+
+-- Hold it: the defensive stance on the objective. (Men off-screen are put inside it.) An
+-- objective the enemy holds has to be taken first: that becomes the order.
 function LF.Objective.hold(squad, obj)
+    if enemyHeld(squad.faction, obj) and squad.kind == "squad" then
+        LF.log("OBJECTIVE " .. squad.name .. " told to hold " .. obj.name .. ", which the enemy holds - it takes it first")
+        local ok = LF.Objective.take(squad, obj)
+        if ok then return end
+    end
     squad.objTask = { obj = obj.id, kind = "hold", phase = "hold", since = LF.tick }
     LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
     if obj.building or obj.rects then settleInside(squad, obj) end
@@ -424,10 +436,15 @@ end
 -- Who is at the objective: counts of living soldiers per faction (from their records, so it
 -- works whether or not they have bodies).
 local counts = {}
-local function whoIsThere(obj)
+local fitCounts = {}
+-- fitOnly: count only men who can still fight - the wounded don't hold a building (0.56: four
+-- wounded Germans kept a platoon out of one for good).
+local function whoIsThere(obj, fitOnly)
+    local counts = fitOnly and fitCounts or counts
     for k in pairs(counts) do counts[k] = nil end
     for _, r in pairs(LF.Records.all()) do
-        if r.alive and r.faction ~= "CIV" and LF.dist(r.x, r.y, obj.x, obj.y) < 30 then
+        if r.alive and r.faction ~= "CIV" and (not fitOnly or not (r.wounded or r.offWound))
+            and LF.dist(r.x, r.y, obj.x, obj.y) < 30 then
             local b = LF.Bodies.get(r.id)
             local x, y, z = r.x, r.y, r.z
             if b then x, y, z = b:getX(), b:getY(), b:getZ() end
@@ -482,36 +499,113 @@ function LF.Objective.planned(squad)
     return t ~= nil and t.kind == "take" and t.phase == "assault"
 end
 
--- Off-screen (the sergeant has no body here): the task goes on by the unit's state. On the
--- approach, the march arriving starts the assault (LF_March). In the assault, with no enemy at
--- the objective, the men walk in and it is taken; with the enemy there, the squad waits at its
--- rally point - off-screen fighting is not in yet (roadmap phase 3).
+-- Off-screen (the sergeant has no body here): the task goes on by the unit's state, and the
+-- fighting is LF_Clash's.
+--   approach - the march arriving at the rally point starts the assault (LF_March); halted by
+--              contact within CFG.nearAssault of the objective, it goes straight into it.
+--   assault  - with fit enemy at the objective, the squad works forward to its rally point and
+--              fires from there; once it has the upper hand - three fit men of ours near the
+--              objective for each of theirs, their morale under 30, or two to one after two
+--              minutes - it storms: the men go in (and the defenders lose most of their cover).
+--              No fit enemy left: the wounded inside are taken prisoner, the men walk in and the
+--              objective is taken.
+local function walkMen(squad, tx, ty, z, speed, t)
+    local dt = LF.simTime - (t.walkAt or LF.simTime)
+    t.walkAt = LF.simTime
+    if dt <= 0 then return 0 end
+    local far = 0
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not LF.Bodies.get(rid) then
+            local d = LF.dist(r.x, r.y, tx, ty)
+            local step = speed * dt
+            if d <= step then r.x, r.y = tx + (r.x - tx) * 0.1, ty + (r.y - ty) * 0.1
+            else r.x, r.y = r.x + (tx - r.x) / d * step, r.y + (ty - r.y) / d * step end
+            r.z = z
+            far = math.max(far, LF.dist(r.x, r.y, tx, ty))
+        end
+    end
+    return far
+end
+
+-- Fit men of a faction (theirs or ours) within range of the objective, and their average morale.
+local function strengthNear(obj, faction, range)
+    local n, m = 0, 0
+    for _, r in pairs(LF.Records.all()) do
+        if r.alive and r.faction == faction and not (r.wounded or r.offWound) and LF.dist(r.x, r.y, obj.x, obj.y) <= range then
+            n = n + 1
+            m = m + (LF.Morale and LF.Morale.get(r) or 60)
+        end
+    end
+    return n, n > 0 and m / n or 0
+end
+
+-- The wounded enemy left inside when the objective falls: taken prisoner (out of the war).
+local function takePrisoners(squad, obj)
+    for _, r in pairs(LF.Records.all()) do
+        if r.alive and r.faction ~= squad.faction and LF.isHostile(squad.faction, r.faction) and not LF.Bodies.get(r.id)
+            and atObjective(obj, r.x, r.y, r.z or obj.z) then
+            r.alive, r.captured = false, { by = squad.id, x = r.x, y = r.y, z = r.z or 0 }
+            LF.log("OBJECTIVE " .. LF.Units.title(r) .. " #" .. r.id .. " taken prisoner by " .. squad.name .. " at " .. obj.name)
+            LF.guard("succession", LF.Units.onDeath, r)
+            if LF.Clash and LF.Clash.note then
+                LF.Clash.note("captured", { who = r.id, unit = r.squad, by = squad.id, x = math.floor(r.x), y = math.floor(r.y) })
+            end
+        end
+    end
+end
+
 local function updateTakeOffscreen(squad, obj)
     local t = squad.objTask
     if t.phase == "approach" then
         local M = LF.March.get(squad.id)
+        local ax, ay = LF.Squad.anchor(squad.id)
+        local near = ax and LF.dist(ax, ay, obj.x, obj.y) or math.huge
         if M and M.arrived then LF.Objective.onArrived(squad)
+        elseif M and M.halted and near <= CFG.nearAssault then
+            startAssault(squad, obj, "contact " .. math.floor(near) .. " tiles from the objective (off-screen)")
         elseif not M and LF.Stance.get(squad).name ~= "patrolling" then
             startAssault(squad, obj, "the approach ended (off-screen)")
         end
     elseif t.phase == "rally" then
         startAssault(squad, obj, "at the rally point")
     elseif t.phase == "assault" then
-        local c = whoIsThere(obj)
-        local ours, theirs = c[squad.faction] or 0, 0
-        for f, n in pairs(c) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
+        local cf = whoIsThere(obj, true)
+        local theirs, enemyFaction = 0, nil
+        for f, n in pairs(cf) do
+            if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs, enemyFaction = theirs + n, f end
+        end
         if theirs > 0 then
+            t.assaultSince = t.assaultSince or LF.simTime
+            if not t.storm then
+                local ours = strengthNear(obj, squad.faction, 45)
+                local _, theirMorale = strengthNear(obj, enemyFaction, 30)
+                local long = LF.simTime - t.assaultSince > 120
+                if ours >= theirs * 3 or theirMorale < 30 or (long and ours >= theirs * 2) then
+                    t.storm = true
+                    LF.log(string.format("OBJECTIVE %s storms %s off-screen (%d of ours against %d, their morale %.0f)",
+                        squad.name, obj.name, ours, theirs, theirMorale))
+                end
+            end
+            if t.storm then
+                walkMen(squad, obj.x, obj.y, obj.z, 1.0, t)        -- (in at a rush)
+            elseif t.rally then
+                walkMen(squad, t.rally.x, t.rally.y, obj.z, 0.5, t)   -- (forward by bounds to the rally point)
+            end
             if not t.offscreenWait then
                 t.offscreenWait = true
-                LF.log("OBJECTIVE " .. squad.name .. ": " .. theirs .. " enemy at " .. obj.name .. " - off-screen it waits at its rally point (no off-screen fighting yet)")
+                LF.log("OBJECTIVE " .. squad.name .. ": " .. theirs .. " fit enemy at " .. obj.name .. " - fighting for it off-screen")
             end
             return
         end
-        t.offscreenWait = nil
+        t.offscreenWait, t.storm = nil, nil
+        takePrisoners(squad, obj)
+        local c = whoIsThere(obj)
+        local ours = c[squad.faction] or 0
         if ours == 0 then
             settleInside(squad, obj)
             t.cleared = true
-            LF.log("OBJECTIVE " .. squad.name .. " walks into " .. obj.name .. " - nobody there (off-screen)")
+            LF.log("OBJECTIVE " .. squad.name .. " walks into " .. obj.name .. " - no one left to fight (off-screen)")
             return
         end
         obj.holder = squad.faction
@@ -519,6 +613,7 @@ local function updateTakeOffscreen(squad, obj)
         setPhase(squad, "hold", "no enemy at " .. obj.name .. " (off-screen)")
         t.kind = "hold"
         LF.Tactics.setStance(squad, "defensive", obj.building and { x = math.floor(obj.x), y = math.floor(obj.y), z = obj.z } or nil)
+        settleInside(squad, obj)
         LF.log("OBJECTIVE " .. obj.name .. " taken by the " .. (FACTION[squad.faction] or squad.faction) .. " (off-screen)")
         if LF.Service then LF.guard("service objective", LF.Service.objectiveTaken, squad) end
     end
@@ -552,7 +647,8 @@ local function updateTake(squad, obj)
         local c = whoIsThere(obj)
         local ours = c[squad.faction] or 0
         local theirs = 0
-        for f, n in pairs(c) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
+        local cf = whoIsThere(obj, true)
+        for f, n in pairs(cf) do if f ~= squad.faction and LF.isHostile(squad.faction, f) then theirs = theirs + n end end
         -- A building is only taken once a team has cleared it (LF_Clearing sets t.cleared).
         if theirs == 0 and ours > 0 and (not obj.building or t.cleared) then
             obj.holder = squad.faction

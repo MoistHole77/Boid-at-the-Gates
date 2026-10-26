@@ -136,6 +136,17 @@ local function coverOf(e)
     return "open"
 end
 
+-- Cover against a particular enemy: defenders being stormed (the enemy inside with them) have
+-- only the close-quarters cover of rooms and doorways.
+local function coverAgainst(t, e)
+    local c = coverOf(t)
+    local et = e.u.objTask
+    if c == "building" and et and et.storm then return "dug" end
+    return c
+end
+
+local function fleeing(u) return u.offBroken ~= nil and u.offBroken <= LF.simTime and LF.simTime - u.offBroken < 120 end
+
 local function rangeMul(d) return math.max(0.15, math.min(1, 1.25 - d / 40)) end
 
 local function moraleMul(e)
@@ -162,7 +173,10 @@ local function hit(e, by)
     if #cands == 0 then return end
     local r = cands[ZombRand(#cands) + 1]
     local title = LF.Units.title(r)
-    if ZombRand(100) < CFG.killShare * 100 then
+    -- (A man already wounded who is hit again is far more likely to die: 0.56 wounded one man
+    -- three times over and he lived.)
+    local kill = (r.wounded or r.offWound) and 70 or CFG.killShare * 100
+    if ZombRand(100) < kill then
         r.alive = false
         r.diedOffscreen = { x = r.x, y = r.y, z = r.z or 0, by = by.u.id }
         LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " KILLED off-screen by " .. by.u.name
@@ -255,6 +269,7 @@ local function update()
             local ammo = e.u.offAmmo or 1
             local f = e.fp * rangeMul(pr.d) * moraleMul(e) * (ammo < 0.25 and ammo * 4 or 1)
             if coverOf(e) == "march" then f = f * 0.5 end
+            if fleeing(e.u) then f = f * 0.3 end            -- (running, not fighting)
             t.inFire = (t.inFire or 0) + f
             e.targets = e.targets or {}
             e.targets[#e.targets + 1] = { t = t, f = f }
@@ -272,7 +287,7 @@ local function update()
         u.offContactAt = LF.simTime
         -- (A squad marching in a platoon's file: its whole file halts.)
         local M = LF.March.get(u.id)
-        if M and not M.arrived then
+        if M and not M.arrived and not fleeing(u) then
             if not M.halted then
                 M.halted = true
                 LF.log("PATROL " .. u.name .. ": contact off-screen - halt and fight")
@@ -292,7 +307,7 @@ local function update()
                     LF.Squad.report(u.id, r.id, LF.Tactics.point(r.x, r.y, r.z or 0))
                 end
             end
-            local landed = tg.f * (1 - (e.supp or 0)) * CFG.rate * COVER[coverOf(t)] * dt
+            local landed = tg.f * (1 - (e.supp or 0)) * CFG.rate * COVER[coverAgainst(t, e)] * dt
             t.u.offHits = (t.u.offHits or 0) + landed
             -- Pinned: morale wears down under heavy fire.
             local heavy = (t.inFire or 0) / math.max(1, t.fit or 1)
@@ -337,6 +352,7 @@ Events.OnInitGlobalModData.Add(function() lastSim = nil end)
 
 -- Is this unit still in an off-screen fight (a march stays halted)?
 function LF.Clash.inContact(u)
+    if u ~= nil and fleeing(u) then return false end       -- (a broken unit runs, it doesn't stop to fight)
     return u ~= nil and u.offContactAt ~= nil and LF.simTime - u.offContactAt < CFG.contactHold
         and u.offContactAt <= LF.simTime
 end
