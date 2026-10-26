@@ -1,4 +1,4 @@
-"""Living Front bridge (0.58): Project Zomboid <-> a local language model. Text only, no Chasm.
+"""Living Front bridge (0.59): Project Zomboid <-> a local language model. Text only, no Chasm.
 
 Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
@@ -13,6 +13,8 @@ Project Zomboid's Lua can't make web requests, so this helper does it for Living
 
 Standard library only (Python 3.9+). Run it with run_lf_bridge.bat, or:
     python lf_bridge.py [--once] [--zomboid DIR] [--verbose] [--no-model]
+install_autostart.bat makes Windows start it (hidden) when you log in; it then waits, using
+next to nothing, until Project Zomboid runs. Only one copy runs at a time.
 """
 
 from __future__ import annotations
@@ -21,14 +23,16 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.58.0"
+VERSION = "0.59.0"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -47,9 +51,11 @@ CFG = {
     "summary_max_tokens": 90,
     "report_max_tokens": 70,
     "temperature": 0.85,
+    "lock_port": 5078,          # (a second copy of the bridge sees this port taken and exits)
 }
 
 LOG_PATH = HERE / "lf_bridge.log"
+_LOCK = None
 VERBOSE = False
 
 
@@ -239,15 +245,61 @@ class Model:
 
     def chat(self, messages: list[dict], max_tokens: int) -> str:
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": CFG["temperature"],
-                "top_p": 0.95, "repeat_penalty": 1.1, "cache_prompt": True, "stream": False}
+                "top_p": 0.95, "repeat_penalty": 1.1, "cache_prompt": True, "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False}}
         res = http_json(CFG["llm"] + "/v1/chat/completions", body, timeout=CFG["timeout"])
-        return clean(res["choices"][0]["message"]["content"])
+        return clean(res["choices"][0]["message"].get("content") or "")
+
+    def say(self, messages: list[dict], max_tokens: int) -> str:
+        """Words for him to say out loud: if the model plans aloud instead of answering (small models
+        do), keep the line it drafted, or ask once more, firmly; else nothing (the mod's own words)."""
+        text = self.chat(messages, max_tokens)
+        if not planning(text):
+            return text
+        vlog("the model planned instead of answering: " + text[:200])
+        drafted = drafted_line(text)
+        if drafted:
+            return drafted
+        again = messages[:-1] + [{"role": "user", "content": messages[-1]["content"] + "\n\n" + ONLY_WORDS}]
+        text = self.chat(again, max_tokens)
+        if not planning(text):
+            return text
+        return drafted_line(text) or ""
+
+
+PLANNING = re.compile(
+    r"^\s*(thinking process|thought process|the user\b|the officer (is|has|asks|greet)|i need to (respond|reply|answer|stay|keep|sound|think|craft|write)|"
+    r"i should (respond|reply|answer|keep|sound|maintain|focus)|i will (respond|reply|answer)|"
+    r"let me (think|consider|craft|analy|draft|plan)|let's (break|analy|think|craft|draft|plan)|okay[,.]? (so|let|i)|ok[,.]? (so|let|i)|character check|analysis|"
+    r"plan:|step \d|\d\.\s|\*\s|- )", re.I)
+PLANNING_ANY = re.compile(r"(respond as|stay in character|in character|my character|character traits|"
+                          r"the prompt|the persona|reply as him|his response|draft:|final answer)", re.I)
+ONLY_WORDS = ("(Answer with only the words he says out loud, starting right away - no planning, no notes, "
+              "nothing about the character or the instructions.)")
+
+
+def planning(text: str) -> bool:
+    return bool(text) and bool(PLANNING.search(text) or PLANNING_ANY.search(text))
+
+
+def drafted_line(text: str) -> str:
+    """The line a planning model drafted, if it got that far (the last quoted line of some length)."""
+    quotes = re.findall(r'["\u201c]([^"\u201c\u201d]{12,400})["\u201d]', text)
+    for q in reversed(quotes):
+        q = q.strip()
+        if not planning(q):
+            return q
+    m = re.search(r"(?:response|reply|answer|says?|draft)\s*[:\-]\s*(.{12,400})$", text, re.I)
+    if m and not planning(m.group(1)):
+        return m.group(1).strip().strip('"')
+    return ""
 
 
 def clean(text: str) -> str:
     text = (text or "").strip()
-    if "</think>" in text:
-        text = text.split("</think>", 1)[1]
+    for tag in ("</think>", "<channel|>", "<|channel|>final<|message|>"):
+        if tag in text:
+            text = text.rsplit(tag, 1)[1]
     text = re.sub(r"\*[^*]{1,80}\*", "", text)            # (*stage directions*)
     text = re.sub(r"^\s*[\w .'-]{1,40}:\s*", "", text) if re.match(r"^\s*(Pvt|Cpl|Sgt|SSgt|Lt)\.?\s", text) else text
     text = " ".join(l.strip() for l in text.splitlines() if l.strip())
@@ -317,14 +369,16 @@ TALK_RULES = ("An officer of his own army is talking to him face to face, in a p
               "No narration, no actions in asterisks, no quotation marks round your words. Talk about yourself, your "
               "home, your mates and the war in your own way when asked. Only speak of events you have seen or that are "
               "listed above; never invent battles, deaths or names of men in his unit. If he doesn't know, he says so in "
-              "his own way. Don't repeat earlier answers word for word.")
+              "his own way. Don't repeat earlier answers word for word. "
+              "Write only the words he says - begin speaking at once. Never plan, explain or describe the reply, "
+              "never mention the character, the officer's question or these instructions.")
 
 
 def talk_messages(req: dict) -> list[dict]:
     msgs = [{"role": "system", "content": character(req) + "\n\n" + TALK_RULES}]
     hist = req.get("history")
     for h in hist if isinstance(hist, list) else []:
-        if isinstance(h, dict) and h.get("you") and h.get("him"):
+        if isinstance(h, dict) and h.get("you") and h.get("him") and not planning(h["him"]):
             msgs.append({"role": "user", "content": h["you"]})
             msgs.append({"role": "assistant", "content": h["him"]})
     msgs.append({"role": "user", "content": req.get("player_text") or ""})
@@ -334,7 +388,8 @@ def talk_messages(req: dict) -> list[dict]:
 def summary_messages(req: dict) -> list[dict]:
     s = req.get("soldier") or {}
     hist = req.get("history") if isinstance(req.get("history"), list) else []
-    talk = "\n".join(f"Officer: {h.get('you')}\n{s.get('name', 'Soldier')}: {h.get('him')}" for h in hist if isinstance(h, dict))
+    talk = "\n".join(f"Officer: {h.get('you')}\n{s.get('name', 'Soldier')}: {h.get('him')}" for h in hist
+                     if isinstance(h, dict) and not planning(str(h.get("him") or "")))
     sys_msg = (f"You keep notes for {s.get('name', 'a soldier')}. Read the conversation below between him and an officer. "
                "Reply in exactly this form, on two lines:\n"
                "NOTE: <one or two short sentences, written about him in the third person, of what was said that he would "
@@ -360,9 +415,24 @@ class Bridge:
     def __init__(self, zomboid: Path, use_model: bool) -> None:
         self.box = Mailbox(zomboid)
         self.model = Model(use_model)
-        self.last_beat = 0.0
         self.last_game = 0.0
         self.game_seen = 0.0
+        self.game_on = os.name != "nt"
+        self.lock = threading.Lock()
+        # (The heartbeat has its own thread, so the mod still sees the bridge while the model
+        # spends fifteen seconds on an answer.)
+        threading.Thread(target=self.beat, daemon=True).start()
+
+    def beat(self) -> None:
+        while True:
+            try:
+                if self.game_on:
+                    with self.lock:
+                        self.box.write_status(self.model.state)
+                    self.box.clean()
+            except Exception as e:  # noqa: BLE001
+                vlog(f"heartbeat: {e}")
+            time.sleep(1.0)
 
     def handle(self, path: Path) -> None:
         try:
@@ -380,14 +450,15 @@ class Bridge:
         if self.model.state == "ok":
             try:
                 if kind == "talk":
-                    fields["text"] = self.model.chat(talk_messages(req), CFG["talk_max_tokens"]) or fallback
+                    fields["text"] = self.model.say(talk_messages(req), CFG["talk_max_tokens"]) or fallback
                 elif kind == "report":
-                    fields["text"] = self.model.chat(report_messages(req), CFG["report_max_tokens"]) or fallback
+                    fields["text"] = self.model.say(report_messages(req), CFG["report_max_tokens"]) or fallback
                 elif kind == "summarize":
                     raw = self.model.chat(summary_messages(req), CFG["summary_max_tokens"])
                     note = re.search(r"NOTE:\s*(.+?)(?:TRUST:|$)", raw, re.S)
                     trust = re.search(r"TRUST:\s*([+-]?\d)", raw)
-                    fields["text"] = (note.group(1).strip() if note else raw).strip()[:300] or fallback
+                    text = (note.group(1).strip() if note else "")
+                    fields["text"] = (text if text and not planning(text) else fallback)[:300]
                     fields["trust"] = trust.group(1) if trust else "0"
                 fields["worded"] = "yes" if fields["text"] != fallback else "no"
             except Exception as e:  # noqa: BLE001
@@ -399,18 +470,22 @@ class Bridge:
 
     def tick(self) -> None:
         now = time.time()
-        if now - self.last_beat >= 1.0:
-            self.last_beat = now
-            self.box.write_status(self.model.state)
-            self.box.clean()
+        with self.lock:
             self.model.check()
         if now - self.last_game >= 5.0:
             self.last_game = now
-            if game_running():
-                self.game_seen = now
-                self.model.start()
-            elif self.model.proc and now - self.game_seen > CFG["stop_after"]:
-                self.model.stop()
+            on = game_running()
+            if on and not self.game_on:
+                log("Project Zomboid is running")
+            self.game_on = on
+            with self.lock:
+                if on:
+                    self.game_seen = now
+                    self.model.start()
+                elif self.model.proc and now - self.game_seen > CFG["stop_after"]:
+                    self.model.stop()
+        if not self.game_on:
+            return
         # (While the model is loading - up to two minutes - requests wait for it rather than getting
         # plain answers.)
         if self.model.state == "starting" and now - self.model.ready_at < 120:
@@ -431,7 +506,7 @@ class Bridge:
                     log(f"error: {e}")
                 if once:
                     return
-                time.sleep(0.2)
+                time.sleep(0.2 if self.game_on else 1.0)
         finally:
             if not once:
                 self.model.stop()
@@ -444,9 +519,19 @@ def main() -> None:
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-model", action="store_true", help="never start a language model (use one already running)")
+    ap.add_argument("--background", action="store_true", help="(started hidden by the autostart)")
     args = ap.parse_args()
     VERBOSE = args.verbose
     load_settings()
+    global _LOCK
+    _LOCK = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        _LOCK.bind(("127.0.0.1", int(CFG["lock_port"])))
+    except OSError:
+        print("The Living Front bridge is already running (it may have been started at login) - nothing to do.")
+        if not args.background:
+            log("another copy of the bridge is already running - this one exits")
+        return
     Bridge(Path(args.zomboid), not args.no_model).run(once=args.once)
 
 

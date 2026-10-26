@@ -10,9 +10,15 @@ mod through files in `Zomboid\Lua\LivingFront\chasm\`. No Chasm, no voices, no i
 
 ## Use
 
-Start `run_lf_bridge.bat` and leave its window open, then play. In game, right-click a soldier,
-**Talk to ...**, type and press Enter. The Living Front debug tools show whether the bridge and
-the language model are ready (the model takes a little while to load the first time).
+**Once:** double-click `install_autostart.bat`. From then on Windows starts the bridge, hidden, every
+time you log in. It does next to nothing until Project Zomboid is running; then it loads the
+language model (a minute or so the first time), and it unloads it a minute after you quit, so your
+graphics card is free the rest of the time. Only one copy ever runs. `remove_autostart.bat` undoes it.
+
+(Or run `run_lf_bridge.bat` by hand and leave its window open while you play.)
+
+In game, right-click a soldier, **Talk to ...**, type and press Enter. The Living Front debug tools
+show whether the bridge and the language model are ready.
 
 ## The model
 
