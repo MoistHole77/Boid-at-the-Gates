@@ -1,4 +1,4 @@
-"""Living Front bridge (0.60): Project Zomboid <-> a local language model. Text only, no Chasm.
+"""Living Front bridge (0.61): Project Zomboid <-> a local language model. Text only, no Chasm.
 
 Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.60.0"
+VERSION = "0.61.0"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -47,7 +47,7 @@ CFG = {
     "game_exe": ["ProjectZomboid64.exe", "ProjectZomboid32.exe", "ProjectZomboid.exe"],
     "stop_after": 60,           # seconds after the game closes before the model is stopped
     "timeout": 60,
-    "talk_max_tokens": 160,
+    "talk_max_tokens": 110,
     "summary_max_tokens": 90,
     "report_max_tokens": 70,
     "temperature": 0.85,
@@ -294,12 +294,22 @@ class Model:
                     return False
                 st["open"] = True
             shown = partial_text(text)
-            if shown and shown != st["shown"]:
+            if shown and shown != st["shown"] and shown.startswith(st["shown"]):     # (only ever adds words)
                 st["shown"] = shown
                 on_partial(shown)
             return True
 
-        full = self.stream_chat(messages, max_tokens, on_text)
+        self.shown = ""
+        try:
+            full = self.stream_chat(messages, max_tokens, on_text)
+        finally:
+            self.shown = st["shown"]        # (what he has said already, if this went wrong part way)
+        if st["open"]:
+            # Spoken words stay spoken: the finished reply is what was shown and whatever came after it.
+            shown = st["shown"]
+            if not shown:
+                return full
+            return full if full.startswith(shown) else shown
         if st["planning"]:
             vlog("the model began planning - asking again, without streaming")
             return self.say(messages, max_tokens)
@@ -352,27 +362,38 @@ def drafted_line(text: str) -> str:
     return ""
 
 
-def partial_text(text: str) -> str:
-    """Words so far, for showing as he speaks: no stage directions, and no half-made last word."""
-    text = re.sub(r"\*[^*]*\*", "", text)
-    if "*" in text:
-        text = text[:text.index("*")]       # (a stage direction under way: wait for its end)
-    text = " ".join(text.split()).lstrip('"')
-    if text and not text[-1] in " .,!?;:-'\")":
-        cut = text.rfind(" ")
-        text = text[:cut] if cut > 0 else text   # (show whole words only)
-    return text[:600]
-
-
-def clean(text: str) -> str:
-    text = (text or "").strip()
+def speech(text: str, final: bool = False) -> str:
+    """His words out of what the model wrote: no stage directions, no "Pvt. X:" in front, one space
+    between words. Used for the words shown as he speaks and for the finished reply alike, so the
+    finished reply only ever adds to what was shown - never changes it. Before final: whole words
+    only, and nothing from a stage direction or quotation still under way."""
+    text = text or ""
     for tag in ("</think>", "<channel|>", "<|channel|>final<|message|>"):
         if tag in text:
             text = text.rsplit(tag, 1)[1]
-    text = re.sub(r"\*[^*]{1,80}\*", "", text)            # (*stage directions*)
-    text = re.sub(r"^\s*[\w .'-]{1,40}:\s*", "", text) if re.match(r"^\s*(Pvt|Cpl|Sgt|SSgt|Lt)\.?\s", text) else text
-    text = " ".join(" ".join(text.split()).split(" "))           # (one space between words)
-    return text.strip().strip('"').strip()[:600]
+    text = re.sub(r"\*[^*]*\*", " ", text)            # (*stage directions*)
+    if "*" in text:
+        text = text[:text.index("*")]               # (one under way, or never closed: not his words)
+    if re.match(r"^\s*(Pvt|Cpl|Sgt|SSgt|Lt)\.?(\s|$)", text):
+        if not final and ":" not in text[:48] and len(text) < 48:
+            return ""                               # (maybe "Pvt. Name:" still coming: wait)
+        text = re.sub(r"^\s*[\w .'-]{1,40}:\s*", "", text)
+    text = " ".join(text.split()).lstrip('"').lstrip()
+    if final:
+        return text.rstrip('"').rstrip()[:600]
+    text = text.rstrip('"')
+    if text and text[-1] not in ".,!?;:-')":
+        cut = text.rfind(" ")
+        text = text[:cut] if cut > 0 else ""          # (show whole words only)
+    return text[:600].rstrip()
+
+
+def partial_text(text: str) -> str:
+    return speech(text)
+
+
+def clean(text: str) -> str:
+    return speech((text or "").strip(), final=True)
 
 
 # ---- prompts ------------------------------------------------------------------------------------------------
@@ -433,12 +454,17 @@ def character(req: dict) -> str:
 
 
 TALK_RULES = ("An officer of his own army is talking to him face to face, in a pause in the fighting. Reply as "
-              "him, in the first person, and stay in character the whole time. Answer in English, as he would say it out loud: "
-              "usually one to three sentences, more only if he is the talkative sort or it's a story worth telling. "
-              "No narration, no actions in asterisks, no quotation marks round your words. Talk about yourself, your "
-              "home, your mates and the war in your own way when asked. Only speak of events you have seen or that are "
-              "listed above; never invent battles, deaths or names of men in his unit. If he doesn't know, he says so in "
-              "his own way. Don't repeat earlier answers word for word. "
+              "him, in the first person, and stay in character the whole time. Answer in English, as he would say it out loud. "
+              "Keep it short: usually a single sentence, two at most - a soldier doesn't make speeches to an officer. Only the "
+              "talkative sort says more, and only to an officer he trusts. "
+              "Answer just what was asked, the way a real man would - plainly, often in few words, sometimes guarded or "
+              "evasive. Everything above about his life is background for playing him, not things to tell: he doesn't "
+              "volunteer his family, his friend, his fears, his hopes or his past, and never his secret. Asked about his "
+              "unit, he says what he thinks of it, not who his friend is; asked how he is, he says how he is. He opens up "
+              "slowly, and only as far as he trusts the officer. If asked his name, he gives his rank and name. "
+              "No narration, no actions in asterisks, no quotation marks round your words. Only speak of events you have "
+              "seen or that are listed above; never invent battles, deaths or names of men in his unit. If he doesn't "
+              "know, he says so in his own way. Don't repeat earlier answers. "
               "Write only the words he says - begin speaking at once. Never plan, explain or describe the reply, "
               "never mention the character, the officer's question or these instructions.")
 
@@ -516,6 +542,7 @@ class Bridge:
         fallback = req.get("fallback") or ""
         t0 = time.time()
         fields = {"status": "ok", "text": fallback, "worded": "no", "voiced": "no"}
+        self.model.shown = ""
         if self.model.state == "ok":
             try:
                 if kind == "talk" and CFG["stream"]:
@@ -535,7 +562,11 @@ class Bridge:
                     fields["trust"] = trust.group(1) if trust else "0"
                 fields["worded"] = "yes" if fields["text"] != fallback else "no"
             except Exception as e:  # noqa: BLE001
-                log(f"the language model didn't answer ({e}) - Living Front's own words this time")
+                if kind == "talk" and getattr(self.model, "shown", ""):
+                    fields["text"], fields["worded"] = self.model.shown, "yes"   # (he stops there)
+                    log(f"the language model broke off ({e}) - his words so far stand")
+                else:
+                    log(f"the language model didn't answer ({e}) - Living Front's own words this time")
                 if not self.model.proc:
                     self.model.state = "off"        # (someone else's server went away: look again)
         log(f"{kind} #{rid} ({time.time() - t0:.1f} s, {'model' if fields['worded'] == 'yes' else 'plain'}): {fields['text'][:100]}")

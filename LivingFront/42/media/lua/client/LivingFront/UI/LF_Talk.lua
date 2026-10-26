@@ -97,6 +97,36 @@ local function doing(rec)
     return u.stance or ""
 end
 
+-- ---- who you take him for -------------------------------------------------------------------------------
+-- His rank you can see; his name you know only once he has told you (or said it in your hearing).
+
+local RANK_WORD = { PVT = "Private", CPL = "Corporal", SGT = "Sergeant", SSG = "Staff Sergeant", LT = "Lieutenant" }
+
+function LF.Talk.knowsName(rec) return rec and rec.talk and rec.talk.knowName or false end
+
+-- "Pvt. Moroz" if you know his name, else "Private".
+function LF.Talk.label(rec)
+    if not rec then return "?" end
+    if LF.Talk.knowsName(rec) then
+        return (LF.Units.title(rec):gsub(" .*", "")) .. " " .. rec.surname
+    end
+    return RANK_WORD[rec.rank or ""] or "Soldier"
+end
+
+local function learnName(rec, words)
+    if LF.Talk.knowsName(rec) or not words then return end
+    local w = " " .. words:lower():gsub("[^%a]", " ") .. " "
+    local function said(n)
+        if not n or n == "" then return false end
+        return w:find(" " .. (n:lower():gsub("[^%a]", " ")) .. " ", 1, true) ~= nil
+    end
+    if said(rec.surname) or said(rec.forename) then
+        rec.talk = rec.talk or { notes = {}, trust = 0, n = 0 }
+        rec.talk.knowName = true
+        LF.log("TALK you now know #" .. rec.id .. "'s name: " .. LF.Units.title(rec))
+    end
+end
+
 -- ---- a conversation ---------------------------------------------------------------------------------
 
 local sessions = {}         -- record id -> { lines = { {who, text} }, exchanges = { {you, him} }, waiting }
@@ -125,11 +155,14 @@ function LF.Talk.say(id, text)
     local mems = LF.Memory.of(rec, 6)
     local fallback = plainReply(rec, mems, #s.exchanges + 1, text)
     local function answer(words, how)
+        -- (Words already spoken stay spoken: the finished reply may only add to what was shown.)
+        if s.partial and words:sub(1, #s.partial) ~= s.partial then words = s.partial end
         s.waiting = nil
         s.partial = nil
+        learnName(rec, words)
         s.exchanges[#s.exchanges + 1] = { you = text, him = words }
         while #s.exchanges > CFG.keep do table.remove(s.exchanges, 1) end
-        addLine(id, title, words)
+        addLine(id, "him", words)
         LF.log("TALK " .. title .. " #" .. id .. (how and (" (" .. how .. ")") or "") .. ": " .. words)
         if LF.Tactics and LF.Tactics.say then LF.Tactics.say(id, words) end
     end
@@ -251,7 +284,8 @@ local function infoRows(rec)
     local body = LF.Bodies and LF.Bodies.get(rec.id)
     local u = rec.squad and LF.Units.get(rec.squad)
     local plt = u and u.platoon and LF.Units.get(u.platoon)
-    head(LF.Records.fullName(rec))
+    if LF.Talk.knowsName(rec) then head(LF.Records.fullName(rec))
+    else head("Name unknown") end
     line((rec.faction == "GER" and "Wehrmacht" or rec.faction == "SOV" and "Red Army" or "") .. " - " .. LF.Units.title(rec):gsub(" .*", "") .. ", " .. roleOf(rec))
     if u then
         head("Unit")
@@ -259,7 +293,7 @@ local function infoRows(rec)
         if plt then line((plt.name:gsub("^.* / ", ""))) end
         local cid = u.kind ~= "hq" and LF.Units.commander(u)
         local c = cid and cid ~= rec.id and LF.Records.get(cid)
-        if c then line("Squad leader: " .. LF.Units.title(c)) end
+        if c then line("Squad leader: " .. LF.Talk.label(c)) end
     end
     head("Now")
     local d = doing(rec)
@@ -291,7 +325,7 @@ function LF_TalkWindow:new(x, y, id)
     o.recId = id
     o.resizable = false
     local rec = LF.Records.get(id)
-    o.title = "Talking to " .. (rec and LF.Units.title(rec) or "?")
+    o.title = "Talking to " .. LF.Talk.label(rec)
     return o
 end
 
@@ -337,6 +371,7 @@ local function wrapPx(text, font, width)
 end
 
 function LF_TalkWindow:prerender()
+    self.title = "Talking to " .. LF.Talk.label(LF.Records.get(self.recId))
     ISCollapsableWindow.prerender(self)
     if self.isCollapsed then return end
     local rec = LF.Records.get(self.recId)
@@ -379,15 +414,16 @@ function LF_TalkWindow:prerender()
             local rec2 = LF.Records.get(self.recId)
             shown = {}
             for i, l in ipairs(s.lines) do shown[i] = l end
-            shown[#shown + 1] = { who = rec2 and LF.Units.title(rec2) or "?", text = s.partial .. " ..." }
+            shown[#shown + 1] = { who = "him", text = s.partial .. " ..." }
         else rows[#rows + 1] = { text = "...", r = 0.7, g = 0.7, b = 0.7 } end
     end
     for i = #shown, 1, -1 do
         local l = shown[i]
         local you = l.who == "You"
+        local who = you and "You" or LF.Talk.label(rec)
         local body = wrapPx(l.text, font, w - 12)
         for j = #body, 1, -1 do rows[#rows + 1] = { text = body[j], x = 12, r = 1, g = 1, b = 1 } end
-        rows[#rows + 1] = { text = l.who .. ":", r = you and 0.6 or 0.95, g = you and 0.85 or 0.85, b = you and 1 or 0.55 }
+        rows[#rows + 1] = { text = who .. ":", r = you and 0.6 or 0.95, g = you and 0.85 or 0.85, b = you and 1 or 0.55 }
         if (#rows + 1) * fh > bottom - self.top then break end
     end
     local y = bottom - fh
@@ -441,6 +477,7 @@ end)
 -- The soldier you're next to and facing: "[E] Talk" over his head, and E opens the conversation.
 
 local facingId = nil
+local PROMPT_COLORS = { GER = { 0.62, 0.74, 1.0 }, SOV = { 1.0, 0.5, 0.45 } }
 
 local function talkTarget()
     local p = getPlayer()
@@ -491,18 +528,32 @@ end)
 Events.OnPostUIDraw.Add(function()
     if not facingId or open[facingId] then return end
     LF.guard("talk prompt", function()
-        local body = LF.Bodies.get(facingId)
-        if not (body and body:isOnScreen()) then return end
-        local x, y, z = body:getX(), body:getY(), body:getZ()
+        -- Where your own words appear over your head (as the game's messages do), in the same font:
+        -- "[E] Talk", or "[E] Talk to Pvt. Moroz" once you know him, his name in his side's colour.
+        local p = getPlayer()
+        if not p then return end
+        local rec = LF.Records.get(facingId)
+        local x, y, z = p:getX(), p:getY(), p:getZ()
         local sx, sy = isoToScreenX(0, x, y, z), isoToScreenY(0, x, y, z)
         local zoom = getCore():getZoom(0)
         local key = "E"
         pcall(function() key = Keyboard.getKeyName(getCore():getKey("Interact")) end)
-        local text = "[" .. key .. "] Talk"
+        local font = UIFont.Dialogue or UIFont.Medium
         local tm = getTextManager()
-        local ty = sy - 112 / zoom
-        tm:DrawStringCentre(UIFont.Small, sx + 1, ty + 1, text, 0, 0, 0, 0.8)
-        tm:DrawStringCentre(UIFont.Small, sx, ty, text, 1, 0.9, 0.55, 1)
+        local lead = "[" .. key .. "] Talk"
+        local name = LF.Talk.knowsName(rec) and LF.Talk.label(rec) or nil
+        if name then lead = lead .. " to " end
+        local w1 = tm:MeasureStringX(font, lead)
+        local w2 = name and tm:MeasureStringX(font, name) or 0
+        local left = sx - (w1 + w2) / 2
+        local ty = sy - 135 / zoom - tm:getFontHeight(font)
+        tm:DrawString(font, left + 1, ty + 1, lead, 0, 0, 0, 0.8)
+        tm:DrawString(font, left, ty, lead, 1, 1, 1, 1)
+        if name then
+            local c = PROMPT_COLORS[rec.faction] or { 1, 1, 1 }
+            tm:DrawString(font, left + w1 + 1, ty + 1, name, 0, 0, 0, 0.8)
+            tm:DrawString(font, left + w1, ty, name, c[1], c[2], c[3], 1)
+        end
     end)
 end)
 
@@ -515,7 +566,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         local rec = LF.Records.get(f.id)
         if rec and rec.alive and rec.faction ~= "CIV" then
             local id = f.id
-            context:addOption("Talk to " .. LF.Units.title(rec), nil, function() LF.Talk.open(id) end)
+            context:addOption("Talk to " .. LF.Talk.label(rec), nil, function() LF.Talk.open(id) end)
         end
     end
 end
