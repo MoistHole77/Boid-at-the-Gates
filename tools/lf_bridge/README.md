@@ -17,7 +17,9 @@ graphics card is free the rest of the time. Only one copy ever runs. `remove_aut
 
 (Or run `run_lf_bridge.bat` by hand and leave its window open while you play.)
 
-In game, right-click a soldier, **Talk to ...**, type and press Enter. The Living Front debug tools
+Updates replace `lf_bridge.py`; a running bridge notices and restarts itself with the new version.
+
+In game, right-click a soldier, **Talk to ...**, type and press Enter. His answer appears word by word as he speaks (set `"stream": false` in `lf_bridge.json` to get it all at once). The Living Front debug tools
 show whether the bridge and the language model are ready.
 
 ## The model

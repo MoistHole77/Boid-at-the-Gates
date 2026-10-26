@@ -22,6 +22,7 @@ local DIR = "LivingFront/chasm/"
 local CFG = {
     aliveFor = 300,         -- ticks: the bridge counts as there this long after bridge.txt last changed
     pollTicks = 30,
+    fastPollTicks = 4,      -- while an answer is coming in (word by word): look this often
     stateTicks = 30,
     timeout = 3600,         -- ticks: an answer that hasn't come by then is given up on
 }
@@ -130,14 +131,15 @@ local function nextId()
 end
 
 -- Send a request (a table; kind = "talk" / "report" / ...). cb(answer) is called with the
--- parsed answer (status, text, voiced, ...) - or with nil if no answer comes. Returns false
--- (and doesn't send) when the bridge isn't running.
-function LF.Chasm.request(req, cb, speakerId)
+-- parsed answer (status, text, voiced, ...) - or with nil if no answer comes. onPartial(answer),
+-- if given, is called with the words so far while the bridge is still writing them
+-- (status=partial). Returns false (and doesn't send) when the bridge isn't running.
+function LF.Chasm.request(req, cb, speakerId, onPartial)
     if not status.alive then return false end
     local id = nextId()
     req.id = id
     if not writeFile(DIR .. "out/req_" .. id .. ".json", encode(req)) then return false end
-    pending[id] = { cb = cb, at = LF.tick, speaker = speakerId }
+    pending[id] = { cb = cb, at = LF.tick, speaker = speakerId, onPartial = onPartial }
     if speakerId then speakers[speakerId] = LF.tick + 3600 end
     return true
 end
@@ -146,7 +148,13 @@ local function pollAnswers()
     for id, p in pairs(pending) do
         local lines = readFile(DIR .. "in/res_" .. id .. ".txt")
         local kv = lines and parse(lines)
-        if kv and kv.status then
+        if kv and kv.status == "partial" then
+            p.at = LF.tick                  -- (still coming: the timeout counts from the last words)
+            if p.onPartial and kv.text ~= p.lastPartial then
+                p.lastPartial = kv.text
+                LF.guard("chasm partial", p.onPartial, kv)
+            end
+        elseif kv and kv.status then
             pending[id] = nil
             writeFile(DIR .. "in/res_" .. id .. ".txt", "done=1\n")
             if p.speaker and kv.voiced == "yes" then speakers[p.speaker] = LF.tick + 1800 end
@@ -184,11 +192,11 @@ local function writeState()
 end
 
 Events.OnTick.Add(function()
-    if LF.tick % CFG.pollTicks == 5 then
-        LF.guard("chasm bridge", checkBridge)
+    if LF.tick % CFG.pollTicks == 5 then LF.guard("chasm bridge", checkBridge) end
+    if LF.tick % CFG.fastPollTicks == 1 then
         local any = false
         for _ in pairs(pending) do any = true; break end       -- (Kahlua has no next())
-        if status.alive or any then LF.guard("chasm answers", pollAnswers) end
+        if any then LF.guard("chasm answers", pollAnswers) end
     end
     if status.alive and LF.tick % CFG.stateTicks == 20 then LF.guard("chasm state", writeState) end
 end)

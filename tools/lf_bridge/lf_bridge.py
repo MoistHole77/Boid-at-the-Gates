@@ -1,4 +1,4 @@
-"""Living Front bridge (0.59): Project Zomboid <-> a local language model. Text only, no Chasm.
+"""Living Front bridge (0.60): Project Zomboid <-> a local language model. Text only, no Chasm.
 
 Project Zomboid's Lua can't make web requests, so this helper does it for Living Front:
 
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.59.0"
+VERSION = "0.60.0"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -51,7 +51,9 @@ CFG = {
     "summary_max_tokens": 90,
     "report_max_tokens": 70,
     "temperature": 0.85,
-    "lock_port": 5078,          # (a second copy of the bridge sees this port taken and exits)
+    "lock_port": 5078,
+    "stream": True,             # a soldier's reply appears word by word as the model writes it
+    "stream_hold": 28,          # characters held back first, to see that it's speech and not planning          # (a second copy of the bridge sees this port taken and exits)
 }
 
 LOG_PATH = HERE / "lf_bridge.log"
@@ -250,6 +252,61 @@ class Model:
         res = http_json(CFG["llm"] + "/v1/chat/completions", body, timeout=CFG["timeout"])
         return clean(res["choices"][0]["message"].get("content") or "")
 
+    def stream_chat(self, messages: list[dict], max_tokens: int, on_text) -> str:
+        """Like chat, but on_text(text so far) is called as the words come."""
+        body = {"messages": messages, "max_tokens": max_tokens, "temperature": CFG["temperature"],
+                "top_p": 0.95, "repeat_penalty": 1.1, "cache_prompt": True, "stream": True,
+                "chat_template_kwargs": {"enable_thinking": False}}
+        req = urllib.request.Request(CFG["llm"] + "/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
+                                     method="POST", headers={"Content-Type": "application/json",
+                                                             "Accept": "text/event-stream"})
+        text = ""
+        with urllib.request.urlopen(req, timeout=CFG["timeout"]) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = ((json.loads(payload).get("choices") or [{}])[0].get("delta") or {}).get("content") or ""
+                except (ValueError, AttributeError, IndexError):
+                    continue
+                if delta:
+                    text += delta
+                    if on_text(text) is False:
+                        break               # (the caller has seen enough: it's planning)
+        return clean(text)
+
+    def say_stream(self, messages: list[dict], max_tokens: int, on_partial) -> str:
+        """say, word by word: on_partial(text so far) as he speaks. The first few words are held back
+        until it's clear he is speaking and not planning; if he is planning, nothing is shown and
+        it falls back to say (keep the drafted line or ask again)."""
+        st = {"open": False, "planning": False, "shown": ""}
+
+        def on_text(text: str):
+            if not st["open"]:
+                if len(text) < CFG["stream_hold"] and not re.search(r"[.!?]\s", text):
+                    return True
+                if planning(text):
+                    st["planning"] = True
+                    return False
+                st["open"] = True
+            shown = partial_text(text)
+            if shown and shown != st["shown"]:
+                st["shown"] = shown
+                on_partial(shown)
+            return True
+
+        full = self.stream_chat(messages, max_tokens, on_text)
+        if st["planning"]:
+            vlog("the model began planning - asking again, without streaming")
+            return self.say(messages, max_tokens)
+        if not st["open"] and planning(full):
+            return self.say(messages, max_tokens)     # (a short reply: never shown, check it whole)
+        return full
+
     def say(self, messages: list[dict], max_tokens: int) -> str:
         """Words for him to say out loud: if the model plans aloud instead of answering (small models
         do), keep the line it drafted, or ask once more, firmly; else nothing (the mod's own words)."""
@@ -295,6 +352,18 @@ def drafted_line(text: str) -> str:
     return ""
 
 
+def partial_text(text: str) -> str:
+    """Words so far, for showing as he speaks: no stage directions, and no half-made last word."""
+    text = re.sub(r"\*[^*]*\*", "", text)
+    if "*" in text:
+        text = text[:text.index("*")]       # (a stage direction under way: wait for its end)
+    text = " ".join(text.split()).lstrip('"')
+    if text and not text[-1] in " .,!?;:-'\")":
+        cut = text.rfind(" ")
+        text = text[:cut] if cut > 0 else text   # (show whole words only)
+    return text[:600]
+
+
 def clean(text: str) -> str:
     text = (text or "").strip()
     for tag in ("</think>", "<channel|>", "<|channel|>final<|message|>"):
@@ -302,7 +371,7 @@ def clean(text: str) -> str:
             text = text.rsplit(tag, 1)[1]
     text = re.sub(r"\*[^*]{1,80}\*", "", text)            # (*stage directions*)
     text = re.sub(r"^\s*[\w .'-]{1,40}:\s*", "", text) if re.match(r"^\s*(Pvt|Cpl|Sgt|SSgt|Lt)\.?\s", text) else text
-    text = " ".join(l.strip() for l in text.splitlines() if l.strip())
+    text = " ".join(" ".join(text.split()).split(" "))           # (one space between words)
     return text.strip().strip('"').strip()[:600]
 
 
@@ -449,7 +518,11 @@ class Bridge:
         fields = {"status": "ok", "text": fallback, "worded": "no", "voiced": "no"}
         if self.model.state == "ok":
             try:
-                if kind == "talk":
+                if kind == "talk" and CFG["stream"]:
+                    def partial(text: str) -> None:
+                        self.box.answer(rid, {"status": "partial", "text": text})
+                    fields["text"] = self.model.say_stream(talk_messages(req), CFG["talk_max_tokens"], partial) or fallback
+                elif kind == "talk":
                     fields["text"] = self.model.say(talk_messages(req), CFG["talk_max_tokens"]) or fallback
                 elif kind == "report":
                     fields["text"] = self.model.say(report_messages(req), CFG["report_max_tokens"]) or fallback
@@ -493,13 +566,37 @@ class Bridge:
         for p in self.box.requests():
             self.handle(p)
 
+    def updated(self) -> bool:
+        """lf_bridge.py has been replaced (an update was installed): start the new one in our place."""
+        try:
+            m = Path(__file__).stat().st_mtime
+        except OSError:
+            return False
+        if self.mtime is None:
+            self.mtime = m
+        if m == self.mtime or time.time() - m < 2:      # (wait for the copy to finish)
+            return False
+        log("lf_bridge.py was updated - restarting with the new version")
+        self.model.stop()
+        if _LOCK:
+            _LOCK.close()
+        subprocess.Popen([sys.executable] + sys.argv, cwd=str(HERE),
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if "--background" in sys.argv else 0)
+        return True
+
     def run(self, once: bool = False) -> None:
         log(f"Living Front bridge {VERSION} (text, no Chasm): game folder {self.box.root}")
         exe, model = find_files()
         log(f"llama-server: {exe or 'not found'}")
         log(f"model: {model or 'not found'}")
+        self.mtime = None
+        last_check = 0.0
         try:
             while True:
+                if not once and time.time() - last_check > 5:
+                    last_check = time.time()
+                    if self.updated():
+                        return
                 try:
                     self.tick()
                 except Exception as e:  # noqa: BLE001

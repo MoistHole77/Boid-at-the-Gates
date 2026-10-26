@@ -123,6 +123,7 @@ function LF.Talk.say(id, text)
     local fallback = plainReply(rec, mems, #s.exchanges + 1, text)
     local function answer(words, how)
         s.waiting = nil
+        s.partial = nil
         s.exchanges[#s.exchanges + 1] = { you = text, him = words }
         while #s.exchanges > CFG.keep do table.remove(s.exchanges, 1) end
         addLine(id, title, words)
@@ -138,7 +139,13 @@ function LF.Talk.say(id, text)
             function(ans)
                 if ans and ans.text and ans.text ~= "" then answer(ans.text, ans.worded == "yes" and "language model" or nil)
                 else answer(fallback, "plain") end
-            end, id)
+            end, id,
+            function(ans)                   -- (his words so far, as the model writes them)
+                if s.waiting and ans.text and ans.text ~= "" then
+                    s.partial = ans.text
+                    if LF.Tactics and LF.Tactics.say then LF.Tactics.say(id, ans.text, nil, true) end
+                end
+            end)
         if sent then return end
         s.waiting = nil
     end
@@ -238,9 +245,18 @@ function LF_TalkWindow:prerender()
     local s = sessions[self.recId]
     -- Lay out the conversation from the bottom up; the oldest lines scroll off the top.
     local rows = {}
-    if s and s.waiting then rows[#rows + 1] = { text = "...", r = 0.7, g = 0.7, b = 0.7 } end
-    for i = (s and #s.lines or 0), 1, -1 do
-        local l = s.lines[i]
+    local shown = s and s.lines or {}
+    if s and s.waiting then
+        if s.partial then
+            -- He is still speaking: his words so far, as one more line of the conversation.
+            local rec2 = LF.Records.get(self.recId)
+            shown = {}
+            for i, l in ipairs(s.lines) do shown[i] = l end
+            shown[#shown + 1] = { who = rec2 and LF.Units.title(rec2) or "?", text = s.partial .. " ..." }
+        else rows[#rows + 1] = { text = "...", r = 0.7, g = 0.7, b = 0.7 } end
+    end
+    for i = #shown, 1, -1 do
+        local l = shown[i]
         local you = l.who == "You"
         local body = wrapPx(l.text, font, w - 12)
         for j = #body, 1, -1 do rows[#rows + 1] = { text = body[j], x = 12, r = 1, g = 1, b = 1 } end

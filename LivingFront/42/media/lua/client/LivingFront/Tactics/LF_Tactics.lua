@@ -158,10 +158,12 @@ end
 
 -- Words spoken (not shouted) - a reply when you talk to him: wrapped over several lines above his
 -- head, on show for longer (seconds, default from its length).
-function LF.Tactics.say(id, text, seconds)
+-- (quiet: words still coming in, as he speaks - shown, not logged)
+function LF.Tactics.say(id, text, seconds, quiet)
     local rec = LF.Records.get(id)
     seconds = seconds or math.max(4, math.min(20, #text / 12))
     shouts[id] = { text = text, lines = wrap(text, 48), untilTick = LF.tick + seconds * 60, dur = seconds * 60 }
+    if quiet then return end
     LF.log("SAYS #" .. id .. " " .. (rec and LF.Units.title(rec) or "?") .. ": " .. text)
 end
 
