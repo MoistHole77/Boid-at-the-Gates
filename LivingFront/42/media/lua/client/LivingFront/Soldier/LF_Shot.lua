@@ -35,7 +35,7 @@ require "LivingFront/Soldier/LF_Weapons"
 LF.Shot = LF.Shot or {}
 
 local CFG = {
-    duty = 0.25,            -- off screen: share of the time a man in a fight is firing aimed rounds
+    duty = 0.15,            -- off screen: share of the time a man in a fight is firing aimed rounds (0.72: 0.25 gave 1.7x the hits of the same fight on screen)
     down = 0.7,             -- target crouched behind something
     moving = 0.85,          -- target on the move
 }
