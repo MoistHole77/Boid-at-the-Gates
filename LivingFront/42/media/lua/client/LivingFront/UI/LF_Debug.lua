@@ -767,6 +767,21 @@ local function onMenu(playerNum, context, worldObjects, test)
                 or "No companies")
         end)
     end
+    if LF.Ground then
+        local OV = LF.Ground.overlay
+        local gm = sub(tools, "Ground: cover map and sight (overlay " .. OV.mode .. ")")
+        local words = { off = "off", cover = "cover", sight = "how far you can see" }
+        gm:addOption("Overlay: " .. words[OV.mode] .. " (click to change)", nil, function()
+            local m = LF.Ground.cycleMode()
+            LF.say("Ground overlay: " .. words[m])
+        end)
+        gm:addOption("Overlay direction: from / toward the " .. LF.Ground.DIR_NAMES[OV.dir + 1] .. " (click to turn)", nil, function()
+            local d = LF.Ground.cycleDir()
+            LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[d + 1])
+        end)
+        local nc, ns = LF.Ground.size()
+        gm:addOption(string.format("Cached: cover of %d squares, sight of %d", nc, ns))
+    end
     do
         local safe = LF.Debug.playerSafe()
         tools:addOption("You: god mode, ignored by soldiers: " .. (safe and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()

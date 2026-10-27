@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.70"
+LF.VERSION = "0.71"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -133,11 +133,27 @@ end)
 -- ---- timing the mod's own work (LF_Perf reports it) ---------------------------------------------
 -- Every per-frame handler of the mod is registered through LF.on, which times it under its
 -- module's name. (Up to 0.69 only four sections were timed; 29 modules ran untimed.)
+-- every (optional): time only one call in that many and count it that many times - for events
+-- the game fires once per character (OnPlayerUpdate fires for each of our bodies, all of them
+-- player characters), where two clock reads a call cost more than the handler itself (0.70 put
+-- 0.4 ms a frame on "Watch", most of it the timing).
 LF.perfMs = {}              -- label -> milliseconds this window (LF_Perf reads and clears it)
-function LF.on(event, label, fn)
+function LF.on(event, label, fn, every)
     local ev = Events[event]
     if not ev then LF.log("no event " .. tostring(event) .. " for " .. tostring(label)); return end
     local acc = LF.perfMs
+    if every and every > 1 then
+        local n = 0
+        ev.Add(function(a, b, c, d)
+            n = n + 1
+            if n < every then fn(a, b, c, d); return end
+            n = 0
+            local t0 = getTimestampMs()
+            fn(a, b, c, d)
+            acc[label] = (acc[label] or 0) + (getTimestampMs() - t0) * every
+        end)
+        return
+    end
     ev.Add(function(a, b, c, d)
         local t0 = getTimestampMs()
         fn(a, b, c, d)

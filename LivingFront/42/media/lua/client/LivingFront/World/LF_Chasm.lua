@@ -21,9 +21,10 @@ LF.Chasm = LF.Chasm or {}
 local DIR = "LivingFront/chasm/"
 local CFG = {
     aliveFor = 300,         -- ticks: the bridge counts as there this long after bridge.txt last changed
-    pollTicks = 30,
+    pollTicks = 120,        -- (frames: is the bridge there? Its heartbeat is every second; 0.70 looked 2x a second)
     fastPollTicks = 4,      -- while an answer is coming in (word by word): look this often
-    stateTicks = 30,
+    stateTicks = 30,        -- where you and the speakers are, for the voices - only with voices on
+    stateIdleTicks = 300,   -- ... and with no voices, now and then
     timeout = 3600,         -- ticks: an answer that hasn't come by then is given up on
 }
 
@@ -198,6 +199,7 @@ LF.on("OnTick", "Chasm", function()
         for _ in pairs(pending) do any = true; break end       -- (Kahlua has no next())
         if any then LF.guard("chasm answers", pollAnswers) end
     end
-    if status.alive and LF.frame % CFG.stateTicks == 20 then LF.guard("chasm state", writeState) end
+    local every = (status.tts ~= "off" and status.tts ~= "?") and CFG.stateTicks or CFG.stateIdleTicks
+    if status.alive and LF.frame % every == 20 then LF.guard("chasm state", writeState) end
 end)
 Events.OnInitGlobalModData.Add(function() pending = {}; speakers = {} end)

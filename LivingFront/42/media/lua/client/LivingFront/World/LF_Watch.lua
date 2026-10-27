@@ -61,6 +61,10 @@ local function keepShown(p)
     end
 end
 
+-- (The game fires this for every one of our bodies too - they are player characters. Only the
+-- real player matters: one comparison with him, no call into the game, for each of the others.)
+local me = nil
+LF.on("OnTick", "Watch", function() me = getPlayer() end)
 LF.on("OnPlayerUpdate", "Watch", function(p)
-    if p == getPlayer() then LF.guard("player shown", keepShown, p) end
-end)
+    if p == me then LF.guard("player shown", keepShown, p) end
+end, 32)
