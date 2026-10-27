@@ -418,6 +418,7 @@ end
 
 local stress = nil
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
+local pair = {}                 -- the last stress run's men hit, on and off screen (the 0.73 test 4)
 
 -- Every man of a platoon (its headquarters and its squads).
 local function platoonMen(p)
@@ -442,6 +443,16 @@ local function casualties(ids)
         end
     end
     return string.format("%d killed, %d critical, %d serious, %d light, %d unhurt", c.killed, c.critical, c.serious, c.light, c.unhurt)
+end
+
+-- Men of these hit at all (killed or wounded).
+local function hitCount(ids)
+    local n = 0
+    for _, rid in ipairs(ids) do
+        local r = LF.Records.get(rid)
+        if not r or not r.alive or (r.wound and r.wound.grade) then n = n + 1 end
+    end
+    return n
 end
 
 -- offscreen: the same fight with nobody given a body - settled the off-screen way (LF_Clash) even
@@ -494,6 +505,21 @@ local function stressSummary()
         LF.simTime - (stress.sim or LF.simTime), stress.offscreen and " (off-screen)" or "", casualties(stress.ger or {}),
         casualties(stress.sov or {})))
     LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
+    -- Test 4: the same fight on and off screen should hit about as many men (within 20%).
+    local hits = hitCount(stress.ger or {}) + hitCount(stress.sov or {})
+    pair[stress.offscreen and "off" or "on"] = hits
+    if pair.on and pair.off then
+        local big = math.max(pair.on, pair.off, 1)
+        local diff = math.abs(pair.on - pair.off) / big
+        local verdict = diff <= 0.2 and "PASS" or "FAIL"
+        LF.log(string.format("TEST 4 %s: stress pair - on screen %d men hit, off screen %d (%.0f%% apart, 20%% allowed)",
+            verdict, pair.on, pair.off, diff * 100))
+        LF.say(string.format("Test 4 %s: on screen %d hit, off screen %d (%.0f%% apart)", verdict, pair.on, pair.off, diff * 100))
+        pair = {}
+    else
+        LF.say("Test 4: " .. hits .. " men hit " .. (stress.offscreen and "off" or "on") .. " screen - now run the "
+            .. (stress.offscreen and "on" or "off") .. "-screen half")
+    end
 end
 
 LF.onTick("Debug", function()
@@ -590,6 +616,150 @@ LF.Debug.orders = { unitList = unitList, platoonList = platoonList, takeOf = tak
 local function clearObjectives()
     LF.Objective.clear()
     LF.say("Objectives cleared")
+end
+
+
+-- ---- the 0.73 tests ---------------------------------------------------------------------------
+-- One click sets each up and the log (TEST ...) gives the verdict. A Soviet rifle squad spawns
+-- where you click, a German machine-gun squad beyond it (on the far side from you) holding where
+-- it is; the Soviet squad's meter is watched once a second.
+--   1  open:  defensive in the open, gun 35 tiles off: pinned within 30 s of the gun opening up
+--   2  wall:  holding the building you clicked, gun 35 tiles off: suppressed but never pinned
+--   3  break: offensive in the open with its nerve already gone (morale 25), gun 18 tiles off (a
+--             squad only falls back from inside 26 tiles): pinned, falls back at least 5 tiles
+--             together (no man more than 12 tiles from the others' middle), then rallies - stops
+--             falling back and holds
+
+local TESTS = {
+    open = { n = 1, name = "MG pins a squad in the open", secs = 60 },
+    wall = { n = 2, name = "the same squad behind a wall only gets suppressed", secs = 60 },
+    broke = { n = 3, name = "a broken squad falls back together and rallies", secs = 120 },
+}
+local test = nil
+
+-- The fit men of a squad: their middle, how many, and the farthest of them from the middle.
+local function squadSpread(sid)
+    local xs, ys = {}, {}
+    for _, rid in ipairs(LF.Units.members(sid)) do
+        local b = LF.Bodies.get(rid)
+        local r = LF.Records.get(rid)
+        if b and not b:isDead() and r and not r.wounded and not r.aid then
+            xs[#xs + 1], ys[#ys + 1] = b:getX(), b:getY()
+        end
+    end
+    local n = #xs
+    if n == 0 then return nil end
+    local cx, cy = 0, 0
+    for i = 1, n do cx, cy = cx + xs[i], cy + ys[i] end
+    cx, cy = cx / n, cy / n
+    local far = 0
+    for i = 1, n do far = math.max(far, LF.dist(cx, cy, xs[i], ys[i])) end
+    return { x = cx, y = cy, n = n, far = far }
+end
+
+local function startTest(kind, x, y, z, playerNum)
+    if test then LF.say("A test is already running - stop it first"); return end
+    local T = TESTS[kind]
+    if kind == "wall" and not LF.Building.idAt(x, y, z) then
+        LF.say("Test 2: right-click inside a building (the squad holds it)"); return
+    end
+    local p = getSpecificPlayer(playerNum)
+    local fx, fy = 1, 0
+    if p then fx, fy = x + 0.5 - p:getX(), y + 0.5 - p:getY() end
+    local len = math.sqrt(fx * fx + fy * fy)
+    if len < 2 then fx, fy = 1, 0 else fx, fy = fx / len, fy / len end
+    local tx, ty = x + 0.5, y + 0.5
+    local range = kind == "broke" and 18 or 35
+    local gx, gy = tx + fx * range, ty + fy * range
+    local target = LF.Units.createSquad("SOV", tx, ty, z, fx, fy)
+    local gun = LF.Units.createSquad("GER", gx, gy, 0, -fx, -fy, false, true)
+    LF.Tactics.setStance(target, kind == "broke" and "offensive" or "defensive", kind == "wall" and { x = x, y = y, z = z } or nil)
+    LF.Tactics.setStance(gun, "defensive", nil)
+    LF.Tactics.noteStanceSet(target)
+    LF.Tactics.noteStanceSet(gun)
+    if kind == "broke" then
+        for _, rid in ipairs(LF.Units.members(target.id)) do
+            local r = LF.Records.get(rid)
+            if r then r.morale = 25 end
+        end
+    end
+    test = { kind = kind, T = T, target = target.id, gun = gun.id, t0 = LF.simTime, peak = 0, at = {},
+             state = "steady", gx = gx, gy = gy, far = 0 }
+    LF.log(string.format("TEST %d start: %s - %s at (%d,%d), %s %d tiles away at (%d,%d); version %s",
+        T.n, T.name, target.name, math.floor(tx), math.floor(ty), gun.name, range, math.floor(gx), math.floor(gy), tostring(LF.VERSION)))
+    LF.say("Test " .. T.n .. ": " .. T.name .. " - verdict in the log in " .. T.secs .. " s (game time)")
+end
+
+local function verdict()
+    local t, T = test, test.T
+    local fire = t.at.fire
+    local ok, words
+    if not fire then
+        ok, words = false, "the gun never got a round onto the squad - check the two spots can see each other"
+    elseif t.kind == "open" then
+        local pin = t.at.pinned
+        ok = pin ~= nil and pin - fire <= 30
+        words = pin and string.format("pinned %.0f s after the first round", pin - fire)
+            or string.format("never pinned (meter peaked at %.0f, pinned is 65)", t.peak)
+    elseif t.kind == "wall" then
+        ok = t.at.suppressed ~= nil and not t.at.pinned
+        words = t.at.pinned and string.format("pinned after %.0f s (peak %.0f) - cover isn't helping enough", t.at.pinned - fire, t.peak)
+            or t.at.suppressed and string.format("suppressed after %.0f s, never pinned (peak %.0f)", t.at.suppressed - fire, t.peak)
+            or string.format("never even suppressed (peak %.0f, suppressed is 30)", t.peak)
+    else
+        local fell, rally = t.at.fell, t.at.rallied
+        local back = t.backBy or 0
+        ok = t.at.pinned ~= nil and fell ~= nil and back >= 5 and t.far <= 12 and rally ~= nil
+        local parts = {}
+        parts[#parts + 1] = t.at.pinned and string.format("pinned at %.0f s", t.at.pinned - fire) or string.format("never pinned (peak %.0f)", t.peak)
+        parts[#parts + 1] = fell and string.format("fell back at %.0f s, %.0f tiles, widest spread %.0f tiles", fell - fire, back, t.far)
+            or "never fell back"
+        parts[#parts + 1] = rally and string.format("rallied at %.0f s (%s)", rally - fire, t.rallyState or "?") or "never stopped falling back"
+        words = table.concat(parts, "; ")
+    end
+    LF.log(string.format("TEST %d %s: %s - %s", T.n, ok and "PASS" or "FAIL", T.name, words))
+    LF.say("Test " .. T.n .. (ok and " PASS: " or " FAIL: ") .. words)
+    test = nil
+end
+
+local function testTick()
+    local t = test
+    if not t then return end
+    local el = LF.simTime - t.t0
+    if el < 0 then test = nil; return end           -- (a reload)
+    local v = LF.Suppress.squadValue(t.target)
+    local st = LF.Suppress.squadState(t.target)
+    if v > 0 and not t.at.fire then t.at.fire = el end
+    if v > t.peak then t.peak = v end
+    if st ~= "steady" and not t.at[st] then t.at[st] = el end
+    if st == "pinned" and not t.at.suppressed then t.at.suppressed = el end
+    local intent = LF.Tactics.intent(t.target)
+    local sp = squadSpread(t.target)
+    if intent == "FALLBACK" and not t.at.fell then
+        t.at.fell = el
+        if sp then t.fromGun = LF.dist(sp.x, sp.y, t.gx, t.gy) end
+    end
+    if t.at.fell and sp then
+        if t.fromGun then t.backBy = math.max(t.backBy or 0, LF.dist(sp.x, sp.y, t.gx, t.gy) - t.fromGun) end
+        if el - t.at.fell <= 30 then t.far = math.max(t.far, sp.far) end
+        if intent ~= "FALLBACK" and not t.at.rallied then t.at.rallied, t.rallyState = el, st end
+    end
+    if st ~= t.state or intent ~= t.intent then
+        LF.log(string.format("TEST %d t=%.0fs meter %.0f %s, intent %s%s", t.T.n, el, v, st, tostring(intent),
+            sp and string.format(", %d fit, spread %.0f", sp.n, sp.far) or ""))
+        t.state, t.intent = st, intent
+    end
+    if el >= t.T.secs then verdict() end
+end
+LF.onTick("Debug", function()
+    if test and LF.due(60, 23) then LF.guard("test", testTick) end
+end)
+
+local function testLine()
+    local t = test
+    if not t then return nil end
+    return string.format("Running: test %d, %.0f s of %d, meter %.0f (%s) - click to stop", t.T.n,
+        LF.simTime - t.t0, t.T.secs, LF.Suppress.squadValue(t.target), LF.Suppress.squadState(t.target))
 end
 
 local function sub(menu, label)
@@ -725,26 +895,49 @@ local function onMenu(playerNum, context, worldObjects, test)
     if not any then orders:addOption("(no units yet - spawn some)") end
 
 
+    -- Tests (0.73).
+    LF.guard("menu: tests", function()
+        local tm = sub(main, "Tests (0.73)")
+        local line = testLine()
+        if line then tm:addOption(line, nil, function() test = nil; LF.say("Test stopped") end) end
+        tm:addOption("1. MG pins a squad in the open (right-click open ground, open to the far side)", nil,
+            function() startTest("open", x, y, z, playerNum) end)
+        tm:addOption("2. The same squad behind a wall only gets suppressed (right-click inside a building)", nil,
+            function() startTest("wall", x, y, z, playerNum) end)
+        tm:addOption("3. A broken squad falls back together and rallies (right-click open ground)", nil,
+            function() startTest("broke", x, y, z, playerNum) end)
+        if stress then
+            tm:addOption("4. Stress pair: running - summary in the log when done")
+        else
+            tm:addOption("4a. Stress pair, on screen (right-click a building)" .. (pair.on and (" - done: " .. pair.on .. " hit") or ""), nil,
+                function() stressTest(x, y, z) end)
+            tm:addOption("4b. Stress pair, off screen (same building)" .. (pair.off and (" - done: " .. pair.off .. " hit") or ""), nil,
+                function() stressTest(x, y, z, true) end)
+        end
+        tm:addOption("(Before each: Tools > Delete ALL NPCs. Verdicts: TEST lines in the log)")
+    end)
+
     -- Tools.
     LF.guard("menu: tools", function()
     local tools = sub(main, "Tools")
-    if LF.Map and LF.Map.CFG then
-        local on = LF.Map.CFG.trackers
-        tools:addOption("Unit trackers on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
-            LF.Map.CFG.trackers = not LF.Map.CFG.trackers
-            LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
+    do
+        local safe = LF.Debug.playerSafe()
+        tools:addOption("You: god mode, ignored by soldiers: " .. (safe and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
+            LF.Records.data().debugPlayerSafe = not LF.Debug.playerSafe()
+            LF.say("God mode, ignored by soldiers: " .. (LF.Debug.playerSafe() and "ON" or "OFF"))
         end)
     end
-    if LF.Map and LF.Map.CFG then
-        local reveal, runs = LF.Map.CFG.revealAll, LF.Map.CFG.mapRuns
-        tools:addOption("Map: show the whole map: " .. (reveal and "ON (click to hide unvisited)" or "OFF (click to show all)"), nil, function()
-            LF.Map.setRevealAll(not LF.Map.CFG.revealAll)
-            LF.say("Whole map shown: " .. (LF.Map.CFG.revealAll and "ON" or "OFF"))
+    if LF.Ground then
+        local OV = LF.Ground.overlay
+        local words = { off = "off", cover = "cover", sight = "how far you can see" }
+        tools:addOption("Ground overlay: " .. words[OV.mode] .. " (click to change)", nil, function()
+            LF.say("Ground overlay: " .. words[LF.Ground.cycleMode()])
         end)
-        tools:addOption("Map: the game keeps running while it's open: " .. (runs and "ON (click to pause instead)" or "OFF (click to keep running)"), nil, function()
-            LF.Map.CFG.mapRuns = not LF.Map.CFG.mapRuns
-            LF.say("Game keeps running with the map open: " .. (LF.Map.CFG.mapRuns and "ON - speed buttons on the map" or "OFF"))
-        end)
+        if OV.mode ~= "off" then
+            tools:addOption("Ground overlay direction: " .. LF.Ground.DIR_NAMES[OV.dir + 1] .. " (click to turn)", nil, function()
+                LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[LF.Ground.cycleDir() + 1])
+            end)
+        end
     end
     if LF.Captain then
         local on = LF.Captain.CFG.on
@@ -753,87 +946,35 @@ local function onMenu(playerNum, context, worldObjects, test)
         end)
     end
     if LF.Map and LF.Map.CFG then
-        local on = LF.Map.CFG.platoonPicture
-        tools:addOption("Lieutenants' picture on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
-            LF.Map.CFG.platoonPicture = not LF.Map.CFG.platoonPicture
-            LF.say("Lieutenants' picture on the map: " .. (LF.Map.CFG.platoonPicture and "ON" or "OFF"))
+        local mm = sub(tools, "Map")
+        local C = LF.Map.CFG
+        mm:addOption("Unit trackers: " .. (C.trackers and "ON" or "OFF"), nil, function()
+            C.trackers = not C.trackers
+            LF.say("Unit trackers on the map: " .. (C.trackers and "ON" or "OFF"))
         end)
-    end
-    if LF.Map and LF.Map.CFG and LF.Front then
-        local ORDER = { "truth", "GER", "SOV", "off" }
-        local cur = LF.Map.CFG.warView or "truth"
-        local words = LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[cur] or (cur == "off" and "off")
-        tools:addOption("Front on the map: " .. (words or "off") .. " (click to change)", nil, function()
-            local i = 1
-            for k, v in ipairs(ORDER) do if v == cur then i = k end end
-            local nxt = ORDER[i % #ORDER + 1]
-            LF.Map.CFG.warView = nxt
-            LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
+        mm:addOption("Whole map shown: " .. (C.revealAll and "ON" or "OFF"), nil, function()
+            LF.Map.setRevealAll(not C.revealAll)
+            LF.say("Whole map shown: " .. (C.revealAll and "ON" or "OFF"))
         end)
-    end
-    if LF.Radio then
-        local cur = LF.Radio.SIDES[LF.Radio.listening()] or "?"
-        tools:addOption("Radio: listening to " .. cur .. " (click to change)", nil, function()
-            local _, words = LF.Radio.cycle()
-            LF.say("Radio: listening to " .. words)
+        mm:addOption("Game keeps running while it's open: " .. (C.mapRuns and "ON" or "OFF"), nil, function()
+            C.mapRuns = not C.mapRuns
+            LF.say("Game keeps running with the map open: " .. (C.mapRuns and "ON" or "OFF"))
         end)
-    end
-    if LF.Chasm then
-        local st = LF.Chasm.status()
-        local words = { ok = "ready", starting = "loading", missing = "not found (see the bridge window)", off = "off" }
-        tools:addOption("LF bridge: " .. (st.alive and ("running - language model " .. (words[st.llm] or st.llm))
-            or "not running - soldiers answer in Living Front's own words"))
-    end
-    if LF.Wounds and LF.AidPost then
-        local wm = sub(tools, "Wounds and the aid post")
-        for _, g in ipairs({ "light", "serious", "critical" }) do
-            wm:addOption("Give the nearest soldier a " .. g .. " wound", nil, function() LF.Wounds.test(x, y, g) end)
+        if LF.Front then
+            local ORDER = { "truth", "GER", "SOV", "off" }
+            local cur = C.warView or "truth"
+            local words = LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[cur] or (cur == "off" and "off")
+            mm:addOption("Front: " .. (words or "off") .. " (click to change)", nil, function()
+                local i = 1
+                for k, v in ipairs(ORDER) do if v == cur then i = k end end
+                local nxt = ORDER[i % #ORDER + 1]
+                C.warView = nxt
+                LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
+            end)
         end
-        if LF.XO then wm:addOption("Supply run now (every company)", nil, LF.XO.runNow) end
-        wm:addOption("Company status (aid post, replacements, supplies) - to the log", nil, function()
-            local n = 0
-            for _, c in pairs(LF.Units.all()) do
-                if c.kind == "company" and LF.Company.hq(c) then
-                    n = n + 1
-                    for _, l in ipairs(LF.AidPost.status(c)) do LF.log("STATUS " .. l) end
-                    local xo = LF.XO and LF.XO.of(c)
-                    LF.log("STATUS XO: " .. (xo and LF.Units.title(xo) or "none"))
-                end
-            end
-            LF.say(n > 0 and ("Status of " .. n .. " compan" .. (n == 1 and "y" or "ies") .. " written to the log (hover the red cross on the map too)")
-                or "No companies")
-        end)
-    end
-    if LF.Ground then
-        local OV = LF.Ground.overlay
-        local gm = sub(tools, "Ground: cover map and sight (overlay " .. OV.mode .. ")")
-        local words = { off = "off", cover = "cover", sight = "how far you can see" }
-        gm:addOption("Overlay: " .. words[OV.mode] .. " (click to change)", nil, function()
-            local m = LF.Ground.cycleMode()
-            LF.say("Ground overlay: " .. words[m])
-        end)
-        gm:addOption("Overlay direction: from / toward the " .. LF.Ground.DIR_NAMES[OV.dir + 1] .. " (click to turn)", nil, function()
-            local d = LF.Ground.cycleDir()
-            LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[d + 1])
-        end)
-        local nc, ns = LF.Ground.size()
-        gm:addOption(string.format("Cached: cover of %d squares, sight of %d", nc, ns))
-    end
-    do
-        local safe = LF.Debug.playerSafe()
-        tools:addOption("You: god mode, ignored by soldiers: " .. (safe and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
-            LF.Records.data().debugPlayerSafe = not LF.Debug.playerSafe()
-            LF.say("God mode, ignored by soldiers: " .. (LF.Debug.playerSafe() and "ON" or "OFF"))
-        end)
-    end
-    tools:addOption(stress and "Stress test running - summary in the log when done" or "Stress test here (right-click a building): a German platoon holds it, a Soviet platoon attacks",
-        nil, function() if not stress then stressTest(x, y, z) end end)
-    if not stress then
-        tools:addOption("Stress test here, off-screen (the same fight with no bodies: settled the off-screen way)",
-            nil, function() if not stress then stressTest(x, y, z, true) end end)
     end
     tools:addOption("Clear all objectives", nil, clearObjectives)
-    tools:addOption("Delete ALL NPCs", nil, deleteAll)
+    tools:addOption("Delete ALL NPCs", nil, function() test = nil; deleteAll() end)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
     end)
 end
