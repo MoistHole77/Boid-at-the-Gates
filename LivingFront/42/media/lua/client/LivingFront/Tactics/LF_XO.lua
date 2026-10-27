@@ -56,7 +56,7 @@ end
 function LF.XO.nextRunIn(c) return math.max(0, state(c).nextRun - hours()) end
 
 local function radio(c, who, text)
-    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, who and title(who) or "Battalion", c.name, text) end
+    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, who and title(who) or "Battalion", c.name, text, who) end
 end
 
 -- The company's squads (not its headquarters), wherever they are.

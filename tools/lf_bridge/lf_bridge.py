@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.63.2"
+VERSION = "0.63.3"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -656,6 +656,17 @@ def report_messages(req: dict) -> list[dict]:
             {"role": "user", "content": "Facts:\n- " + "\n- ".join(req.get("facts") or [])}]
 
 
+def order_messages(req: dict) -> list[dict]:
+    s = req.get("speaker") or {}
+    adj, army = SIDE.get(s.get("faction"), ("", "the army"))
+    sys_msg = (f"You are {s.get('title') or s.get('name', 'an officer')} of {req.get('unit', 'the company')}, {adj} {army}. "
+               "Pass this message over the company radio net to your platoon leaders, in your own words. Keep every "
+               "name, place and number exactly as given - never add orders, events, numbers or places. One or two "
+               "terse sentences in English, the way an officer speaks on the radio, ending with 'Over.' No quotation marks.")
+    return [{"role": "system", "content": sys_msg},
+            {"role": "user", "content": "Message:\n" + "\n".join(req.get("facts") or [])}]
+
+
 # ---- the bridge -------------------------------------------------------------------------------------------
 
 class Bridge:
@@ -715,6 +726,8 @@ class Bridge:
                     fields["text"] = self.model.say(talk_messages(req), CFG["talk_max_tokens"]) or fallback
                 elif kind == "report":
                     fields["text"] = self.model.say(report_messages(req), CFG["report_max_tokens"]) or fallback
+                elif kind == "order":
+                    fields["text"] = self.model.say(order_messages(req), CFG["report_max_tokens"]) or fallback
                 elif kind == "summarize":
                     raw = self.model.chat(summary_messages(req), CFG["summary_max_tokens"])
                     note = re.search(r"NOTE:\s*(.+?)(?:TRUST:|$)", raw, re.S)

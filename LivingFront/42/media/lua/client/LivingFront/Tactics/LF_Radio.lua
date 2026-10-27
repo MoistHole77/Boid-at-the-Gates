@@ -34,7 +34,8 @@ local queue = {}            -- reporter unit id -> { items = {}, kills = {}, fir
 local lastSent = {}         -- reporter unit id -> sim time
 local lastContact = {}      -- reporter unit id -> sim time
 local lines = {}            -- on screen: { text, speaker, faction, untilMs }
-Events.OnInitGlobalModData.Add(function() lastSeq = nil; queue = {}; lastSent = {}; lastContact = {} end)
+local waiting = {}          -- transmissions still to come on screen (the net is busy)
+Events.OnInitGlobalModData.Add(function() lastSeq = nil; queue = {}; lastSent = {}; lastContact = {}; waiting = {} end)
 
 local SIDES = { both = "both sides", GER = "the German net", SOV = "the Soviet net", off = "nothing" }
 local ORDER = { "both", "GER", "SOV", "off" }
@@ -164,11 +165,21 @@ local function hears(faction)
     return l == "both" or l == faction
 end
 
+-- A transmission to the screen: at once if there's room, else after the ones before it (up to
+-- 0.69 a burst of orders pushed each other off the screen before they could be read).
+local function put(line)
+    if #lines < CFG.shown then
+        line.untilMs = getTimestampMs() + CFG.show * 1000
+        lines[#lines + 1] = line
+    else
+        waiting[#waiting + 1] = line
+        while #waiting > 12 do table.remove(waiting, 1) end
+    end
+    return line
+end
+
 local function show(text, speakerTitle, rep)
-    lines[#lines + 1] = { text = text, who = speakerTitle .. " (" .. rep.name .. ")", faction = rep.faction,
-                          untilMs = getTimestampMs() + CFG.show * 1000 }
-    while #lines > CFG.shown do table.remove(lines, 1) end
-    return lines[#lines]
+    return put({ text = text, who = speakerTitle .. " (" .. rep.name .. ")", faction = rep.faction })
 end
 
 local function send(rep, e)
@@ -194,14 +205,23 @@ local function send(rep, e)
     end
 end
 
--- A transmission from outside the event log (a captain's orders): on screen if you listen to that
--- side's net, always in the log.
-function LF.Radio.broadcast(faction, whoTitle, unitName, text)
+-- A transmission from outside the event log (a captain's orders, the XO's supply runs): on screen
+-- if you listen to that side's net, always in the log. speaker (a record): with the bridge, he
+-- words it himself, as the radio operators word their reports.
+function LF.Radio.broadcast(faction, whoTitle, unitName, text, speaker)
     LF.log("RADIO " .. whoTitle .. " (" .. faction .. "): " .. text)
     if not hears(faction) then return end
-    lines[#lines + 1] = { text = text, who = whoTitle .. " (" .. unitName .. ")", faction = faction,
-                          untilMs = getTimestampMs() + CFG.show * 1000 }
-    while #lines > CFG.shown do table.remove(lines, 1) end
+    local line = put({ text = text, who = whoTitle .. " (" .. unitName .. ")", faction = faction })
+    if speaker and LF.Chasm.alive() then
+        LF.Chasm.request({ kind = "order", speaker = LF.Memory.profile(speaker), unit = unitName, facts = { text }, fallback = text },
+            function(ans)
+                if ans and ans.text and ans.text ~= "" and ans.text ~= text then
+                    line.text = ans.text
+                    if line.untilMs then line.untilMs = math.max(line.untilMs, getTimestampMs() + CFG.show * 1000) end
+                    LF.log("RADIO (worded by Chasm) " .. whoTitle .. ": " .. ans.text)
+                end
+            end)
+    end
 end
 
 local function update()
@@ -239,7 +259,7 @@ end)
 local COLORS = { GER = { 0.75, 0.82, 0.95 }, SOV = { 1.0, 0.62, 0.55 } }
 
 local function draw()
-    if #lines == 0 then return end
+    if #lines == 0 and #waiting == 0 then return end
     local now = getTimestampMs()
     local tm = getTextManager()
     local font = UIFont.Small
@@ -249,6 +269,11 @@ local function draw()
     for i = #lines, 1, -1 do
         local l = lines[i]
         if now > l.untilMs then table.remove(lines, i) end
+    end
+    while #lines < CFG.shown and #waiting > 0 do
+        local l = table.remove(waiting, 1)
+        l.untilMs = now + CFG.show * 1000
+        lines[#lines + 1] = l
     end
     for _, l in ipairs(lines) do
         local a = math.min(1, (l.untilMs - now) / 2000)

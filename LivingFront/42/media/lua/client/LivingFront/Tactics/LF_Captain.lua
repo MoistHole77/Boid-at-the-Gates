@@ -48,7 +48,7 @@ local CFG = {
     probeStand = 35,        -- tiles short of the objective the probe looks from
     probeWatch = 180,       -- simulated seconds it watches
     probeOut = 900,         -- ... gives up getting there after this
-    probes = 2,             -- probes out at once, at most
+    probes = 4,             -- probes out at once, at most
     maxRange = 700,         -- tiles: objectives further than this from his squads are out of his reach
     releaseAfter = 300,     -- simulated seconds an objective must be off the front before its garrison goes
 }
@@ -91,7 +91,7 @@ end
 local function isMG(sq) return sq.mg or (sq.name and sq.name:find("MG squad", 1, true) ~= nil) end
 
 local function radio(c, cap, text)
-    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, title(cap), c.name, text) end
+    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, title(cap), c.name, text, cap) end
 end
 
 local function intelOf(c) c.intel = c.intel or {}; return c.intel end
@@ -141,6 +141,10 @@ end
 
 -- What his side believes of an objective: holder ("GER" / "SOV" / nil) and contested.
 local function believed(c, obj)
+    -- (His own he knows at once - his lieutenants tell him by radio. Up to 0.69 he went by the
+    -- side's picture, which is only redrawn every few seconds: at high speed he ordered a platoon
+    -- to take an objective it had just taken, again and again.)
+    if obj.holder == c.faction then return obj.holder, obj.contested end
     local b = LF.Front.objectiveBelief(c.faction, obj.id)
     if not b then return obj.holder, obj.contested end
     return b.holder, b.contested
@@ -271,7 +275,7 @@ local function updateProbes(c)
                     c.name, obj and obj.name or "?", how, men, delay))
             end
             local function comeBack()
-                pr.phase = "back"
+                pr.phase, pr.backBy = "back", nil
                 local hx, hy, hz = nil, nil, 0
                 local cmd = home and LF.Platoon.commander(home)
                 if cmd then hx, hy, hz = recPos(cmd.id) end
@@ -308,7 +312,12 @@ local function updateProbes(c)
                 local hx, hy = nil, nil
                 if cmd then hx, hy = recPos(cmd.id) end
                 local M = LF.March.get(u.id)
-                if not home or not hx or (x and LF.dist(x, y, hx, hy) <= 20) or (M == nil and LF.simTime - pr.since > 60) then
+                -- (Back: near the lieutenant, its march over, or out of time. Up to 0.69 only "near
+                -- him" and "no march" counted - a probe whose march had ended where he was, but
+                -- 20 tiles off, stayed a probe for good, and two of those stopped all probing.)
+                pr.backBy = pr.backBy or (LF.simTime + (x and hx and LF.dist(x, y, hx, hy) or 300) / 0.75 * 1.5 + 300)
+                if not home or not hx or (x and LF.dist(x, y, hx, hy) <= 20) or (M == nil and LF.simTime - pr.since > 60)
+                    or (M ~= nil and M.arrived == true) or LF.simTime > pr.backBy or pr.backBy > LF.simTime + 100000 then
                     u.probe, u.platoonTask = nil, nil
                     LF.Platoon.goHome(u)
                     LF.log("CAPTAIN " .. c.name .. ": the probe " .. u.name .. " is back")
@@ -494,11 +503,35 @@ local function decide(c, cap)
     end
     table.sort(targets, function(a, b) return a.score > b.score end)
 
-    -- 3 and 4: probes for what he knows nothing of; assaults on what he does.
+    -- 3 and 4: assaults - on what he has news of, and (advancing to contact) on what he hasn't,
+    -- as long as he has a lieutenant free to lead; probes for what he knows nothing of when
+    -- nobody is free to go and take it. All in the same look: every lieutenant free gets his
+    -- orders at once.
+    -- (Up to 0.69 he never attacked without news, and sent at most two probes at a time - so a
+    -- company went out a platoon at a time, each waiting for a probe's report.)
     for _, t in ipairs(targets) do
         if #free == 0 then break end
         local obj = t.obj
         local E, age = expectedAt(c, obj)
+        -- A lieutenant to lead: a free platoon (its commander alive) with at least one of its
+        -- own squads free - a lieutenant never leads an assault with none of his own men -
+        -- rifle platoons first, nearest the objective. (So there are as many assaults at once
+        -- as there are lieutenants free to lead them.) Advancing on an objective he has no news
+        -- of, only a rifle platoon with two squads of its own free goes.
+        local leads = {}
+        for _, p in ipairs(LF.Company.platoons(c)) do
+            if canLead(p) and ownFree(p) > (E == nil and 1 or 0) and not (E == nil and p.mgPlatoon) then
+                local px, py = LF.Platoon.posOf(LF.Units.get(p.hq))
+                leads[#leads + 1] = { p = p, d = px and LF.dist(px, py, obj.x, obj.y) or math.huge }
+            end
+        end
+        table.sort(leads, function(a, b)
+            if (a.p.mgPlatoon or false) ~= (b.p.mgPlatoon or false) then return not a.p.mgPlatoon end
+            return a.d < b.d
+        end)
+        local lead = leads[1] and leads[1].p
+        local advance = E == nil and lead ~= nil
+        if advance then E = 0 end
         if E == nil then
             if not probing[obj.id] and nProbes < CFG.probes then
                 local e = nearestOf(free, obj.x, obj.y, function(x) return not x.mg end)
@@ -509,22 +542,6 @@ local function decide(c, cap)
                 end
             end
         else
-            -- A lieutenant to lead: a free platoon (its commander alive) with at least one of its
-            -- own squads free - a lieutenant never leads an assault with none of his own men -
-            -- rifle platoons first, nearest the objective. (So there are as many assaults at once
-            -- as there are lieutenants free to lead them.)
-            local leads = {}
-            for _, p in ipairs(LF.Company.platoons(c)) do
-                if canLead(p) and ownFree(p) > 0 then
-                    local px, py = LF.Platoon.posOf(LF.Units.get(p.hq))
-                    leads[#leads + 1] = { p = p, d = px and LF.dist(px, py, obj.x, obj.y) or math.huge }
-                end
-            end
-            table.sort(leads, function(a, b)
-                if (a.p.mgPlatoon or false) ~= (b.p.mgPlatoon or false) then return not a.p.mgPlatoon end
-                return a.d < b.d
-            end)
-            local lead = leads[1] and leads[1].p
             if lead then
                 local need = math.max(CFG.minAttack, math.ceil(CFG.odds * E))
                 -- The lead's own free squads go; then the nearest other free rifle squads are lent
@@ -565,7 +582,8 @@ local function decide(c, cap)
                         end
                     end
                     local ok, why = LF.Platoon.take(lead, obj)
-                    local news = age and string.format("~%d enemy, news %d min old", E, math.floor(age / 60)) or "no enemy seen"
+                    local news = advance and "no news - advancing to contact"
+                        or (age and string.format("~%d enemy, news %d min old", E, math.floor(age / 60)) or "no enemy seen")
                     if ok then
                         attacking[obj.id] = true
                         LF.log(string.format("CAPTAIN %s: attack %s with %s - %d squad(s), %d fit men (%s; wanted %d)%s",
