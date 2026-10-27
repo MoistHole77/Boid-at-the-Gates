@@ -26,9 +26,9 @@ require "LivingFront/World/LF_Cover"
 LF.Ground = LF.Ground or {}
 
 local CFG = {
-    maxAge = 120,           -- simulated seconds before an entry is worked out again
+    maxAge = 300,           -- simulated seconds before an entry is worked out again
     buildRadius = 30,       -- tiles round you filled in the background
-    perFrame = 40,          -- squares filled a frame at most (and never more than ~1 ms)
+    perFrame = 12,          -- squares filled a pass at most (a pass every 3 frames; 0.71 did 40 every 2: 0.6 ms a frame)
     reachMax = 60,          -- tiles: sight is measured out to this
     reachStep = 5,
 }
@@ -210,7 +210,7 @@ local function fill()
 end
 
 LF.onTick("Ground", function()
-    if LF.frame % 2 ~= 0 then return end
+    if LF.frame % 3 ~= 0 then return end
     LF.guard("ground fill", fill)
 end)
 
@@ -227,10 +227,12 @@ function LF.Ground.cycleMode()
     local i = 1
     for k, v in ipairs(MODES) do if v == OV.mode then i = k end end
     OV.mode = MODES[i % #MODES + 1]
+    OV.dirty = true
     return OV.mode
 end
 function LF.Ground.cycleDir()
     OV.dir = (OV.dir + 1) % 8
+    OV.dirty = true
     return OV.dir
 end
 
@@ -238,38 +240,56 @@ local LETTER = { [LIGHT] = "L", [HEAVY] = "H", [GARRISON] = "G" }
 local COLOR = { [LIGHT] = { 1, 0.85, 0.2 }, [HEAVY] = { 0.3, 1, 0.3 }, [GARRISON] = { 0.4, 0.7, 1 } }
 local sightBudget = 0
 
+-- (0.71 looked every square up and placed it on screen the careful way each frame: 6-10 ms. Now
+-- what to show is worked out four times a second, and each frame only places the letters.)
+local shown = {}            -- { x, y, text, r, g, b }
+local shownN, shownAt = 0, -1000
+
+local function collect(px, py, pz)
+    shownN = 0
+    local R = OV.mode == "sight" and 8 or 10
+    sightBudget = 12                     -- squares whose sight is worked out per refresh (it's costly)
+    for dx = -R, R do
+        for dy = -R, R do
+            local x, y = px + dx, py + dy
+            local text, r, g, b = nil, 1, 1, 1
+            if OV.mode == "cover" then
+                local c = LF.Ground.coverDir(x, y, pz, OV.dir)
+                if c > NONE then text = LETTER[c]; r, g, b = COLOR[c][1], COLOR[c][2], COLOR[c][3] end
+            elseif LF.Ground.hasSight(x, y, pz) or sightBudget > 0 then
+                if not LF.Ground.hasSight(x, y, pz) then sightBudget = sightBudget - 1 end
+                local reach = LF.Ground.reach(x, y, pz, OV.dir)
+                if reach then
+                    local f = reach / CFG.reachMax
+                    text, r, g, b = tostring(reach), 1 - f, 0.4 + f * 0.6, 0.3
+                end
+            end
+            if text then
+                shownN = shownN + 1
+                local e = shown[shownN]
+                if not e then e = {}; shown[shownN] = e end
+                e.x, e.y, e.text, e.r, e.g, e.b = x + 0.5, y + 0.5, text, r, g, b
+            end
+        end
+    end
+end
+
 local function draw()
     if OV.mode == "off" then return end
     local p = getPlayer()
     if not p then return end
+    local pz = math.floor(p:getZ())
+    if OV.dirty or LF.frame - shownAt >= 15 or LF.frame < shownAt then
+        shownAt, OV.dirty = LF.frame, nil
+        collect(math.floor(p:getX()), math.floor(p:getY()), pz)
+    end
     local tm = getTextManager()
     local font = UIFont.Small
-    local px, py, pz = math.floor(p:getX()), math.floor(p:getY()), math.floor(p:getZ())
-    local R = OV.mode == "sight" and 8 or 12
-    sightBudget = 6                     -- squares whose sight is worked out per frame (it's costly)
-    for dx = -R, R do
-        for dy = -R, R do
-            local x, y = px + dx, py + dy
-            local sx, sy = LF.screenOf(x + 0.5, y + 0.5, pz)
-            if sx then
-                if OV.mode == "cover" then
-                    local c = LF.Ground.coverDir(x, y, pz, OV.dir)
-                    if c > NONE then
-                        local col = COLOR[c]
-                        tm:DrawStringCentre(font, sx + 1, sy + 1, LETTER[c], 0, 0, 0, 0.8)
-                        tm:DrawStringCentre(font, sx, sy, LETTER[c], col[1], col[2], col[3], 1)
-                    end
-                elseif LF.Ground.hasSight(x, y, pz) or sightBudget > 0 then
-                    if not LF.Ground.hasSight(x, y, pz) then sightBudget = sightBudget - 1 end
-                    local r = LF.Ground.reach(x, y, pz, OV.dir)
-                    if r then
-                        local f = r / CFG.reachMax
-                        tm:DrawStringCentre(font, sx + 1, sy + 1, tostring(r), 0, 0, 0, 0.8)
-                        tm:DrawStringCentre(font, sx, sy, tostring(r), 1 - f, 0.4 + f * 0.6, 0.3, 1)
-                    end
-                end
-            end
-        end
+    for i = 1, shownN do
+        local e = shown[i]
+        local sx, sy = isoToScreenX(0, e.x, e.y, pz), isoToScreenY(0, e.x, e.y, pz)
+        tm:DrawStringCentre(font, sx + 1, sy + 1, e.text, 0, 0, 0, 0.8)
+        tm:DrawStringCentre(font, sx, sy, e.text, e.r, e.g, e.b, 1)
     end
     local title = OV.mode == "cover"
         and ("Cover against fire from the " .. LF.Ground.DIR_NAMES[OV.dir + 1] .. ": L light, H heavy, G garrison")
