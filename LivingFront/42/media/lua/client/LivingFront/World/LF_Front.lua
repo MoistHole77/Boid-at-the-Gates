@@ -55,6 +55,8 @@ local function store()
     f.sight = f.sight or { GER = {}, SOV = {} }
     f.belief = f.belief or { GER = {}, SOV = {} }
     f.objBelief = f.objBelief or { GER = {}, SOV = {} }
+    f.pendingSight = f.pendingSight or { GER = {}, SOV = {} }
+    f.pendingObj = f.pendingObj or { GER = {}, SOV = {} }
     return f
 end
 
@@ -247,10 +249,60 @@ end
 
 -- ---- what each side knows ------------------------------------------------------------------------
 
-local function see(side, e, how)
-    local S = store().sight[side]
-    S[e.u.id] = { x = math.floor(e.x), y = math.floor(e.y), men = e.fit, at = LF.simTime, how = how,
-                  kind = e.u.kind }
+-- How long what a unit sees takes to reach its headquarters: a squad in a platoon sends a man
+-- running to its lieutenant (radio from there on is instant); a squad holding an objective on its
+-- own, to its captain; a headquarters sees for itself. (0.68)
+local function reportDelay(e)
+    local u = e and e.u
+    if not u or u.kind ~= "squad" or u.companyHQ then return 0 end
+    local cmdId = nil
+    if u.garrison then
+        local c = LF.Units.get(u.garrison.company)
+        local hq = c and LF.Units.get(c.hq)
+        cmdId = hq and hq.leader
+    elseif u.platoon or u.homePlatoon then          -- (a squad out on a probe: its own lieutenant)
+        local p = LF.Units.get(u.platoon or u.homePlatoon)
+        local c = p and LF.Platoon and LF.Platoon.commander and LF.Platoon.commander(p)
+        cmdId = c and c.id
+    end
+    local r = cmdId and LF.Records.get(cmdId)
+    if not (r and r.alive) then return 0 end
+    local x, y = r.x, r.y
+    local b = LF.Bodies and LF.Bodies.get(cmdId)
+    if b and not b:isDead() then x, y = b:getX(), b:getY() end
+    if not (LF.Comms and LF.Comms.delayFor) then return 0 end
+    return LF.Comms.delayFor(LF.dist(e.x, e.y, x, y), 30)
+end
+LF.Front.reportDelay = reportDelay
+
+-- A sighting of enemy unit e by observer o: it goes into the side's picture when word of it
+-- arrives (now, or after the messenger's run), unless the side already has newer news.
+local function see(side, e, how, o)
+    local entry = { x = math.floor(e.x), y = math.floor(e.y), men = e.fit, at = LF.simTime, how = how, kind = e.u.kind }
+    local delay = reportDelay(o)
+    if delay <= 0 then
+        store().sight[side][e.u.id] = entry
+        return
+    end
+    entry.reportAt = LF.simTime + delay
+    local P = store().pendingSight[side]
+    local old = P[e.u.id]
+    -- (Of two messengers on their way about one unit, the first to arrive counts: keep the sooner.)
+    if not old or entry.reportAt < old.reportAt then P[e.u.id] = entry end
+end
+
+-- Word that has arrived goes into the picture.
+local function promoteSightings()
+    for _, side in ipairs(SIDES) do
+        local P, S = store().pendingSight[side], store().sight[side]
+        for id, entry in pairs(P) do
+            if entry.reportAt <= LF.simTime or entry.at > LF.simTime then
+                P[id] = nil
+                local cur = S[id]
+                if not cur or cur.at < entry.at then entry.reportAt = nil; S[id] = entry end
+            end
+        end
+    end
 end
 
 local function updateSightings()
@@ -262,7 +314,7 @@ local function updateSightings()
         if a.fit > 0 then
             for _, b in ipairs(units) do
                 if b.faction == ENEMY[a.faction] and LF.distSq(a.x, a.y, b.x, b.y) <= sightSq then
-                    see(a.faction, b, "seen")
+                    see(a.faction, b, "seen", a)
                 end
             end
         end
@@ -272,7 +324,7 @@ local function updateSightings()
         local u = a.u
         if u.offContactAt and LF.simTime - u.offContactAt < 30 and u.offContactAt <= LF.simTime and u.offContactBy then
             local b = byId[u.offContactBy]
-            if b then see(a.faction, b, "contact") end
+            if b then see(a.faction, b, "contact", a) end
         end
     end
     -- Forget old sightings, and ones of units that are gone.
@@ -296,7 +348,7 @@ local function readEvents()
     for _, ev in ipairs(LF.Clash.events()) do
         if ev.seq and ev.seq > lastSeq and ev.kind == "contact" and ev.unit and ev.by then
             local a, b = byId[ev.unit], byId[ev.by]
-            if a and b then see(a.faction, b, "contact"); see(b.faction, a, "contact") end
+            if a and b then see(a.faction, b, "contact", a); see(b.faction, a, "contact", b) end
         end
     end
     lastSeq = seq
@@ -321,25 +373,40 @@ end
 local function updateObjectives()
     local sightSq = CFG.sight * CFG.sight
     for _, side in ipairs(SIDES) do
-        local OB = store().objBelief[side]
+        local OB, PB = store().objBelief[side], store().pendingObj[side]
+        -- Word that has arrived.
+        for id, w in pairs(PB) do
+            if w.reportAt <= LF.simTime or w.at > LF.simTime then
+                PB[id] = nil
+                local b = OB[id]
+                if not b or (b.at or 0) <= w.at then w.reportAt = nil; OB[id] = w end
+            end
+        end
         for id, obj in pairs(LF.Objective.all()) do
-            local knows = obj.holder == side or not OB[id]
-            if not knows then
+            local own = obj.holder == side or not OB[id]
+            local seer = nil
+            if not own then
                 for _, e in ipairs(units) do
                     if e.faction == side and e.fit > 0 and LF.distSq(e.x, e.y, obj.x, obj.y) <= sightSq then
-                        knows = true
-                        break
+                        local d = reportDelay(e)
+                        if not seer or d < seer then seer = d end
                     end
                 end
             end
-            if knows then
+            if own or seer then
                 local b = OB[id]
                 if not b or b.holder ~= obj.holder or b.name ~= obj.name or (b.contested or false) ~= (obj.contested or false) then
-                    OB[id] = { holder = obj.holder, name = obj.name, contested = obj.contested or nil, at = LF.simTime }
+                    local w = { holder = obj.holder, name = obj.name, contested = obj.contested or nil, at = LF.simTime }
+                    if own or seer <= 0 then OB[id] = w
+                    elseif not PB[id] or PB[id].holder ~= w.holder or (PB[id].contested or false) ~= (w.contested or false) then
+                        w.reportAt = LF.simTime + seer
+                        PB[id] = w
+                    end
                 end
             end
         end
         for id in pairs(OB) do if not LF.Objective.get(id) then OB[id] = nil end end
+        for id in pairs(PB) do if not LF.Objective.get(id) then PB[id] = nil end end
     end
 end
 
@@ -362,6 +429,7 @@ local function pass()
     updateSectors()
     readEvents()
     updateSightings()
+    promoteSightings()
     updateObjectives()
     updateBelief()
 end

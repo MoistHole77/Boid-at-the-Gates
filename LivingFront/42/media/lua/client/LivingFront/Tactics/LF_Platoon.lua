@@ -208,7 +208,8 @@ end
 
 -- A platoon at (x, y) facing (fx, fy): its headquarters centre rear, its four squads in a line
 -- ahead of it, 1 squad on the left to 4 squad (the machine-gun squad, with mg) on the right.
-function LF.Platoon.create(faction, x, y, z, fx, fy, mg)
+-- mg: the last squad is a machine-gun squad; allMG: every squad is (a machine-gun platoon).
+function LF.Platoon.create(faction, x, y, z, fx, fy, mg, allMG)
     local len = math.sqrt(fx * fx + fy * fy)
     if len < 0.01 then fx, fy, len = 1, 0, 1 end
     fx, fy = fx / len, fy / len
@@ -235,7 +236,7 @@ function LF.Platoon.create(faction, x, y, z, fx, fy, mg)
     local SPOTS = { { 5, -15 }, { 8, -5 }, { 8, 5 }, { 5, 15 } }
     local names = {}
     for i, sp in ipairs(SPOTS) do
-        local isMG = mg and i == #SPOTS
+        local isMG = allMG or (mg and i == #SPOTS)
         local qx, qy = at(sp[1], sp[2])
         local sq = LF.Units.createSquad(faction, qx, qy, z, fx, fy, false, isMG)
         sq.platoon = p.id
@@ -444,6 +445,16 @@ local function apply(p, o)
         else
             LF.Objective.hold(squad, obj)
         end
+    elseif o.kind == "probe" or o.kind == "rejoin" then
+        -- A probe: a patrol to a point to look (LF_Captain watches it there and brings it back);
+        -- rejoin: back to its platoon.
+        clearTask(squad)
+        squad.objTask, squad.pendingHold = nil, nil
+        squad.platoonTask = o.kind == "probe" and "probe" or nil
+        local ok, why = LF.March.order(squad, o.x, o.y, o.z or 0, "auto", { noGather = true })
+        if not ok and why ~= "already there" then
+            LF.log("PLATOON " .. squad.name .. " can't " .. o.kind .. ": " .. tostring(why))
+        end
     elseif o.kind == "withdraw" then
         clearTask(squad)
         squad.objTask, squad.pendingHold = nil, nil
@@ -508,6 +519,57 @@ local function issue(p, o)
     if cmd then shout(cmd.id, "Get this to " .. (squad.name:gsub("^.* / ", "")) .. ": " .. o.words) end
     LF.Comms.post("order", { platoon = p.id, squad = squad.id, order = o }, delay)
 end
+
+LF.Platoon.issue = function(p, o) return issue(p, o) end
+
+-- ---- lending squads (LF_Captain) -------------------------------------------------------------
+-- A captain can lend a squad to another of his platoons for an assault (it comes under that
+-- lieutenant until the job is done), or leave it on its own holding an objective (a garrison,
+-- answering to the captain). squad.homePlatoon remembers where it belongs.
+
+local function removeFrom(p, squad)
+    if not p then return end
+    for i = #(p.squads or {}), 1, -1 do if p.squads[i] == squad.id then table.remove(p.squads, i) end end
+    if p.known then p.known[squad.id] = nil end
+end
+
+function LF.Platoon.attach(squad, p)
+    if not (squad and p) or squad.platoon == p.id then return end
+    local old = squad.platoon and LF.Units.get(squad.platoon)
+    if old then
+        squad.homePlatoon = squad.homePlatoon or old.id
+        removeFrom(old, squad)
+    end
+    squad.garrison = nil
+    squad.marchGroup = nil
+    squad.platoon = p.id
+    p.squads = p.squads or {}
+    p.squads[#p.squads + 1] = squad.id
+    if squad.homePlatoon == p.id then squad.homePlatoon = nil end
+    LF.log("PLATOON " .. squad.name .. " comes under " .. p.name .. (squad.homePlatoon and " (lent)" or " (back with its platoon)"))
+end
+
+-- The squad stays where it is holding obj, under the captain of company c.
+function LF.Platoon.garrison(squad, c, obj)
+    local old = squad.platoon and LF.Units.get(squad.platoon)
+    if old then
+        squad.homePlatoon = squad.homePlatoon or old.id
+        removeFrom(old, squad)
+    end
+    squad.platoon = nil
+    squad.marchGroup = nil
+    squad.garrison = { company = c.id, obj = obj.id, since = LF.simTime }
+    LF.log("PLATOON " .. squad.name .. " is left holding " .. (obj.name or "the objective") .. " for the captain")
+end
+
+-- Back to its own platoon (if it still has one).
+function LF.Platoon.goHome(squad)
+    local home = squad.homePlatoon and LF.Units.get(squad.homePlatoon)
+    if home and home.kind == "platoon" then LF.Platoon.attach(squad, home) end
+end
+
+LF.Platoon.squadsOf = function(p) return squadsOf(p) end
+LF.Platoon.posOf = function(u) return posOf(u) end
 
 -- An order arrives: the squad's sergeant calls it out and the squad carries it out.
 LF.Comms.on("order", function(msg)

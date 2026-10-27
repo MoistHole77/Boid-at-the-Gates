@@ -194,6 +194,16 @@ local function send(rep, e)
     end
 end
 
+-- A transmission from outside the event log (a captain's orders): on screen if you listen to that
+-- side's net, always in the log.
+function LF.Radio.broadcast(faction, whoTitle, unitName, text)
+    LF.log("RADIO " .. whoTitle .. " (" .. faction .. "): " .. text)
+    if not hears(faction) then return end
+    lines[#lines + 1] = { text = text, who = whoTitle .. " (" .. unitName .. ")", faction = faction,
+                          untilMs = getTimestampMs() + CFG.show * 1000 }
+    while #lines > CFG.shown do table.remove(lines, 1) end
+end
+
 local function update()
     local data = LF.Records.data()
     local seq = data.lfEventSeq or 0

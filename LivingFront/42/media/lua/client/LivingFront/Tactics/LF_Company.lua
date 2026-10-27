@@ -1,6 +1,7 @@
 -- Living Front: companies and the company headquarters (roadmap phase 5, step C2).
 --
--- A company is two or three platoons under a captain. Its headquarters is a squad-sized element
+-- A company is four platoons under a captain: three rifle platoons (a headquarters and four rifle
+-- squads) and a machine-gun platoon (a headquarters and four machine-gun squads). Its headquarters is a squad-sized element
 -- (a squad unit marked companyHQ, so the squads' formations, marching and holding a building all
 -- work for it):
 --   Capt.    company commander         (the squad's leader)   greatcoat and peaked cap, no weapon
@@ -122,8 +123,9 @@ function LF.Company.ofCaptain(rec)
     return nil
 end
 
--- Spawn the company's next platoon (headquarters, 3 rifle squads, a machine-gun squad), abreast
--- of the others in front of the company headquarters. Returns the platoon, or nil and why.
+-- Spawn the company's next platoon - the first three rifle platoons, the fourth its machine-gun
+-- platoon - abreast of the others in front of the company headquarters. Returns the platoon, or
+-- nil and why.
 function LF.Company.addPlatoon(c)
     if not c then return nil, "no company" end
     c.platoons = c.platoons or {}
@@ -141,10 +143,12 @@ function LF.Company.addPlatoon(c)
     local slot = #c.platoons + 1
     local lat = (slot - (CFG.platoons + 1) / 2) * CFG.spacing
     local px, py = x + fx * CFG.ahead + rx * lat, y + fy * CFG.ahead + ry * lat
-    local p = LF.Platoon.create(c.faction, px, py, z, fx, fy, true)
-    p.company, p.companySlot = c.id, slot
+    local mgPlatoon = slot == CFG.platoons
+    local p = LF.Platoon.create(c.faction, px, py, z, fx, fy, false, mgPlatoon)
+    p.company, p.companySlot, p.mgPlatoon = c.id, slot, mgPlatoon or nil
     c.platoons[#c.platoons + 1] = p.id
-    LF.log("COMPANY " .. c.name .. ": " .. p.name .. " joins as its platoon " .. slot .. " of " .. CFG.platoons)
+    LF.log("COMPANY " .. c.name .. ": " .. p.name .. " joins as its " .. (mgPlatoon and "machine-gun" or "rifle")
+        .. " platoon (" .. slot .. " of " .. CFG.platoons .. ")")
     return p
 end
 
@@ -159,7 +163,9 @@ local function onMenu(playerNum, context, worldObjects, test)
         local c = rec and rec.alive and LF.Company.ofCaptain(rec)
         if c then
             local n = #(c.platoons or {})
-            local opt = context:addOption(string.format("Spawn a platoon under %s's command (%d/%d)", LF.Units.title(rec), n, CFG.platoons),
+            local what = n + 1 == CFG.platoons and "the machine-gun platoon" or "a rifle platoon"
+            local opt = context:addOption(string.format("Spawn %s under %s's command (%d/%d)", n >= CFG.platoons and "a platoon" or what,
+                LF.Units.title(rec), n, CFG.platoons),
                 nil, function()
                     local p, why = LF.Company.addPlatoon(c)
                     LF.say(p and (p.name .. " - under " .. LF.Units.title(rec) .. "'s command") or ("Can't: " .. tostring(why)))

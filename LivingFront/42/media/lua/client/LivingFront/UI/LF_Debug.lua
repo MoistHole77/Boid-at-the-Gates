@@ -13,6 +13,7 @@
 --                           reset world
 
 require "LivingFront/Tactics/LF_Company"
+require "LivingFront/Tactics/LF_Captain"
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
 require "LivingFront/World/LF_Bodies"
@@ -605,6 +606,12 @@ local function onMenu(playerNum, context, worldObjects, test)
         tools:addOption("Unit trackers on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
             LF.Map.CFG.trackers = not LF.Map.CFG.trackers
             LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
+        end)
+    end
+    if LF.Captain then
+        local on = LF.Captain.CFG.on
+        tools:addOption("Captains command their companies: " .. (on and "ON (click to stop)" or "OFF (click to start)"), nil, function()
+            LF.say("Captains command their companies: " .. (LF.Captain.toggle() and "ON" or "OFF"))
         end)
     end
     if LF.Map and LF.Map.CFG then
