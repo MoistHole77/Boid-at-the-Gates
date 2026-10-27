@@ -311,13 +311,19 @@ local function updateSquad(squad)
     local why
     -- (A squad in good heart hangs on longer before it falls back; a shaken one goes sooner.)
     local fallbackFit = LF.Morale and LF.Morale.fallbackShare(squad, CFG.fallbackFit) or CFG.fallbackFit
-    if total > 0 and fitN / total < fallbackFit then
+    -- (0.73: also a squad pinned down whose men's nerve has gone - morale under 30 - breaks and
+    -- falls back together, as a squad shot to pieces does.)
+    local brokenUnderFire = LF.Suppress.squadState and LF.Suppress.squadState(squad.id) == "pinned"
+        and LF.Morale and LF.Morale.average(squad.id) < 30
+    if total > 0 and (fitN / total < fallbackFit or brokenUnderFire) then
         if not sq.broken and LF.Service then LF.guard("service broke", LF.Service.unitBroke, squad) end
         sq.broken = true
         -- Once out of range, he only falls back again if the enemy comes on (6 tiles closer) -
         -- not back and forth every second on the edge of range.
         local clearDist = CFG.fallbackClear - (intent == "HOLD" and 6 or 0)
-        if front < clearDist then intent, why = "FALLBACK", fitN .. "/" .. total .. " fit"
+        if front < clearDist then
+            intent, why = "FALLBACK", brokenUnderFire and ("pinned down, nerve gone (morale " .. math.floor(LF.Morale.average(squad.id)) .. ")")
+                or (fitN .. "/" .. total .. " fit")
         else intent, why = "HOLD", "fallen back out of range" end
     elseif intent ~= "HOLD" and intent ~= "FLANK" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         -- Too many men pinned to keep advancing. (A squad already holding still goes on to the

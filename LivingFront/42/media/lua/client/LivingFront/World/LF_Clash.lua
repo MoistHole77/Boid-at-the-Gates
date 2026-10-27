@@ -35,6 +35,7 @@ require "LivingFront/World/LF_Bodies"
 require "LivingFront/Soldier/LF_Morale"
 require "LivingFront/Soldier/LF_Service"
 require "LivingFront/Soldier/LF_Shot"
+require "LivingFront/Soldier/LF_Suppress"
 
 LF.Clash = LF.Clash or {}
 
@@ -169,7 +170,9 @@ local function witnesses(a, b)
 end
 
 -- How a unit stands to fire coming in: cover class (LF_Ground) and posture (LF_Shot).
-local CLASS = { building = 3, dug = 1, open = 0, march = 0 }
+-- (0.72.2: halted in the open, men get behind what there is - light cover; 0.72 had none, and the
+-- attackers off screen took twice the hits they do on screen.)
+local CLASS = { building = 3, dug = 1, open = 1, march = 0 }
 local POSTURE = { building = 1, dug = 1, open = 0.7, march = 1 }
 
 -- One man of target unit e is hit by unit by (cls: e's cover class against by).
@@ -289,23 +292,35 @@ local function update()
             -- Hits a second, from the shot table: each fit man's rounds x his chance at this range
             -- against the target's cover.
             local cov = coverAgainst(t, e)
-            local rate = 0
+            local rate, rounds = 0, 0
             for _, r in ipairs(e.men) do
                 if fitOf(r) and not r.unarmed then
                     local P = LF.Weapons.profile(r)
                     rate = rate + LF.Shot.rate(P) * LF.Shot.chance(P, pr.d, CLASS[cov], POSTURE[cov], 1) / 100
+                    rounds = rounds + LF.Shot.rate(P) * (P.suppress or 1)
                 end
             end
             t.inFire = (t.inFire or 0) + f
             e.targets = e.targets or {}
-            e.targets[#e.targets + 1] = { t = t, f = f, rate = rate * mul }
+            e.targets[#e.targets + 1] = { t = t, f = f, rate = rate * mul, rounds = rounds * mul }
             engaged[e] = true
         end
     end
-    -- Suppression cuts what each unit puts out; then the hits land.
+    -- Suppression (0.73: the squad's meter, LF_Suppress - fed by the rounds coming in, the same
+    -- meter as on screen) cuts what each unit puts out; then the hits land.
     for e in pairs(engaged) do
-        local s = (e.inFire or 0) / math.max(1, e.fit or 1)
-        e.supp = math.min(0.5, 0.5 * s / 3)
+        LF.Suppress.setCover(e.u.id, CLASS[coverOf(e)] or 0)
+    end
+    for e in pairs(engaged) do
+        for _, tg in ipairs(e.targets) do
+            -- Rounds fired at them (aimed or not: four times the aimed share - a man fires at what
+            -- he can't see too), each a miss's worth (LF_Combat: 30).
+            LF.Suppress.addSquad(tg.t.u.id, tg.rounds * LF.Shot.CFG.duty * 4 * 30 * dt, e.x, e.y)
+        end
+    end
+    for e in pairs(engaged) do
+        local st = LF.Suppress.squadState(e.u.id)
+        e.supp = st == "pinned" and 0.6 or (st == "suppressed" and 0.3 or 0)
     end
     for e in pairs(engaged) do
         local u = e.u

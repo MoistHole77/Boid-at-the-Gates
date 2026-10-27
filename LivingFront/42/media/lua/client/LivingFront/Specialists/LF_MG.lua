@@ -339,10 +339,10 @@ local function round(self)
         if ZombRand(1000) < chance * 10 then
             LF.Combat.applyHit(s, t, P, dist)
             self.hits = self.hits + 1
-            LF.Suppress.add(t, CFG.suppressHit * P.suppress)
+            LF.Suppress.add(t, CFG.suppressHit * P.suppress, s)
             if LF.Service then LF.guard("service shot", LF.Service.shot, self.sid, t:getModData().LF_id, true) end
         else
-            LF.Suppress.add(t, CFG.suppressMiss * P.suppress)
+            LF.Suppress.add(t, CFG.suppressMiss * P.suppress, s)
         end
     end
     -- Where it lands: the beaten zone, long along the line of fire, narrow across it.

@@ -472,7 +472,7 @@ end
 local splashCtx = {}
 local function splashOne(e, _dsq, ctx)
     if e.body ~= ctx.skip and LF.isHostile(ctx.faction, e.rec.faction) then
-        LF.Suppress.add(e.body, ctx.amount)
+        LF.Suppress.add(e.body, ctx.amount, ctx.shooter)
         if LF.Service then LF.Service.action(e.rec.id) end      -- being shot at: he's in action
         ctx.n = ctx.n + 1
     end
@@ -480,7 +480,7 @@ end
 local function splash(shooter, x, y, radius, amount, skip)
     local rec = LF.Records.get(shooter:getModData().LF_id)
     if not rec then return 0 end
-    splashCtx.faction, splashCtx.amount, splashCtx.skip, splashCtx.n = rec.faction, amount, skip, 0
+    splashCtx.faction, splashCtx.amount, splashCtx.skip, splashCtx.n, splashCtx.shooter = rec.faction, amount, skip, 0, shooter
     LF.Sense.near(x, y, radius, splashOne, splashCtx)
     return splashCtx.n
 end
@@ -586,7 +586,7 @@ function LF.Combat.resolveShot(shooter, target, gun)
     local chance = hitChance(shooter, target, dist, profile)
     local result = "MISS"
     if ZombRand(100) < chance then result = "HIT " .. applyHit(shooter, target, profile, dist) end
-    LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress)
+    LF.Suppress.add(target, (result == "MISS" and SUPPRESS_MISS or SUPPRESS_HIT) * profile.suppress, shooter)
     splash(shooter, target:getX(), target:getY(), SPLASH_RADIUS, SUPPRESS_SPLASH * profile.suppress, target)
     if LF.Service then
         LF.guard("service shot", LF.Service.shot, shooter:getModData().LF_id, target:getModData().LF_id, result ~= "MISS")
