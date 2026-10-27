@@ -325,6 +325,8 @@ local function nearestOf(list, x, y, test)
     return best, bd
 end
 
+local canLead, ownFree            -- (set inside decide: they see its lists)
+
 local function decide(c, cap)
     endJobs(c, cap)
     updateProbes(c)
@@ -354,6 +356,24 @@ local function decide(c, cap)
     for _, p in ipairs(LF.Company.platoons(c)) do
         local m = p.mission
         if m and m.kind == "take" and m.phase ~= "taken" then attacking[m.obj] = true end
+    end
+    -- Can this lieutenant lead an assault now? (Alive, his platoon not on a job or a move.)
+    function canLead(p)
+        if not p or p.mission or p.move or not LF.Platoon.commander(p) then return false end
+        for _, e in ipairs(all) do if e.p == p and e.state == "busy" then return false end end
+        return true
+    end
+    -- His own squads still free (not lent ones; not counting those already in group g).
+    function ownFree(p, g)
+        local n = 0
+        for _, e in ipairs(free) do
+            if e.p == p and not e.sq.homePlatoon then
+                local taken = false
+                for _, x in ipairs(g or {}) do if x == e then taken = true end end
+                if not taken then n = n + 1 end
+            end
+        end
+        return n
     end
 
     -- 2. Defence: a garrison on every objective of ours on the front line; two if threatened. A
@@ -437,13 +457,13 @@ local function decide(c, cap)
                 end
             end
         else
-            -- A lieutenant to lead: a free platoon (its commander alive), rifle platoons first,
-            -- nearest the objective.
+            -- A lieutenant to lead: a free platoon (its commander alive) with at least one of its
+            -- own squads free - a lieutenant never leads an assault with none of his own men -
+            -- rifle platoons first, nearest the objective. (So there are as many assaults at once
+            -- as there are lieutenants free to lead them.)
             local leads = {}
             for _, p in ipairs(LF.Company.platoons(c)) do
-                local busy = false
-                for _, e in ipairs(all) do if e.p == p and e.state == "busy" then busy = true end end
-                if not busy and not p.mission and not p.move and LF.Platoon.commander(p) then
+                if canLead(p) and ownFree(p) > 0 then
                     local px, py = LF.Platoon.posOf(LF.Units.get(p.hq))
                     leads[#leads + 1] = { p = p, d = px and LF.dist(px, py, obj.x, obj.y) or math.huge }
                 end
@@ -459,7 +479,7 @@ local function decide(c, cap)
                 -- until the group is strong enough; a machine-gun squad as support.
                 local group, fit, rifles, mgs = {}, 0, 0, 0
                 for _, e in ipairs(free) do
-                    if e.p == lead then
+                    if e.p == lead and not e.sq.homePlatoon then
                         group[#group + 1] = e
                         fit = fit + e.fit
                         if e.mg then mgs = mgs + 1 else rifles = rifles + 1 end
@@ -467,15 +487,20 @@ local function decide(c, cap)
                 end
                 local pool = {}
                 for _, e in ipairs(free) do if e.p ~= lead then pool[#pool + 1] = e end end
+                -- (A squad can be lent unless it is the last free squad of a lieutenant who could
+                -- still lead an assault of his own.)
+                local function lendable(x)
+                    return not (canLead(x.p) and x.p ~= lead and ownFree(x.p, group) <= 1)
+                end
                 while fit < need or rifles == 0 do
-                    local e = nearestOf(pool, obj.x, obj.y, function(x) return not x.mg end)
+                    local e = nearestOf(pool, obj.x, obj.y, function(x) return not x.mg and lendable(x) end)
                     if not e then break end
                     takeFrom(pool, e)
                     group[#group + 1] = e
                     fit, rifles = fit + e.fit, rifles + 1
                 end
                 if mgs == 0 and E > 0 then
-                    local m = nearestOf(pool, obj.x, obj.y, function(x) return x.mg end)
+                    local m = nearestOf(pool, obj.x, obj.y, function(x) return x.mg and lendable(x) end)
                     if m then takeFrom(pool, m); group[#group + 1] = m; fit, mgs = fit + m.fit, 1 end
                 end
                 if rifles > 0 and (fit >= need or E == 0) then
