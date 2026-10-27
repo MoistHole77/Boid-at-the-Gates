@@ -15,6 +15,7 @@
 
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Soldier/LF_Combat"
+require "LivingFront/Soldier/LF_Shot"
 
 LF.Cover = LF.Cover or {}
 
@@ -366,18 +367,28 @@ local function hunkered(target)
     return target:isSneaking() and not target:isPerformingAnAction()
 end
 
--- Hit-chance multiplier for a shot at target, from the target's cover and posture.
-function LF.Combat.targetModifier(shooter, target)
+-- The target's cover class against the shooter (0.72: read from the cover map, LF_Ground - one
+-- table read instead of the edge tests per round).
+function LF.Combat.coverClass(shooter, target)
+    if LF.Ground then
+        return LF.Ground.cover(target:getX(), target:getY(), math.floor(target:getZ()), shooter:getX(), shooter:getY())
+    end
     local q = LF.Cover.of(target, shooter)
-    local down = hunkered(target)
-    if q == HIGH then return 0.15 end
-    if q == LOW then return down and 0.3 or 0.65 end
-    return down and 0.7 or 1.0
+    return q == HIGH and 2 or (q == LOW and 1 or 0)
+end
+
+-- Hit-chance multiplier for a shot at target, from the target's cover and posture (the shot
+-- table's numbers, LF_Shot).
+function LF.Combat.targetModifier(shooter, target)
+    local m = LF.Shot.COVER[LF.Combat.coverClass(shooter, target)] or 1
+    if hunkered(target) then m = m * LF.Shot.CFG.down
+    elseif target:isPlayerMoving() then m = m * LF.Shot.CFG.moving end
+    return m
 end
 
 -- Which body parts can be hit: behind cover, only what shows above it.
 local UPPER = { "Torso_Upper", "Torso_Upper", "UpperArm_L", "UpperArm_R", "Head" }
 function LF.Combat.hitParts(shooter, target)
-    if LF.Cover.of(target, shooter) ~= NONE then return UPPER end
+    if LF.Combat.coverClass(shooter, target) ~= NONE then return UPPER end
     return nil
 end

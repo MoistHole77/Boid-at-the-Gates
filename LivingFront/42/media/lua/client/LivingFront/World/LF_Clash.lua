@@ -5,12 +5,16 @@
 --   * Two hostile units with no bodies within CFG.range tiles of each other are in contact: each
 --     knows where the other's men are (so platoon and squad logic react as they would on-screen)
 --     and a march halts.
---   * Each side puts out firepower: its fit men (a rifleman 1, a machine gunner 5, an officer's
---     pistol 0.3), less for distance, ammunition running low, being suppressed and low morale.
---   * What lands on the other side is cut down by its cover: inside the objective it holds 0.35,
---     dug in 0.6, halted in the open 0.85, caught on the march 1.2.
---   * Hits add up per unit; each whole one is a man hit - killed (40%) or wounded (60%) - named,
---     where he stands. Being under fire wears morale down; a death costs more (LF_Morale).
+--   * Hits come from the shot table (LF_Shot, 0.72), the same numbers that settle a round fired
+--     on screen: each fit man's rounds a second x his weapon's chance at that range against the
+--     target's cover (inside the objective it holds: garrison; dug in: light; halted in the open:
+--     none, men down; on the march: none, upright) x the share of time a man is firing aimed
+--     rounds (LF.Shot.CFG.duty) - less for ammunition running low, being suppressed (by the
+--     firepower coming in), low morale, firing on the move.
+--   * Hits add up per unit; each whole one is a man hit, named, where he stands, and the shot
+--     table says what it does - killed, critical, serious or light, by where it lands (cover
+--     leaves only head, chest and arms showing). Being under fire wears morale down; a death
+--     costs more (LF_Morale).
 --   * A unit down to under 35% fit, or whose men's morale averages under 25, breaks: it falls
 --     back 40 tiles away from the enemy and digs in (a platoon's main effort is left to its
 --     lieutenant, who takes over or withdraws - LF_Platoon).
@@ -30,14 +34,13 @@ require "LivingFront/Units/LF_March"
 require "LivingFront/World/LF_Bodies"
 require "LivingFront/Soldier/LF_Morale"
 require "LivingFront/Soldier/LF_Service"
+require "LivingFront/Soldier/LF_Shot"
 
 LF.Clash = LF.Clash or {}
 
 local CFG = {
     updateTicks = 30,
     range = 45,             -- tiles: contact off-screen
-    rate = 0.006,           -- hits per firepower point per simulated second at close range, in the open
-    killShare = 0.4,
     breakFit = 0.35,        -- a unit breaks below this share of fit men ...
     breakMorale = 25,       -- ... or below this average morale
     fallBack = 40,          -- a broken unit falls back this far from the enemy
@@ -48,8 +51,6 @@ local CFG = {
     eventsKept = 400,
 }
 LF.Clash.CFG = CFG
-
-local COVER = { building = 0.35, dug = 0.6, open = 0.85, march = 1.2 }
 
 local function bodyOf(id)
     local b = id and LF.Bodies.get(id)
@@ -160,8 +161,6 @@ end
 
 -- ---- hits -------------------------------------------------------------------------------------
 
-local HIT_PARTS = { "Torso_Upper", "Torso_Lower", "UpperArm_L", "UpperArm_R", "UpperLeg_L", "UpperLeg_R", "Head" }
-
 local function witnesses(a, b)
     local ids = {}
     for _, r in ipairs(a.men) do if r.alive then ids[#ids + 1] = r.id end end
@@ -169,8 +168,12 @@ local function witnesses(a, b)
     return ids
 end
 
--- One man of target unit e is hit by unit by.
-local function hit(e, by)
+-- How a unit stands to fire coming in: cover class (LF_Ground) and posture (LF_Shot).
+local CLASS = { building = 3, dug = 1, open = 0, march = 0 }
+local POSTURE = { building = 1, dug = 1, open = 0.7, march = 1 }
+
+-- One man of target unit e is hit by unit by (cls: e's cover class against by).
+local function hit(e, by, cls)
     local cands = {}
     for _, r in ipairs(e.men) do if r.alive and fitOf(r) then cands[#cands + 1] = r end end
     if #cands == 0 then for _, r in ipairs(e.men) do if r.alive then cands[#cands + 1] = r end end end
@@ -179,8 +182,14 @@ local function hit(e, by)
     local title = LF.Units.title(r)
     -- (A man already wounded who is hit again is far more likely to die: 0.56 wounded one man
     -- three times over and he lived.)
-    local kill = (r.wounded or r.offWound) and 70 or CFG.killShare * 100
-    if ZombRand(100) < kill then
+    -- What the round does, from the shot table: where it lands (cover shows only the upper body),
+    -- with a weapon of the shooting unit.
+    local part = LF.Shot.part(cls or 0)
+    local shooters = {}
+    for _, s in ipairs(by.men) do if s.alive and fitOf(s) and not s.unarmed then shooters[#shooters + 1] = s end end
+    local sh = shooters[1] and shooters[ZombRand(#shooters) + 1] or nil
+    local out = LF.Shot.outcome(part, sh and LF.Weapons.profile(sh) or nil, r.wound and r.wound.grade or (r.wounded and "serious" or nil))
+    if out == "killed" then
         r.alive = false
         r.diedOffscreen = { x = r.x, y = r.y, z = r.z or 0, by = by.u.id }
         LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " KILLED off-screen by " .. by.u.name
@@ -189,20 +198,13 @@ local function hit(e, by)
         LF.guard("succession", LF.Units.onDeath, r)
         note("killed", { who = r.id, unit = e.u.id, by = by.u.id, x = math.floor(r.x), y = math.floor(r.y), seen = witnesses(e, by) })
     else
-        local part = HIT_PARTS[ZombRand(#HIT_PARTS) + 1]
-        local severity = 40 + ZombRand(40)
-        if LF.Wounds then
-            -- Graded (LF_Wounds): a light one he fights on with; serious or critical, he's out.
-            local g, impact = LF.Wounds.offscreen(severity)
-            if r.offWound then impact = math.max(impact, r.offWound.impact or 0) end
-            r.offWound = { part = part, severity = severity, impact = impact }
-            LF.Wounds.grade(r, g, "hit off-screen by " .. by.u.name)
-        else
-            r.offWound = { part = part, severity = severity, impact = 20 + ZombRand(25) }
-            if not (LF.Units.leads(r) and LF.Units.relieve(r)) then r.wounded = true end
-        end
+        -- Graded (LF_Wounds): a light one he fights on with; serious or critical, he's out. (A light
+        -- wound is put on his body if he gets one; a worse one his grade shows - LF_Bodies.)
+        if out == "light" then r.offWound = { part = part, severity = 30, impact = 10 + ZombRand(15) } end
+        if LF.Wounds then LF.Wounds.grade(r, out, "hit off-screen (" .. part .. ") by " .. by.u.name)
+        elseif not (LF.Units.leads(r) and LF.Units.relieve(r)) then r.wounded = true end
         LF.Morale.unitEvent(e.u.id, -3, title .. " wounded (off-screen)")
-        LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " wounded off-screen (" .. part .. ") by " .. by.u.name)
+        LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " wounded off-screen (" .. part .. ", " .. out .. ") by " .. by.u.name)
         note("wounded", { who = r.id, unit = e.u.id, by = by.u.id, part = part, x = math.floor(r.x), y = math.floor(r.y), seen = witnesses(e, by) })
     end
 end
@@ -280,12 +282,23 @@ local function update()
             local e, t = side[1], side[2]
             e.fp = e.fp or firepower(e)
             local ammo = e.u.offAmmo or 1
-            local f = e.fp * rangeMul(pr.d) * moraleMul(e) * (ammo < 0.25 and ammo * 4 or 1)
-            if coverOf(e) == "march" then f = f * 0.5 end
-            if fleeing(e.u) then f = f * 0.3 end            -- (running, not fighting)
+            local mul = moraleMul(e) * (ammo < 0.25 and ammo * 4 or 1)
+            if coverOf(e) == "march" then mul = mul * 0.5 end
+            if fleeing(e.u) then mul = mul * 0.3 end        -- (running, not fighting)
+            local f = e.fp * rangeMul(pr.d) * mul           -- (firepower: what the target feels - suppression, morale)
+            -- Hits a second, from the shot table: each fit man's rounds x his chance at this range
+            -- against the target's cover.
+            local cov = coverAgainst(t, e)
+            local rate = 0
+            for _, r in ipairs(e.men) do
+                if fitOf(r) and not r.unarmed then
+                    local P = LF.Weapons.profile(r)
+                    rate = rate + LF.Shot.rate(P) * LF.Shot.chance(P, pr.d, CLASS[cov], POSTURE[cov], 1) / 100
+                end
+            end
             t.inFire = (t.inFire or 0) + f
             e.targets = e.targets or {}
-            e.targets[#e.targets + 1] = { t = t, f = f }
+            e.targets[#e.targets + 1] = { t = t, f = f, rate = rate * mul }
             engaged[e] = true
         end
     end
@@ -325,8 +338,10 @@ local function update()
                     LF.Squad.report(u.id, r.id, LF.Tactics.point(r.x, r.y, r.z or 0))
                 end
             end
-            local landed = tg.f * (1 - (e.supp or 0)) * CFG.rate * COVER[coverAgainst(t, e)] * dt
+            local cov = coverAgainst(t, e)
+            local landed = tg.rate * (1 - (e.supp or 0)) * LF.Shot.CFG.duty * dt
             t.u.offHits = (t.u.offHits or 0) + landed
+            t.hitCls = CLASS[cov]
             -- Pinned: morale wears down under heavy fire.
             local heavy = (t.inFire or 0) / math.max(1, t.fit or 1)
             if heavy > 1 then
@@ -345,7 +360,7 @@ local function update()
         end
         while (u.offHits or 0) >= 1 do
             u.offHits = u.offHits - 1
-            hit(e, e.targets[1].t)
+            hit(e, e.targets[1].t, e.hitCls)
         end
     end
     -- Breaking.

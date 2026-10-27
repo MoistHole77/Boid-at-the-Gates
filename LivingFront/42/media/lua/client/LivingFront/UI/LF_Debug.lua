@@ -419,19 +419,53 @@ end
 local stress = nil
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
 
-local function stressTest(x, y, z)
+-- Every man of a platoon (its headquarters and its squads).
+local function platoonMen(p)
+    local ids = {}
+    for _, u in pairs(LF.Units.all()) do
+        if u.id == p.hq or u.platoon == p.id then
+            for _, rid in ipairs(LF.Units.members(u.id)) do ids[#ids + 1] = rid end
+        end
+    end
+    return ids
+end
+
+-- How a side has come out of it: killed, critical, serious, light, unhurt.
+local function casualties(ids)
+    local c = { killed = 0, critical = 0, serious = 0, light = 0, unhurt = 0 }
+    for _, rid in ipairs(ids) do
+        local r = LF.Records.get(rid)
+        if not r or not r.alive then c.killed = c.killed + 1
+        else
+            local g = r.wound and r.wound.grade
+            if g and c[g] then c[g] = c[g] + 1 else c.unhurt = c.unhurt + 1 end
+        end
+    end
+    return string.format("%d killed, %d critical, %d serious, %d light, %d unhurt", c.killed, c.critical, c.serious, c.light, c.unhurt)
+end
+
+-- offscreen: the same fight with nobody given a body - settled the off-screen way (LF_Clash) even
+-- with you standing there, to compare with the real thing (the 0.72 gate: within 20%).
+local function stressTest(x, y, z, offscreen)
     local obj = objectiveAt(x, y, z)
     if not obj then LF.say("Right-click on a building for the stress test"); return end
     if not (LF.Config.logPerf) then LF.Perf.toggle() end
     local ger = LF.Platoon.create("GER", obj.x + 0.5, obj.y + 0.5, obj.z or 0, 1, 0, true)
     local sov = LF.Platoon.create("SOV", obj.x + 70.5, obj.y + 0.5, obj.z or 0, -1, 0, true)
+    local gerMen, sovMen = platoonMen(ger), platoonMen(sov)
+    if offscreen then
+        for _, rid in ipairs(gerMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
+        for _, rid in ipairs(sovMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
+    end
     local okH, whyH = LF.Platoon.hold(ger, obj)
     local okT, whyT = LF.Platoon.take(sov, obj)
-    stress = { started = getTimestampMs(), windows = {}, seen = LF.Perf.last(), obj = obj.name }
-    LF.log(string.format("STRESS start at %s (%d,%d): %s holds it (%s), %s attacks from 70 tiles east (%s); version %s",
-        obj.name, math.floor(obj.x), math.floor(obj.y), ger.name, okH and "ok" or tostring(whyH), sov.name,
-        okT and "ok" or tostring(whyT), tostring(LF.VERSION)))
-    LF.say("Stress test: " .. ger.name .. " holds " .. obj.name .. ", " .. sov.name .. " attacks - summary in the log in 2 minutes")
+    stress = { started = getTimestampMs(), sim = LF.simTime, windows = {}, seen = LF.Perf.last(), obj = obj.name,
+               ger = gerMen, sov = sovMen, offscreen = offscreen }
+    LF.log(string.format("STRESS start%s at %s (%d,%d): %s holds it (%s), %s attacks from 70 tiles east (%s); version %s",
+        offscreen and " (OFF-SCREEN: no bodies)" or "", obj.name, math.floor(obj.x), math.floor(obj.y), ger.name,
+        okH and "ok" or tostring(whyH), sov.name, okT and "ok" or tostring(whyT), tostring(LF.VERSION)))
+    LF.say("Stress test" .. (offscreen and " (off-screen)" or "") .. ": " .. ger.name .. " holds " .. obj.name .. ", "
+        .. sov.name .. " attacks - summary in the log in 2 minutes")
 end
 
 local function stressSummary()
@@ -456,6 +490,9 @@ local function stressSummary()
     for i, e in ipairs(list) do if i <= 8 then top[#top + 1] = e.name .. "=" .. string.format("%.2f", e.v) end end
     LF.log(string.format("STRESS summary (%s, version %s, %d windows): fps %.1f, frame %.1f ms (worst %.1f), mod %.2f ms (%.0f%%), game %.1f ms, most bodies %d | %s",
         stress.obj, tostring(LF.VERSION), n, fps / n, f / n, worst, m / n, f > 0 and m / f * 100 or 0, r / n, bodies, table.concat(top, " ")))
+    LF.log(string.format("STRESS casualties after %.0f simulated seconds%s: defenders (German) %s | attackers (Soviet) %s",
+        LF.simTime - (stress.sim or LF.simTime), stress.offscreen and " (off-screen)" or "", casualties(stress.ger or {}),
+        casualties(stress.sov or {})))
     LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
 end
 
@@ -791,6 +828,10 @@ local function onMenu(playerNum, context, worldObjects, test)
     end
     tools:addOption(stress and "Stress test running - summary in the log when done" or "Stress test here (right-click a building): a German platoon holds it, a Soviet platoon attacks",
         nil, function() if not stress then stressTest(x, y, z) end end)
+    if not stress then
+        tools:addOption("Stress test here, off-screen (the same fight with no bodies: settled the off-screen way)",
+            nil, function() if not stress then stressTest(x, y, z, true) end end)
+    end
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)

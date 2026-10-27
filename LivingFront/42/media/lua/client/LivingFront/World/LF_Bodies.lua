@@ -207,7 +207,7 @@ local function managerPass()
                 and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())) then
                 LF.Bodies.despawn(id)
             end
-        elseif rec.alive and spawned < cfg.maxSpawnsPerPass then
+        elseif rec.alive and not rec.noBody and spawned < cfg.maxSpawnsPerPass then      -- (noBody: the off-screen stress test)
             local d2 = LF.distSq(rec.x, rec.y, px, py)
             if d2 < spawnSq or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end

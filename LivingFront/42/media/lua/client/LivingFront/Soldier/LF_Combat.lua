@@ -21,6 +21,7 @@ require "LivingFront/Soldier/LF_ShootAction"
 require "LivingFront/Soldier/LF_Suppress"
 require "LivingFront/World/LF_Sense"
 require "LivingFront/Soldier/LF_Weapons"
+require "LivingFront/Soldier/LF_Shot"
 
 LF.Combat = LF.Combat or {}
 
@@ -484,12 +485,66 @@ local function splash(shooter, x, y, radius, amount, skip)
     return splashCtx.n
 end
 
+-- His health brought to a level (the game's own healing and harm, as LF_Medic does it).
+local function healthTo(body, to)
+    local bd = body:getBodyDamage()
+    pcall(function() bd:calculateOverallHealth() end)
+    local hp = LF.Combat.health(body)
+    if hp > to then pcall(function() bd:ReduceGeneralHealth(hp - to) end)
+    else
+        for _ = 1, 12 do
+            if LF.Combat.health(body) >= to then break end
+            pcall(function() bd:AddGeneralHealth(10) end)
+        end
+    end
+end
+
+-- Health a man's body is left at for each grade (LF_Wounds reads the grade back from it).
+local GRADE_HEALTH = { light = 75, serious = 45, critical = 22 }
+
+-- What a hit does, from the shot table (LF_Shot, 0.72): killed, critical, serious or light, by
+-- where it lands. His grade is set straight away (LF_Wounds); his body shows the wound - and
+-- doesn't bleed to death on top of it (the grade's clock does that). A man who would be killed
+-- (but not by a head shot) may go down dying instead, calling for his squad's medic (LF_Medic).
+-- Civilians (no grades) take the game's own wound, as before.
+local function inflict(target, partName, profile)
+    if untouchable(target) then return "untouchable" end
+    local id = target:getModData().LF_id
+    local rec = id and LF.Records.get(id)
+    if not (rec and LF.Wounds and rec.faction ~= "CIV") then
+        wound(target, partName, profile)
+        return "wound"
+    end
+    local out = LF.Shot.outcome(partName, profile, rec.wound and rec.wound.grade or nil)
+    local bd = target:getBodyDamage()
+    -- The wound you see (blood, the bullet), then dressed: no bleeding out on top of the grade.
+    pcall(function() bd:getBodyPart(BodyPartType[partName]):damageFromFirearm(25) end)
+    LF.Wounds.stopBleeding(target)
+    if out == "killed" then
+        if partName ~= "Head" and LF.Medic and LF.Medic.onHit then
+            healthTo(target, 6)
+            LF.guard("critical", LF.Medic.onHit, target, "shot", partName)
+            if LF.Medic.isCritical(id) then return "dying, calling for the medic" end
+        end
+        pcall(function() target:setHealth(0) end)
+        pcall(function() target:Kill(nil) end)
+        return "killed"
+    end
+    target:getModData().LF_woundShown = out
+    LF.Wounds.grade(rec, out, "shot (" .. partName .. ")")
+    local g = rec.wound and rec.wound.grade or out
+    healthTo(target, GRADE_HEALTH[g] or GRADE_HEALTH[out] or 75)
+    target:getModData().LF_woundShown = g
+    return out
+end
+
 -- A round that has hit: the wound, then knocked over, staggered - or just a flinch. Returns the
--- body part hit.
+-- body part hit (and what it did).
 local function applyHit(shooter, target, profile, dist)
     local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
     local partName = LF.pick(parts or BODY_PARTS)
-    LF.guard("wound", wound, target, partName, profile)
+    local did = LF.guard("wound", inflict, target, partName, profile)
+    if did == "killed" then return partName .. " (killed)" end
     local k = KNOCK[partName] or { 0, 0 }
     -- Point blank, a round is a little more likely to put a man down (+8 points within 3
     -- tiles, +4 within 5; not for arm hits).
@@ -503,9 +558,9 @@ local function applyHit(shooter, target, profile, dist)
     else
         LF.guard("flinch", flinch, target)
     end
-    -- A killing hit may leave him critical instead, if his squad's medic can get to him.
-    if LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, target, "shot", partName) end
-    return partName
+    -- (Civilians: a killing hit may still leave him critical, as before.)
+    if did == "wound" and LF.Medic and LF.Medic.onHit then LF.guard("critical", LF.Medic.onHit, target, "shot", partName) end
+    return partName .. (did and (" (" .. did .. ")") or "")
 end
 LF.Combat.applyHit = applyHit
 LF.Combat.splash = function(...) return splash(...) end
