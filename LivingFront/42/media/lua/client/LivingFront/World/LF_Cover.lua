@@ -91,6 +91,46 @@ local function lineResult(x0, y0, z0, x1, y1, z1)
     return tostring(LosUtil.lineClear(getCell(), x0, y0, z0, x1, y1, z1, false))
 end
 
+-- Squares near (x, y) in rings out to r, nearest first; fn(sq) returns true to take one.
+local function searchNear(x, y, z, r, fn)
+    local cell = getCell()
+    if not cell then return nil end
+    local bx, by = math.floor(x), math.floor(y)
+    for d = 0, r do
+        for dx = -d, d do
+            for dy = -d, d do
+                if math.max(math.abs(dx), math.abs(dy)) == d then
+                    local sq = cell:getGridSquare(bx + dx, by + dy, z)
+                    if sq and sq:isFree(false) and fn(sq) then return sq end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- A square near (x, y) with a clear line to (tx, ty) - outdoors, or by an opening if indoors -
+-- for a gun to fire from. nil if none within r (or the ground isn't loaded).
+function LF.Cover.viewPointNear(x, y, z, tx, ty, r)
+    local t = LF.Tactics.point(tx + 0.5, ty + 0.5, z)
+    local sq = searchNear(x, y, z, r or 4, function(q)
+        return LF.Cover.canSeeFrom(q:getX(), q:getY(), z, t)
+    end)
+    if sq then return sq:getX(), sq:getY(), z end
+    return nil
+end
+
+-- A square near (x, y) out of sight of (fx, fy) - dead ground behind a building or a wall - for
+-- men waiting their turn. nil if none within r (or the ground isn't loaded).
+function LF.Cover.hiddenNear(x, y, z, fx, fy, r)
+    local t = LF.Tactics.point(fx + 0.5, fy + 0.5, z)
+    local sq = searchNear(x, y, z, r or 12, function(q)
+        return not LF.Cover.canSeeFrom(q:getX(), q:getY(), z, t)
+    end)
+    if sq then return sq:getX(), sq:getY(), z end
+    return nil
+end
+
 function LF.Cover.canSeeFrom(x, y, z, target)
     local ok, res = pcall(lineResult, x, y, z,
         math.floor(target:getX()), math.floor(target:getY()), math.floor(target:getZ()))

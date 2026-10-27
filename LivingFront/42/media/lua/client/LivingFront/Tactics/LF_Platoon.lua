@@ -818,6 +818,11 @@ function LF.Platoon.deploy(p, m, why)
             local back = math.max(CFG.reserveBack, math.min(d, CFG.reserveBack + 10))
             local lat = (i - (#rs + 1) / 2) * 8
             local x, y = math.floor(obj.x + dx * back - dy * lat), math.floor(obj.y + dy * back + dx * lat)
+            -- (Waiting out of sight of the objective - behind a building or a wall - not standing
+            -- in the open in front of the enemy's windows. Off-screen, with no ground to test, as
+            -- planned.)
+            local hx, hy = LF.Cover.hiddenNear(x, y, obj.z or 0, obj.x, obj.y, 12)
+            if hx then x, y = hx, hy end
             issue(p, { squad = r.id, kind = "reserve", x = x, y = y, z = obj.z,
                 words = short(r) .. ", you're the reserve - stay back in cover and be ready!" })
         end

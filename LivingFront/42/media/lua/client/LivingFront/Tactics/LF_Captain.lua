@@ -231,7 +231,10 @@ local function sendProbe(c, cap, e, obj)
     sq.homePlatoon = sq.homePlatoon or p.id
     for i = #(p.squads or {}), 1, -1 do if p.squads[i] == sq.id then table.remove(p.squads, i) end end
     sq.platoon = nil
-    sq.probe = { company = c.id, obj = obj.id, x = ox, y = oy, z = obj.z or 0, phase = "out", since = LF.simTime }
+    -- (Time to get there: the walk at the patrol pace and then some, plus the order's run.)
+    local pace = (LF.Move and LF.Move.PATROL_PACE) or 0.75
+    sq.probe = { company = c.id, obj = obj.id, x = ox, y = oy, z = obj.z or 0, phase = "out", since = LF.simTime,
+                 deadline = LF.simTime + (LF.dist(sx, sy, ox, oy) / pace) * 1.5 + 300 }
     LF.log(string.format("CAPTAIN %s: probe - %s goes to look at %s from %d,%d (no news of it)", c.name, sq.name, obj.name, ox, oy))
     radio(c, cap, short(p) .. ", send a squad to look at " .. obj.name .. ". Report what you see. Over.")
     return true
@@ -271,19 +274,24 @@ local function updateProbes(c)
                 if cmd then hx, hy, hz = recPos(cmd.id) end
                 if hx then LF.March.order(u, math.floor(hx), math.floor(hy), hz or 0, "auto", { noGather = true }) end
             end
-            if fitOf(u) == 0 or not obj then
+            local fit = fitOf(u)
+            if fit == 0 or not obj then
                 if obj then intelOf(c)[pr.obj] = { men = 40, at = LF.simTime, reportAt = LF.simTime + 300, how = "the probe never came back" } end
-                u.probe = nil
-                LF.log("CAPTAIN " .. c.name .. ": the probe " .. u.name .. " is lost")
+                u.probe, u.platoonTask = nil, nil
+                LF.Platoon.goHome(u)
+                LF.log("CAPTAIN " .. c.name .. ": the probe " .. u.name .. (obj and (" is lost (no fit man left of " .. #LF.Units.members(u.id) .. ")") or " is called off (the objective is gone)"))
             elseif pr.phase == "out" or pr.phase == "watch" then
                 local contact = (LF.Clash and LF.Clash.inContact(u)) or (x and LF.Squad.bestContact(u.id, x, y, 600, 40) ~= nil)
                 if contact then
                     intel(math.max(1, x and enemyInSight(u.faction, x, y) or 1), "contact - pulling back")
                     comeBack()
                 elseif pr.phase == "out" then
-                    if x and LF.dist(x, y, pr.x, pr.y) <= 6 then
+                    -- There: close to the spot, or its march (once it has its orders) is over.
+                    local M = LF.March.get(u.id)
+                    local marched = u.platoonTask == "probe" and (M == nil or M.arrived == true)
+                    if (x and LF.dist(x, y, pr.x, pr.y) <= 12) or marched then
                         pr.phase, pr.watchUntil = "watch", LF.simTime + CFG.probeWatch
-                    elseif LF.simTime - pr.since > CFG.probeOut then
+                    elseif LF.simTime > (pr.deadline or (pr.since + CFG.probeOut)) then
                         LF.log("CAPTAIN " .. c.name .. ": the probe " .. u.name .. " never got there - called back")
                         comeBack()
                     end
@@ -352,6 +360,10 @@ local function decide(c, cap)
             free[#free + 1] = e
         end
     end
+    -- (A probe's report still on its way: wait for it rather than send another.)
+    for oid, i in pairs(intelOf(c)) do
+        if i.reportAt > LF.simTime then probing[oid] = true end
+    end
     local attacking = {}
     for _, p in ipairs(LF.Company.platoons(c)) do
         local m = p.mission
@@ -390,18 +402,44 @@ local function decide(c, cap)
                 local threat = enemyNear(c, obj.x, obj.y, CFG.threat)
                 local have = 0
                 for _, g in ipairs(gs) do have = have + g.fit end
-                if threat > have and #gs >= 1 then want = 2 end
+                local _, contested = believed(c, obj)
+                if (threat > have or contested) and #gs >= 1 then want = 2 end
                 while #gs < want do
                     local e = nearestOf(free, obj.x, obj.y)
                     if not e then break end
                     takeFrom(free, e)
-                    LF.Platoon.issue(e.p, { squad = e.sq.id, kind = "hold", obj = obj.id,
-                        words = short(e.sq) .. ", go and hold " .. obj.name .. "!" })
-                    LF.Platoon.garrison(e.sq, c, obj)
+                    if #gs == 0 then
+                        LF.Platoon.issue(e.p, { squad = e.sq.id, kind = "hold", obj = obj.id,
+                            words = short(e.sq) .. ", go and hold " .. obj.name .. "!" })
+                        LF.Platoon.garrison(e.sq, c, obj)
+                        LF.log(string.format("CAPTAIN %s: garrison - %s to hold %s (front line%s)", c.name, e.sq.name, obj.name,
+                            threat > 0 and (", ~" .. threat .. " enemy reported near") or ""))
+                        radio(c, cap, short(e.p) .. ", put a squad in " .. obj.name .. " and hold it. Over.")
+                    else
+                        -- A second squad doesn't crowd into the building (a house has windows for
+                        -- one squad): it waits close by, out of the enemy's sight, ready to help.
+                        local ex, ey = obj.x - (c.facingX or 1) * 20, obj.y - (c.facingY or 0) * 20
+                        local best, bd = nil, math.huge
+                        for _, sg in pairs(LF.Front.sightings(side)) do
+                            local d = LF.dist(sg.x, sg.y, obj.x, obj.y)
+                            if LF.simTime - sg.at <= CFG.stale and d < bd then best, bd = sg, d end
+                        end
+                        if best and bd > 1 then
+                            ex = obj.x - (best.x - obj.x) / bd * 20
+                            ey = obj.y - (best.y - obj.y) / bd * 20
+                        end
+                        local x, y = math.floor(ex), math.floor(ey)
+                        local hx, hy = LF.Cover.hiddenNear(x, y, obj.z or 0, obj.x, obj.y, 12)
+                        if hx then x, y = hx, hy end
+                        LF.Platoon.issue(e.p, { squad = e.sq.id, kind = "reserve", x = x, y = y, z = obj.z or 0,
+                            words = short(e.sq) .. ", get behind " .. obj.name .. " and be ready to help hold it!" })
+                        LF.Platoon.garrison(e.sq, c, obj)
+                        e.sq.garrison.support = true
+                        LF.log(string.format("CAPTAIN %s: %s waits behind %s at %d,%d to help hold it (%s)", c.name, e.sq.name,
+                            obj.name, x, y, contested and "contested" or ("~" .. threat .. " enemy reported near")))
+                        radio(c, cap, short(e.p) .. ", send a squad up behind " .. obj.name .. ". Over.")
+                    end
                     gs[#gs + 1] = e
-                    LF.log(string.format("CAPTAIN %s: garrison - %s to hold %s (front line%s)", c.name, e.sq.name, obj.name,
-                        threat > 0 and (", ~" .. threat .. " enemy reported near") or ""))
-                    radio(c, cap, short(e.p) .. ", put a squad in " .. obj.name .. " and hold it. Over.")
                 end
             elseif #gs > 0 then
                 obj.lfOffFront = obj.lfOffFront or {}
@@ -428,8 +466,10 @@ local function decide(c, cap)
     cx, cy = cx / n, cy / n
     local targets = {}
     for _, obj in ipairs(objs) do
-        local holder, contested = believed(c, obj)
-        if holder ~= side or contested then
+        local holder = believed(c, obj)
+        -- (His own, even contested, is defended - not "attacked": 0.68 re-took its own objectives
+        -- over and over, leaving another squad in each every time.)
+        if holder ~= side then
             local d = LF.dist(cx, cy, obj.x, obj.y)
             if d <= CFG.maxRange and not attacking[obj.id] then
                 local worth = 1

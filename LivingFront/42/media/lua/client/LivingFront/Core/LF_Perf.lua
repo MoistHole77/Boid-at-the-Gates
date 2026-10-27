@@ -45,7 +45,8 @@ local function report(now)
         parts[#parts + 1] = name .. "=" .. string.format("%.2f", perFrame)
     end
     local bleeding = LF.Aid and LF.Aid.countBleeding(LF.Bodies.all()) or -1
-    local cellObjects = LF.guard("object count", function() return getCell():getObjectList():size() end) or -1
+    local cell = getCell()
+    local cellObjects = cell and (LF.guard("object count", function() return cell:getObjectList():size() end) or -1) or -1
     LF.log("PERF fps=" .. string.format("%.1f", fps) .. " bodies=" .. bodies .. " alive=" .. alive
         .. " bleeding=" .. bleeding .. " worldObjects=" .. cellObjects .. " shots=" .. (LF.Combat and LF.Combat.shotCount or 0)
         .. " frame=" .. string.format("%.1f", frameMs) .. "ms mod=" .. string.format("%.2f", ours) .. "ms ("

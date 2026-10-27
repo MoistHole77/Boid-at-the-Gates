@@ -578,6 +578,13 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
         if body and threat then
             sx, sy, sz = LF.Cover.findFiringPosition(rec.id, body, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
         end
+        -- No proper firing position: a square near the anchor that can at least see the enemy -
+        -- else stay where the gun is rather than set it up blind (0.68.3: a gun in the middle of
+        -- a room, firing at walls).
+        if not sx and threat then
+            sx, sy, sz = LF.Cover.viewPointNear(ax, ay, math.floor(z or 0), math.floor(threat:getX()), math.floor(threat:getY()), 5)
+        end
+        if not sx and g.spot then sx, sy, sz = g.spot.x, g.spot.y, g.spot.z end
         if not sx then sx, sy, sz = math.floor(ax), math.floor(ay), math.floor(z or 0) end
         g.spot = { x = sx, y = sy, z = sz }
         g.aspot = nil
@@ -799,7 +806,22 @@ function LF.MG.driveTeam(team, t, squad, sq)
         if d >= LF.Tactics.CFG.fallbackClear + 6 then return end
         len, words = -CFG.bound, " pulling back!"
     end
-    p.x, p.y = p.x + dx * len, p.y + dy * len
+    -- (Where it moves to must give it a line of fire on the enemy - not a room with no window, not
+    -- behind a wall. Off-screen, with no ground to test, it goes as planned.)
+    local nx, ny = p.x + dx * len, p.y + dy * len
+    local z = math.floor(c.z or 0)
+    local cell = getCell()
+    if cell and cell:getGridSquare(math.floor(nx), math.floor(ny), z) then
+        local vx, vy = nil, nil
+        for _, k in ipairs({ 1, 0.6, 0.3 }) do
+            vx, vy = LF.Cover.viewPointNear(p.x + dx * len * k, p.y + dy * len * k, z, math.floor(c.x), math.floor(c.y), 3)
+            if vx then break end
+        end
+        if not vx then return end           -- (nowhere better to fire from: it stays)
+        nx, ny = vx + 0.5, vy + 0.5
+        len = LF.dist(p.x, p.y, nx, ny) * (order == "ADVANCE" and 1 or -1)
+    end
+    p.x, p.y = nx, ny
     t.pos.B.x, t.pos.B.y = p.x - dx * 2.5, p.y - dy * 2.5      -- security just behind the gun
     t.shifting, t.phaseStart = true, LF.tick
     local g = guns[team.id]

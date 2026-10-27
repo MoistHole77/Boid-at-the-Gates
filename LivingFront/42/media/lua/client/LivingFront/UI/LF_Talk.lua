@@ -606,8 +606,7 @@ end
 function LF_TalkWindow:close()
     -- (Let go of the keyboard first: a text box removed while it has the keys leaves you unable
     -- to move until you click somewhere.)
-    pcall(function() self.entry:unfocus() end)
-    pcall(function() self.entry:setFocused(false) end)
+    if self.entry and self.entry.unfocus then pcall(function() self.entry:unfocus() end) end
     open[self.recId] = nil
     LF.guard("talk finish", finish, self.recId)
     self:setVisible(false)
