@@ -86,12 +86,14 @@ end
 -- ---- kit by role ---------------------------------------------------------------------------------
 -- The army outfits hand out field radios at random; only a platoon's radio operator carries one.
 -- He wears it on his back in place of his pack. A captain wears an officer's greatcoat (field
--- grey for the Germans, brown for the Soviets) and a peaked cap, and no pack; a lieutenant the
--- same greatcoat with his side's helmet (0.66); a company first sergeant the peaked cap over his
--- ordinary uniform; the company surgeon a white apron over his.
+-- grey for the Germans, brown for the Soviets) and a peaked cap, and no pack; a lieutenant a short
+-- leather coat (black or grey / brown or tan) and his side's helmet; a company first sergeant the
+-- greatcoat and the helmet; the company surgeon a white apron over his uniform.
 local function typeOf(item) return item and item:getType() or "" end
 -- The helmets the army outfits give each side (ArmyCamoDesert, ArmyCamoGreen).
 local HELMET = { GER = "Base.Hat_ArmyDesert", SOV = "Base.Hat_Army" }
+-- Lieutenants' leather coats (LF_clothing.txt): two colours a side.
+local LEATHER = { GER = { "Black", "Grey" }, SOV = { "Brown", "Tan" } }
 local BACK_PACKS = { "Bag_ALICEpack", "Bag_HydrationBackpack", "Bag_Military" }
 
 local function isBackPack(t)
@@ -154,7 +156,10 @@ function LF.Appearance.roleKit(body, rec)
     local coat, cap = "Base.LF_Greatcoat_" .. (rec.faction or ""), "Base.LF_PeakCap_" .. (rec.faction or "")
     local helmet = HELMET[rec.faction] or "Base.Hat_Army"
     local function isHat(t) return t:sub(1, 4) == "Hat_" or t:sub(1, 11) == "LF_PeakCap_" end
-    local function isCoat(t) return t:sub(1, 7) == "Jacket_" or t:sub(1, 11) == "JacketLong_" end
+    local function isCoat(t)
+        return t:sub(1, 7) == "Jacket_" or t:sub(1, 11) == "JacketLong_" or t:sub(1, 12) == "LF_Greatcoat"
+            or t:sub(1, 14) == "LF_LeatherCoat"
+    end
     if rec.rank == "CPT" then
         -- A captain: the officer's greatcoat and peaked cap, no pack.
         changed = changed + strip(body, function(t, item)
@@ -165,7 +170,22 @@ function LF.Appearance.roleKit(body, rec)
         if put(body, coat) then changed = changed + 1 end
         if put(body, cap) then changed = changed + 1 end
     elseif rec.rank == "LT" then
-        -- A lieutenant: the greatcoat, with a helmet (his side's) instead of the cap; no pack.
+        -- A lieutenant: a short leather coat (black or grey for a German, brown or tan for a
+        -- Soviet - each man's own, kept) and his side's helmet; no pack.
+        if not rec.coat then
+            local pair = LEATHER[rec.faction] or LEATHER.GER
+            rec.coat = pair[(rec.id or 0) % 2 + 1]
+        end
+        local leather = "Base.LF_LeatherCoat_" .. rec.coat
+        changed = changed + strip(body, function(t, item)
+            local full = item:getFullType()
+            if full == leather or full == helmet then return false end
+            return isHat(t) or isCoat(t) or isBackPack(t)
+        end)
+        if put(body, leather) then changed = changed + 1 end
+        if put(body, helmet) then changed = changed + 1 end
+    elseif rec.rank == "1SG" then
+        -- The first sergeant: the greatcoat and his side's helmet; no pack.
         changed = changed + strip(body, function(t, item)
             local full = item:getFullType()
             if full == coat or full == helmet then return false end
@@ -173,12 +193,6 @@ function LF.Appearance.roleKit(body, rec)
         end)
         if put(body, coat) then changed = changed + 1 end
         if put(body, helmet) then changed = changed + 1 end
-    elseif rec.rank == "1SG" then
-        -- The first sergeant: the officers' peaked cap over his ordinary uniform.
-        changed = changed + strip(body, function(t, item)
-            return item:getFullType() ~= cap and isHat(t)
-        end)
-        if put(body, cap) then changed = changed + 1 end
     end
     if rec.hqRole == "surgeon" then
         -- The surgeon: a white apron over his uniform.

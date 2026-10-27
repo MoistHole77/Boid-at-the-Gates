@@ -11,18 +11,21 @@
 --   (a sixth billet, to come)
 --   a 4-man security fire team: a corporal and three privates, armed as usual
 -- What each billet does comes later; for now they are there, dressed and in place.
--- A new company takes the nearest platoons of its side that have no company yet (up to
--- CFG.platoons, within CFG.adopt tiles).
+-- A company is always the same four platoons (CFG.platoons), kept with the save: right-click its
+-- captain to spawn the next one under his command. Units spawned any other way stand outside
+-- every chain of command, as before.
 
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
 require "LivingFront/Units/LF_Units"
+require "LivingFront/Tactics/LF_Platoon"
 
 LF.Company = LF.Company or {}
 
 local CFG = {
-    platoons = 3,           -- platoons a company takes
-    adopt = 400,            -- tiles: how far off they may be
+    platoons = 4,           -- a company's platoons
+    spacing = 40,           -- tiles between the platoons when they are spawned, abreast ...
+    ahead = 30,             -- ... this far in front of the company headquarters
 }
 LF.Company.CFG = CFG
 
@@ -65,39 +68,6 @@ function LF.Company.platoons(c)
     return out
 end
 
-local function platoonPos(p)
-    local ids = { p.hq }
-    for _, sid in ipairs(p.squads or {}) do ids[#ids + 1] = sid end
-    for _, uid in ipairs(ids) do
-        if uid and LF.Squad and LF.Squad.anchor then
-            local x, y = LF.Squad.anchor(uid)       -- (both values: "a and f()" would keep only x)
-            if x then return x, y end
-        end
-    end
-    return nil
-end
-
--- Take the nearest platoons of its side with no company yet.
-local function adopt(c, x, y)
-    local free = {}
-    for _, p in pairs(LF.Units.all()) do
-        if p.kind == "platoon" and p.faction == c.faction and not (p.company and LF.Units.get(p.company)) then
-            local px, py = platoonPos(p)
-            local d = px and LF.dist(x, y, px, py) or nil
-            if d and d <= CFG.adopt then free[#free + 1] = { p = p, d = d } end
-        end
-    end
-    table.sort(free, function(a, b) return a.d < b.d end)
-    local names = {}
-    for i = 1, math.min(CFG.platoons, #free) do
-        local p = free[i].p
-        p.company = c.id
-        c.platoons[#c.platoons + 1] = p.id
-        names[#names + 1] = p.name
-    end
-    return names
-end
-
 -- A company headquarters at (x, y), facing (fx, fy); it takes the nearest free platoons.
 function LF.Company.create(faction, x, y, z, fx, fy)
     local len = math.sqrt(fx * fx + fy * fy)
@@ -138,9 +108,64 @@ function LF.Company.create(faction, x, y, z, fx, fy)
         if b.role == "firstsgt" then staff.leader = r.id end
         staffNames[#staffNames + 1] = LF.Units.title(r) .. " (" .. b.words .. ")"
     end
-    local taken = adopt(c, x, y)
     LF.log("COMPANY created " .. c.name .. " (#" .. c.id .. "): " .. LF.Units.title(cpt) .. " in command; "
-        .. table.concat(staffNames, ", ") .. "; a security team of 4; platoons: "
-        .. (#taken > 0 and table.concat(taken, ", ") or "none yet"))
-    return c, taken
+        .. table.concat(staffNames, ", ") .. "; a security team of 4; no platoons yet (right-click the captain)")
+    return c
 end
+
+-- The company a captain commands, or nil.
+function LF.Company.ofCaptain(rec)
+    if not (rec and rec.rank == "CPT" and rec.squad) then return nil end
+    local hq = LF.Units.get(rec.squad)
+    local c = hq and hq.companyHQ and LF.Units.get(hq.company)
+    if c and hq.leader == rec.id then return c end
+    return nil
+end
+
+-- Spawn the company's next platoon (headquarters, 3 rifle squads, a machine-gun squad), abreast
+-- of the others in front of the company headquarters. Returns the platoon, or nil and why.
+function LF.Company.addPlatoon(c)
+    if not c then return nil, "no company" end
+    c.platoons = c.platoons or {}
+    if #c.platoons >= CFG.platoons then return nil, "the company already has its " .. CFG.platoons .. " platoons" end
+    local hq = LF.Company.hq(c)
+    local cid = hq and hq.leader
+    local cap = cid and LF.Records.get(cid)
+    local b = cid and LF.Bodies and LF.Bodies.get(cid)
+    local x, y, z = nil, nil, 0
+    if b then x, y, z = b:getX(), b:getY(), math.floor(b:getZ())
+    elseif cap then x, y, z = cap.x, cap.y, cap.z or 0 end
+    if not x then return nil, "the company headquarters is nowhere to be found" end
+    local fx, fy = c.facingX or 1, c.facingY or 0
+    local rx, ry = -fy, fx
+    local slot = #c.platoons + 1
+    local lat = (slot - (CFG.platoons + 1) / 2) * CFG.spacing
+    local px, py = x + fx * CFG.ahead + rx * lat, y + fy * CFG.ahead + ry * lat
+    local p = LF.Platoon.create(c.faction, px, py, z, fx, fy, true)
+    p.company, p.companySlot = c.id, slot
+    c.platoons[#c.platoons + 1] = p.id
+    LF.log("COMPANY " .. c.name .. ": " .. p.name .. " joins as its platoon " .. slot .. " of " .. CFG.platoons)
+    return p
+end
+
+-- ---- right-click a captain: spawn a platoon under his command --------------------------------------
+
+local function onMenu(playerNum, context, worldObjects, test)
+    if test or not LF.Inspect then return end
+    local sq = LF.try("company square", function() return worldObjects[1]:getSquare() end)
+    if not sq then return end
+    for _, f in ipairs(LF.Inspect.near(sq:getX(), sq:getY(), sq:getZ())) do
+        local rec = LF.Records.get(f.id)
+        local c = rec and rec.alive and LF.Company.ofCaptain(rec)
+        if c then
+            local n = #(c.platoons or {})
+            local opt = context:addOption(string.format("Spawn a platoon under %s's command (%d/%d)", LF.Units.title(rec), n, CFG.platoons),
+                nil, function()
+                    local p, why = LF.Company.addPlatoon(c)
+                    LF.say(p and (p.name .. " - under " .. LF.Units.title(rec) .. "'s command") or ("Can't: " .. tostring(why)))
+                end)
+            if n >= CFG.platoons then opt.notAvailable = true end
+        end
+    end
+end
+Events.OnFillWorldObjectContextMenu.Add(function(...) LF.guard("company menu", onMenu, ...) end)

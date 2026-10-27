@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.66.0"
+LF.VERSION = "0.67.0"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -138,16 +138,18 @@ local function exactScreen(x, y, z, zoom)
     return sx, sy
 end
 local screenOk = nil
+-- (A plain function handed to pcall: nothing created per call.)
+local function modelScreen(x, y, z, zoom)
+    local ax, ay = exactScreen(x, y, z, zoom)
+    local p = getPlayer()
+    local qx, qy = ax, ay
+    if p then qx, qy = exactScreen(p:getX(), p:getY(), p:getZ(), zoom) end
+    return ax, ay, qx - math.floor(qx), qy - math.floor(qy)
+end
 function LF.screenOf(x, y, z)
     local zoom = getCore():getZoom(0)
     if screenOk ~= false then
-        local ok, sx, sy, fx, fy = pcall(function()
-            local ax, ay = exactScreen(x, y, z, zoom)
-            local p = getPlayer()
-            local qx, qy = ax, ay
-            if p then qx, qy = exactScreen(p:getX(), p:getY(), p:getZ(), zoom) end
-            return ax, ay, qx - math.floor(qx), qy - math.floor(qy)
-        end)
+        local ok, sx, sy, fx, fy = pcall(modelScreen, x, y, z, zoom)
         if ok and sx then
             screenOk = true
             return math.floor(sx - fx + 0.5), math.floor(sy - fy + 0.5)
@@ -161,15 +163,17 @@ end
 -- How high over a body his head is (UI pixels at zoom 1): standing, crouched, sitting, lying.
 -- Eased per body, so text over him glides down as he sits rather than dropping.
 local headNow, headTick = {}, {}
+local function postureHeight(body)
+    if body:isOnFloor() or body:isKnockedDown() then return 40 end
+    if LF.Idle and LF.Idle.isSitting(body) then return 82 end
+    if body:isSneaking() then return 108 end
+    return 135
+end
 function LF.headHeight(body)
     if headTick[body] == LF.tick and headNow[body] then return headNow[body] end
     headTick[body] = LF.tick
-    local target = 135
-    pcall(function()
-        if body:isOnFloor() or body:isKnockedDown() then target = 40
-        elseif LF.Idle and LF.Idle.isSitting(body) then target = 82
-        elseif body:isSneaking() then target = 108 end
-    end)
+    local ok, target = pcall(postureHeight, body)
+    if not ok or not target then target = 135 end
     local cur = headNow[body] or target
     cur = cur + (target - cur) * 0.15
     if math.abs(target - cur) < 0.5 then cur = target end

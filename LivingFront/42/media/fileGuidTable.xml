@@ -16,4 +16,20 @@
 		<path>media/clothing/clothingItems/LF_PeakCap_SOV.xml</path>
 		<guid>a67b9bc5-e564-5f71-bf0d-9e0e5b1597dc</guid>
 	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_LeatherCoat_Black.xml</path>
+		<guid>18f2ba56-3647-5386-8e38-ae7f3d805656</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_LeatherCoat_Grey.xml</path>
+		<guid>8c1d5d7c-50b5-59b2-a962-afa3b0854600</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_LeatherCoat_Brown.xml</path>
+		<guid>7afbc25d-e29f-59c8-aba8-b1fbd6907a6a</guid>
+	</files>
+	<files>
+		<path>media/clothing/clothingItems/LF_LeatherCoat_Tan.xml</path>
+		<guid>11b88600-7ac4-5efc-befc-3952d9023b07</guid>
+	</files>
 </fileGuidTable>

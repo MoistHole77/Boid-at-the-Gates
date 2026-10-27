@@ -1359,8 +1359,11 @@ end
 -- for that animation to finish - up to 0.44 a man could be left frozen on top of a fence).
 local CLIMB_STATES = { ClimbOverFenceState = true, ClimbThroughWindowState = true, ClimbOverWallState = true,
                        ClimbSheetRopeState = true, ClimbDownSheetRopeState = true }
+-- (Plain functions handed to pcall: nothing is created per body per tick.)
+local function stateNameOf(body) return body:getCurrentStateName() end
+local function bumpedUp(body) return body:isBumped() and not body:isOnFloor() end
 local function climbing(body)
-    local ok, name = pcall(function() return body:getCurrentStateName() end)
+    local ok, name = pcall(stateNameOf, body)
     return ok and name ~= nil and CLIMB_STATES[name] == true, ok and name or nil
 end
 LF.Brain.climbing = climbing
@@ -1387,7 +1390,7 @@ local function stepNpc(id, body, rec)
     -- Down and being looked after, or dragging a man (LF_Medic): that runs him, not the brain.
     if LF.Medic and LF.Medic.busy(id) then return end
     local m = mindOf(id)
-    local climb = climbing(body)
+    local climb, st = climbing(body)
     if climb then
         -- No shooting from the top of a fence: anything queued (but the walk) waits.
         local q = ISTimedActionQueue.getTimedActionQueue(body)
@@ -1411,9 +1414,10 @@ local function stepNpc(id, body, rec)
     -- the stagger alone left the man in that state with no animation to finish, frozen for good
     -- (0.52: Cpl. Kozlov, Pvt. Smirnov). He's watched by the state itself, not just the flag, and
     -- let out of it by telling the state machine the animation has finished.
-    local okB, bumped = pcall(function() return body:isBumped() and not body:isOnFloor() end)
-    local okS, st = pcall(function() return body:getCurrentStateName() end)
-    local inBump = okS and st == "BumpedState"
+    -- (Stagger and down-too-long: checked every 5 ticks - their limits are 70 ticks and more.)
+    if (LF.tick + id) % 5 == 0 then
+    local okB, bumped = pcall(bumpedUp, body)
+    local inBump = st == "BumpedState"
     if ((okB and bumped) or inBump) and not (LF.Medic and LF.Medic.busy(id)) then
         m.bumpSince = m.bumpSince or LF.tick
         local okF, falling = pcall(function() return body:getVariableBoolean("BumpFall") end)
@@ -1443,6 +1447,7 @@ local function stepNpc(id, body, rec)
         end
     else
         m.downSince = nil
+    end
     end
     if (LF.tick + id) % CFG.thinkTicks == 0 then
         if LF.Combat.health(body) <= 0 then

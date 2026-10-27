@@ -351,8 +351,8 @@ local function spawnUnit(faction, x, y, z, size, playerNum)
     local fx, fy = 1, 0
     if p then fx, fy = x + 0.5 - p:getX(), y + 0.5 - p:getY() end
     if size == "companyHQ" then
-        local c, taken = LF.Company.create(faction, x + 0.5, y + 0.5, z, fx, fy)
-        LF.say("Spawned " .. c.name .. " HQ (10)" .. (#taken > 0 and (" - in command of " .. table.concat(taken, ", ")) or " - no platoons near to take command of"))
+        local c = LF.Company.create(faction, x + 0.5, y + 0.5, z, fx, fy)
+        LF.say("Spawned " .. c.name .. " HQ (10) - right-click the captain to give him his platoons")
         return
     end
     if size == "platoon" or size == "platoonMG" then
@@ -497,17 +497,15 @@ local function onMenu(playerNum, context, worldObjects, test)
     for _, f in ipairs({ { "GER", "German" }, { "SOV", "Soviet" } }) do
         local fm = sub(spawn, f[2])
         local key = f[1]
-        fm:addOption("Soldier", nil, function() spawnUnit(key, x, y, z, "soldier", playerNum) end)
-        fm:addOption("Fire team (4)", nil, function() spawnUnit(key, x, y, z, "team", playerNum) end)
+        -- (Units spawned here are outside any chain of command. A company's platoons are spawned
+        -- by right-clicking its captain.)
         fm:addOption("Squad (10)", nil, function() spawnUnit(key, x, y, z, "squad", playerNum) end)
         fm:addOption("Machine-gun squad (10, " .. (key == "GER" and "2 MG34s" or "2 DP-27s") .. ")", nil,
             function() spawnUnit(key, x, y, z, "mg", playerNum) end)
-        fm:addOption("Platoon (43: HQ + 4 rifle squads)", nil, function() spawnUnit(key, x, y, z, "platoon", playerNum) end)
         fm:addOption("Platoon (43: HQ + 3 rifle squads + MG squad)", nil, function() spawnUnit(key, x, y, z, "platoonMG", playerNum) end)
-        fm:addOption("Company HQ (10: Capt., 1stSgt., XO, radio, surgeon, security team - takes the nearest 3 platoons)", nil,
+        fm:addOption("Company HQ (10: Capt., 1stSgt., XO, radio, surgeon, security team)", nil,
             function() spawnUnit(key, x, y, z, "companyHQ", playerNum) end)
     end
-    spawn:addOption("Civilian", nil, function() create("CIV", x, y, z) end)
 
     -- Orders: pick any unit in the game (nearest the click first), then what it does here.
     local building = LF.Building.idAt(x, y, z) ~= nil
@@ -569,14 +567,9 @@ local function onMenu(playerNum, context, worldObjects, test)
                     sm:addOption("Offensive", nil, function() setStanceOf(u, x, y, z, "offensive") end)
                     sm:addOption(building and "Defensive - hold this building" or "Defensive - all-round, where it is",
                         nil, function() setStanceOf(u, x, y, z, "defensive") end)
-                    local pm = sub(um, "Patrol here")
-                    pm:addOption("Sergeant's choice of formation", nil, function() patrolOf(u, x, y, z, "auto") end)
-                    pm:addOption("Ranger file", nil, function() patrolOf(u, x, y, z, "file") end)
-                    pm:addOption("Tactical column", nil, function() patrolOf(u, x, y, z, "column") end)
-                    pm:addOption("Wedge", nil, function() patrolOf(u, x, y, z, "wedge") end)
+                    um:addOption("Patrol here", nil, function() patrolOf(u, x, y, z, "auto") end)
                     um:addOption(building and "Take this building (objective)" or "Take this spot (objective)", nil, function() takeOf(u, x, y, z) end)
                     um:addOption(building and "Hold this building (objective)" or "Hold this spot (objective)", nil, function() holdOf(u, x, y, z) end)
-                    if building then um:addOption("Clear this building (Alpha)", nil, function() clearOf(u, x, y, z) end) end
                     -- Any objective, wherever it is (no need to be near it).
                     local objs = {}
                     for _, o in pairs(LF.Objective.all()) do objs[#objs + 1] = o end
@@ -603,26 +596,10 @@ local function onMenu(playerNum, context, worldObjects, test)
     end)
     if not any then orders:addOption("(no units yet - spawn some)") end
 
-    main:addOption("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
-        LF.Tactics.autoStance = not LF.Tactics.autoStance
-        LF.log("DEBUG automatic stance " .. (LF.Tactics.autoStance and "on" or "off"))
-        LF.say("Sergeants choose their stance: " .. (LF.Tactics.autoStance and "ON" or "OFF"))
-    end)
 
     -- Tools.
     LF.guard("menu: tools", function()
     local tools = sub(main, "Tools")
-    for _, m in ipairs({
-        { "Move nearest here", function(k) moveNearest(k, x, y, z) end },
-        { "Kill nearest", function(k) killNearest(k, x, y) end },
-        { "Delete nearest", function(k) deleteNearest(k, x, y) end },
-    }) do
-        local typeMenu = sub(tools, m[1])
-        for _, t in ipairs(TYPES) do
-            local fn, key = m[2], t.key
-            typeMenu:addOption(t.label, nil, function() fn(key) end)
-        end
-    end
     if LF.Map and LF.Map.CFG then
         local on = LF.Map.CFG.trackers
         tools:addOption("Unit trackers on the map: " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
@@ -662,14 +639,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         tools:addOption("LF bridge: " .. (st.alive and ("running - language model " .. (words[st.llm] or st.llm))
             or "not running - soldiers answer in Living Front's own words"))
     end
-    tools:addOption("Platoon report (to the log)", nil, function()
-        for _, p in pairs(LF.Units.all()) do
-            if p.kind == "platoon" then LF.log("PLATOON REPORT " .. LF.Platoon.describe(p)) end
-        end
-        LF.Units.report()
-    end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
-    tools:addOption("Unit report (to the log)", nil, function() LF.Units.report(); LF.Brain.report() end)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)
     end)

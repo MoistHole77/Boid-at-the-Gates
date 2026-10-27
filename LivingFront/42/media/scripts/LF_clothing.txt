@@ -72,4 +72,93 @@ module Base
         WindResistance = 0.1,
     }
 
+
+    item LF_LeatherCoat_Black
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketBlack,
+        BiteDefense = 20,
+        BloodLocation = Jacket,
+        BodyLocation = base:jacket,
+        ClothingItem = LF_LeatherCoat_Black,
+        CombatSpeedModifier = 0.97,
+        FabricType = Leather,
+        Insulation = 0.4,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.4,
+        WindResistance = 0.6,
+        WorldStaticModel = JacketCoat_Ground,
+        Tags = base:ripclothingleather,
+    }
+
+    item LF_LeatherCoat_Grey
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketBlack,
+        BiteDefense = 20,
+        BloodLocation = Jacket,
+        BodyLocation = base:jacket,
+        ClothingItem = LF_LeatherCoat_Grey,
+        CombatSpeedModifier = 0.97,
+        FabricType = Leather,
+        Insulation = 0.4,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.4,
+        WindResistance = 0.6,
+        WorldStaticModel = JacketCoat_Ground,
+        Tags = base:ripclothingleather,
+    }
+
+    item LF_LeatherCoat_Brown
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketLeatherBrown2,
+        BiteDefense = 20,
+        BloodLocation = Jacket,
+        BodyLocation = base:jacket,
+        ClothingItem = LF_LeatherCoat_Brown,
+        CombatSpeedModifier = 0.97,
+        FabricType = Leather,
+        Insulation = 0.4,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.4,
+        WindResistance = 0.6,
+        WorldStaticModel = JacketCoat_Ground,
+        Tags = base:ripclothingleather,
+    }
+
+    item LF_LeatherCoat_Tan
+    {
+        DisplayCategory = Clothing,
+        ItemType = base:clothing,
+        Weight = 2.0,
+        Icon = JacketLeatherBrown2,
+        BiteDefense = 20,
+        BloodLocation = Jacket,
+        BodyLocation = base:jacket,
+        ClothingItem = LF_LeatherCoat_Tan,
+        CombatSpeedModifier = 0.97,
+        FabricType = Leather,
+        Insulation = 0.4,
+        NeckProtectionModifier = 0.5,
+        RunSpeedModifier = 0.95,
+        ScratchDefense = 40,
+        WaterResistance = 0.4,
+        WindResistance = 0.6,
+        WorldStaticModel = JacketCoat_Ground,
+        Tags = base:ripclothingleather,
+    }
+
 }

@@ -48,7 +48,12 @@ local function watch()
     end
 end
 
-Events.OnTick.Add(function() LF.guard("player watch", watch) end)
+-- (Every 10 ticks: whether the player is in the cell's object list is a walk through that whole
+-- list - thousands of entries in a busy cell - and a sixth of a second is soon enough.)
+Events.OnTick.Add(function()
+    if LF.tick % 10 ~= 4 then return end
+    LF.guard("player watch", watch)
+end)
 local function keepShown(p)
     if not p:isInvisible() and not p:isGhostMode() and (p:getAlpha(0) < 0.99 or p:getTargetAlpha(0) < 0.99) then
         p:setAlpha(0, 1)
