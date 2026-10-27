@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.69.2"
+LF.VERSION = "0.70"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -91,20 +91,33 @@ function LF.guard(label, fn, ...)
     return a, b, c
 end
 
--- One shared game clock (ticks since load) for every module.
-LF.tick = 0
+-- The clocks (0.70: every AI timer runs on simulated time, not frames).
+--   LF.simTime  - simulated seconds: real time scaled by the game speed (1x, 5x, 20x, 40x),
+--                 stopped while paused. What the off-screen war is timed by.
+--   LF.tick     - simulated ticks, 60 to a simulated second (= one per frame at 60 fps and 1x,
+--                 as before). Up to 0.69 it counted frames, so at 16 fps a soldier thought every
+--                 1.25 s instead of every third of a second, and at 40x the war outran the men.
+--                 A frame can now move it on several ticks: never test "LF.tick % n == k" (it
+--                 misses), test LF.due(n, k) - did the clock pass a multiple of n (offset k)?
+--   LF.prevTick - LF.tick on the frame before (LF.dTicks() = how far it moved this frame).
+--   LF.frame    - frames since load: for the screen and the bridge (prompts, polling, text
+--                 easing), which go by real time and run while paused.
+LF.tick, LF.prevTick, LF.frame = 0, 0, 0
 function LF.now()
     return LF.tick
 end
-Events.OnTick.Add(function() LF.tick = LF.tick + 1 end)
+function LF.due(n, k)
+    k = k or 0
+    return math.floor((LF.tick - k) / n) ~= math.floor((LF.prevTick - k) / n)
+end
+function LF.dTicks() return LF.tick - LF.prevTick end
 
--- Simulated seconds: real time scaled by the game speed (1x, 5x, 20x, 40x), stopped while
--- paused. What the off-screen war is timed by - a squad walking 0.75 tiles a second walks that
--- many tiles per simulated second whether you can see it or not.
 LF.simTime = 0
 local SPEEDS = { [0] = 0, [1] = 1, [2] = 5, [3] = 20, [4] = 40 }   -- (0: paused - the map can do that)
 local lastMs = nil
 Events.OnTick.Add(function()
+    LF.frame = LF.frame + 1
+    LF.prevTick = LF.tick
     local now = getTimestampMs and getTimestampMs() or nil
     if not now then return end
     local dt = lastMs and (now - lastMs) / 1000 or 0
@@ -114,7 +127,24 @@ Events.OnTick.Add(function()
     if isGamePaused and isGamePaused() then return end
     local sp = getGameSpeed and getGameSpeed() or 1
     LF.simTime = LF.simTime + dt * (SPEEDS[sp] or 1)
+    LF.tick = math.floor(LF.simTime * 60)
 end)
+
+-- ---- timing the mod's own work (LF_Perf reports it) ---------------------------------------------
+-- Every per-frame handler of the mod is registered through LF.on, which times it under its
+-- module's name. (Up to 0.69 only four sections were timed; 29 modules ran untimed.)
+LF.perfMs = {}              -- label -> milliseconds this window (LF_Perf reads and clears it)
+function LF.on(event, label, fn)
+    local ev = Events[event]
+    if not ev then LF.log("no event " .. tostring(event) .. " for " .. tostring(label)); return end
+    local acc = LF.perfMs
+    ev.Add(function(a, b, c, d)
+        local t0 = getTimestampMs()
+        fn(a, b, c, d)
+        acc[label] = (acc[label] or 0) + (getTimestampMs() - t0)
+    end)
+end
+function LF.onTick(label, fn) LF.on("OnTick", label, fn) end
 
 -- Speech bubble over the real player, for debug feedback.
 function LF.say(text)
@@ -170,8 +200,8 @@ local function postureHeight(body)
     return 135
 end
 function LF.headHeight(body)
-    if headTick[body] == LF.tick and headNow[body] then return headNow[body] end
-    headTick[body] = LF.tick
+    if headTick[body] == LF.frame and headNow[body] then return headNow[body] end
+    headTick[body] = LF.frame
     local ok, target = pcall(postureHeight, body)
     if not ok or not target then target = 135 end
     local cur = headNow[body] or target
@@ -181,7 +211,7 @@ function LF.headHeight(body)
     return cur
 end
 Events.OnTick.Add(function()
-    if (LF.tick or 0) % 600 ~= 7 then return end
+    if (LF.frame or 0) % 600 ~= 7 then return end
     for b in pairs(headNow) do
         local ok, dead = pcall(function() return b:isDead() or not b:getCurrentSquare() end)
         if not ok or dead then headNow[b] = nil; headTick[b] = nil end

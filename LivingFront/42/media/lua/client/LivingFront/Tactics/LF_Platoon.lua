@@ -1361,8 +1361,8 @@ local function updatePlatoon(p)
     if p.mission and p.mission.kind ~= "withdraw" then updateWithdrawals(p) end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.updateTicks ~= 7 then return end
+LF.on("OnTick", "Platoon", function()
+    if not LF.due(CFG.updateTicks, 7) then return end
     for _, u in pairs(LF.Units.all()) do
         if u.kind == "platoon" then LF.guard("platoon", updatePlatoon, u) end
     end

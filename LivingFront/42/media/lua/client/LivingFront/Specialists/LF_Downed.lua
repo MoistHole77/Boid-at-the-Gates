@@ -293,7 +293,7 @@ local function step(J)
     end
 end
 
-Events.OnTick.Add(function()
+LF.on("OnTick", "Downed", function()
     if jobCount == 0 then return end
     for i = #jobs, 1, -1 do
         local J = jobs[i]

@@ -207,7 +207,7 @@ local function drawShouts()
     end
 end
 
-Events.OnPostUIDraw.Add(function() LF.guard("draw shouts", drawShouts) end)
+LF.on("OnPostUIDraw", "Tactics", function() LF.guard("draw shouts", drawShouts) end)
 
 -- ---- helpers --------------------------------------------------------------------------------
 

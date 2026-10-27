@@ -194,8 +194,8 @@ local function allocate(c)
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % 300 ~= 141 then return end
+LF.on("OnTick", "XO", function()
+    if not LF.due(300, 141) then return end
     for _, c in pairs(LF.Units.all()) do
         if c.kind == "company" and LF.Company.hq(c) then
             local S = state(c)

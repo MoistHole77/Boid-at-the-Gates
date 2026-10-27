@@ -249,8 +249,8 @@ local function update()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.updateTicks ~= 13 then return end
+LF.on("OnTick", "Radio", function()
+    if not LF.due(CFG.updateTicks, 13) then return end
     LF.guard("radio", update)
 end)
 
@@ -290,4 +290,4 @@ local function draw()
         y = y + 4
     end
 end
-Events.OnPostUIDraw.Add(function() LF.guard("radio draw", draw) end)
+LF.on("OnPostUIDraw", "Radio", function() LF.guard("radio draw", draw) end)

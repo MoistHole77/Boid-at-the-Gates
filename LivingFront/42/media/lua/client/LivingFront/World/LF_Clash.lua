@@ -362,8 +362,8 @@ local function update()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.updateTicks ~= 17 then return end
+LF.on("OnTick", "Clash", function()
+    if not LF.due(CFG.updateTicks, 17) then return end
     LF.guard("clash", update)
 end)
 Events.OnInitGlobalModData.Add(function() lastSim = nil end)

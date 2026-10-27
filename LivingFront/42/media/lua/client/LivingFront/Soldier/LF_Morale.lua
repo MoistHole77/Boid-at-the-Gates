@@ -171,8 +171,8 @@ local function update()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.updateTicks == 0 then LF.guard("morale", update) end
+LF.on("OnTick", "Morale", function()
+    if LF.due(CFG.updateTicks, 0) then LF.guard("morale", update) end
 end)
 
 -- ---- effects ---------------------------------------------------------------------------------

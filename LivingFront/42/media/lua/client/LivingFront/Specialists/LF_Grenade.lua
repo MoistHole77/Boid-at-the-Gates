@@ -178,7 +178,7 @@ local function explode(g)
         g.engine and (g.engineBang and " (where the game's throw physics took it)" or " (the game's throw never landed - at the aimed point)") or ""))
 end
 
-Events.OnTick.Add(function()
+LF.on("OnTick", "Grenade", function()
     if pendingCount > 0 then
         for i = #pending, 1, -1 do
             local g = pending[i]

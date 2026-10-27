@@ -172,7 +172,7 @@ function LF_HoldAimAction:start()
     self.character:faceLocation(self.point.x, self.point.y)
 end
 function LF_HoldAimAction:update()
-    if LF.tick % 30 == 0 then self.character:faceLocation(self.point.x, self.point.y) end
+    if LF.due(30, 0) then self.character:faceLocation(self.point.x, self.point.y) end
     if self.untilTick and LF.tick >= self.untilTick then self:forceComplete() end
 end
 function LF_HoldAimAction:stop() ISBaseTimedAction.stop(self) end

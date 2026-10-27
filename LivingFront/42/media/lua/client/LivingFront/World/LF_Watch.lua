@@ -50,8 +50,8 @@ end
 
 -- (Every 10 ticks: whether the player is in the cell's object list is a walk through that whole
 -- list - thousands of entries in a busy cell - and a sixth of a second is soon enough.)
-Events.OnTick.Add(function()
-    if LF.tick % 10 ~= 4 then return end
+LF.on("OnTick", "Watch", function()
+    if LF.frame % 10 ~= 4 then return end
     LF.guard("player watch", watch)
 end)
 local function keepShown(p)
@@ -61,6 +61,6 @@ local function keepShown(p)
     end
 end
 
-Events.OnPlayerUpdate.Add(function(p)
+LF.on("OnPlayerUpdate", "Watch", function(p)
     if p == getPlayer() then LF.guard("player shown", keepShown, p) end
 end)

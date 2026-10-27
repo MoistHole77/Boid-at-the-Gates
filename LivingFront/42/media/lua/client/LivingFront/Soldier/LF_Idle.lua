@@ -93,7 +93,7 @@ function LF_IdleAction:start()
 end
 
 function LF_IdleAction:update()
-    if self.keep and LF.tick % 10 == 0 and not self.keep(self.character) then self:forceStop() end
+    if self.keep and LF.due(10, 0) and not self.keep(self.character) then self:forceStop() end
 end
 
 local function rearm(self)

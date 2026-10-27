@@ -409,6 +409,96 @@ local function objectiveAt(x, y, z)
     return LF.Objective.create(x, y, z)
 end
 
+-- ---- the stress test (0.70) -----------------------------------------------------------------------
+-- The same fight every time, so each release is measured on it: a German platoon (3 rifle squads
+-- and an MG squad) holds the building you right-clicked, a Soviet platoon spawned 70 tiles east
+-- of it is ordered to take it. For 2 minutes of real time every PERF window is collected; then a
+-- STRESS summary goes to the log: average and worst frame, the mod's share, the game's share, the
+-- costliest modules, the most bodies. Stand where you can see the building.
+
+local stress = nil
+local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
+
+local function stressTest(x, y, z)
+    local obj = objectiveAt(x, y, z)
+    if not obj then LF.say("Right-click on a building for the stress test"); return end
+    if not (LF.Config.logPerf) then LF.Perf.toggle() end
+    local ger = LF.Platoon.create("GER", obj.x + 0.5, obj.y + 0.5, obj.z or 0, 1, 0, true)
+    local sov = LF.Platoon.create("SOV", obj.x + 70.5, obj.y + 0.5, obj.z or 0, -1, 0, true)
+    local okH, whyH = LF.Platoon.hold(ger, obj)
+    local okT, whyT = LF.Platoon.take(sov, obj)
+    stress = { started = getTimestampMs(), windows = {}, seen = LF.Perf.last(), obj = obj.name }
+    LF.log(string.format("STRESS start at %s (%d,%d): %s holds it (%s), %s attacks from 70 tiles east (%s); version %s",
+        obj.name, math.floor(obj.x), math.floor(obj.y), ger.name, okH and "ok" or tostring(whyH), sov.name,
+        okT and "ok" or tostring(whyT), tostring(LF.VERSION)))
+    LF.say("Stress test: " .. ger.name .. " holds " .. obj.name .. ", " .. sov.name .. " attacks - summary in the log in 2 minutes")
+end
+
+local function stressSummary()
+    local W = stress.windows
+    local n = #W
+    if n == 0 then return end
+    local f, m, r, fps, worst, bodies = 0, 0, 0, 0, 0, 0
+    local mods = {}
+    for _, w in ipairs(W) do
+        f, m, r, fps = f + w.frame, m + w.mod, r + w.rest, fps + w.fps
+        worst = math.max(worst, w.frame)
+        bodies = math.max(bodies, w.bodies)
+        for _, part in ipairs(w.top) do
+            local name, v = part:match("^(.-)=([%d%.]+)$")
+            if name then mods[name] = (mods[name] or 0) + tonumber(v) end
+        end
+    end
+    local list = {}
+    for name, v in pairs(mods) do list[#list + 1] = { name = name, v = v / n } end
+    table.sort(list, function(a, b) return a.v > b.v end)
+    local top = {}
+    for i, e in ipairs(list) do if i <= 8 then top[#top + 1] = e.name .. "=" .. string.format("%.2f", e.v) end end
+    LF.log(string.format("STRESS summary (%s, version %s, %d windows): fps %.1f, frame %.1f ms (worst %.1f), mod %.2f ms (%.0f%%), game %.1f ms, most bodies %d | %s",
+        stress.obj, tostring(LF.VERSION), n, fps / n, f / n, worst, m / n, f > 0 and m / f * 100 or 0, r / n, bodies, table.concat(top, " ")))
+    LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
+end
+
+LF.onTick("Debug", function()
+    if not stress or LF.frame % 30 ~= 0 then return end
+    local w = LF.Perf.last()
+    if w and w ~= stress.seen then
+        stress.seen = w
+        stress.windows[#stress.windows + 1] = w
+        if #stress.windows >= STRESS_WINDOWS then
+            LF.guard("stress summary", stressSummary)
+            stress = nil
+        end
+    end
+end)
+
+-- ---- you, while testing: god mode, and the soldiers leave you alone -------------------------------
+-- On by default while the mod is in debug (Tools to turn it off). Soldiers don't pick you as a
+-- target (when fire at you comes, from 0.72, it is skipped), and nothing can kill you.
+LF.Debug = LF.Debug or {}
+function LF.Debug.playerSafe()
+    local d = LF.Records.data()
+    if d.debugPlayerSafe == nil then return true end
+    return d.debugPlayerSafe
+end
+LF.onTick("Debug", function()
+    if LF.frame % 60 ~= 13 then return end
+    local p = getPlayer()
+    if not p or p:isDead() then return end
+    local on = LF.Debug.playerSafe()
+    local okG, god = pcall(function() return p:isGodMod() end)
+    if okG and god ~= on then
+        -- (Forced, as for the medic's critical men: the plain call needs a capability the game may
+        -- not grant outside its own debug mode.)
+        pcall(function() p:setGodMod(on, true) end)
+        local _, now = pcall(function() return p:isGodMod() end)
+        if now ~= on and not LF.Debug.godWarned then
+            LF.Debug.godWarned = true
+            LF.log("DEBUG couldn't set god mode on the player (" .. tostring(on) .. ")")
+        end
+    end
+end)
+
 local function holdObj(u, obj)
     -- Far away: patrol there first, then hold it.
     local ux, uy = unitPos(u)
@@ -677,6 +767,15 @@ local function onMenu(playerNum, context, worldObjects, test)
                 or "No companies")
         end)
     end
+    do
+        local safe = LF.Debug.playerSafe()
+        tools:addOption("You: god mode, ignored by soldiers: " .. (safe and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
+            LF.Records.data().debugPlayerSafe = not LF.Debug.playerSafe()
+            LF.say("God mode, ignored by soldiers: " .. (LF.Debug.playerSafe() and "ON" or "OFF"))
+        end)
+    end
+    tools:addOption(stress and "Stress test running - summary in the log when done" or "Stress test here (right-click a building): a German platoon holds it, a Soviet platoon attacks",
+        nil, function() if not stress then stressTest(x, y, z) end end)
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)

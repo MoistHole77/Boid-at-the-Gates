@@ -239,7 +239,7 @@ function LF_MGSetupAction:start()
     if self.gun then self:setOverrideHandModels(self.gun, nil) end
 end
 function LF_MGSetupAction:update()
-    if self.point and LF.tick % 20 == 0 then LF.Combat.readyToFire(self.character, self.point) end
+    if self.point and LF.due(20, 0) then LF.Combat.readyToFire(self.character, self.point) end
 end
 function LF_MGSetupAction:stop() ISBaseTimedAction.stop(self) end
 function LF_MGSetupAction:perform()
@@ -976,7 +976,7 @@ end
 -- ---- upkeep --------------------------------------------------------------------------------------
 
 local function onTick()
-    if LF.tick % 30 ~= 0 then return end
+    if not LF.due(30, 0) then return end
     for tid, g in pairs(guns) do
         local team = LF.Units.get(tid)
         if not team then
@@ -996,7 +996,7 @@ local function onTick()
         end
     end
 end
-Events.OnTick.Add(function() LF.guard("mg tick", onTick) end)
+LF.on("OnTick", "MG", function() LF.guard("mg tick", onTick) end)
 
 -- Every gun team's state, to the log (debug).
 function LF.MG.report()

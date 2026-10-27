@@ -52,4 +52,4 @@ local function onPlayerUpdate(body)
     if body:isSneaking() ~= target then body:setSneaking(target) end
 end
 
-Events.OnPlayerUpdate.Add(function(body) LF.guard("posture", onPlayerUpdate, body) end)
+LF.on("OnPlayerUpdate", "Posture", function(body) LF.guard("posture", onPlayerUpdate, body) end)

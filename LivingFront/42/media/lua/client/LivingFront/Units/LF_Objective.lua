@@ -718,7 +718,7 @@ local function updateHolder(obj)
 end
 
 local function onTick()
-    if LF.tick % CFG.updateTicks ~= 0 then return end
+    if not LF.due(CFG.updateTicks, 0) then return end
     for _, squad in pairs(LF.Units.all()) do
         -- A newly spawned unit given a "take" order: it sets off once its men have bodies.
         if squad.kind == "squad" and squad.pendingTake then
@@ -745,11 +745,11 @@ local function onTick()
         if t and not obj then squad.objTask = nil
         elseif t and t.kind == "take" then LF.guard("objective task", updateTake, squad, obj) end
     end
-    if LF.tick % 120 == 0 then
+    if LF.due(120, 0) then
         for _, obj in pairs(LF.Objective.all()) do LF.guard("objective holder", updateHolder, obj) end
     end
 end
-Events.OnTick.Add(onTick)
+LF.on("OnTick", "Objective", onTick)
 Events.OnInitGlobalModData.Add(function() aimCache = {} end)
 
 -- ---- labels ---------------------------------------------------------------------------------
@@ -770,4 +770,4 @@ local function drawLabels()
         end
     end
 end
-Events.OnPostUIDraw.Add(function() LF.guard("draw objectives", drawLabels) end)
+LF.on("OnPostUIDraw", "Objective", function() LF.guard("draw objectives", drawLabels) end)

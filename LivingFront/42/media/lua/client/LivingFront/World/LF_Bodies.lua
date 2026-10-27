@@ -217,7 +217,7 @@ local function managerPass()
 end
 
 local function onTick()
-    if LF.tick % LF.Config.managerInterval == 0 then
+    if LF.due(LF.Config.managerInterval, 0) then
         local t0 = LF.Perf.start()
         LF.guard("managerPass", managerPass)
         LF.Perf.stop("manager", t0)
@@ -250,7 +250,7 @@ local function onSave()
     LF.Bodies.syncAll()
 end
 
-Events.OnTick.Add(onTick)
+LF.on("OnTick", "Bodies", onTick)
 Events.EveryTenMinutes.Add(function() LF.Bodies.syncAll() end)
 if Events.OnSave then Events.OnSave.Add(onSave) else LF.log("OnSave event not available") end
 if Events.RenderOpaqueObjectsInWorld then

@@ -200,9 +200,9 @@ end
 
 -- A body that went away (despawned, dead) leaves no rifle lying about for ever: a dead man's stays
 -- where it is (it's his), a despawned man's is picked up with him.
-Events.OnTick.Add(function()
-    if LF.tick % 120 == 61 then LF.guard("sweep rifles", sweep) end
-    if LF.tick % 60 ~= 23 then return end
+LF.on("OnTick", "Combat", function()
+    if LF.due(120, 61) then LF.guard("sweep rifles", sweep) end
+    if not LF.due(60, 23) then return end
     for b, g in pairs(grounded) do
         local id = b:getModData().LF_id
         if b:isDead() then

@@ -1318,12 +1318,12 @@ local function act(id, body, rec, m)
         -- Watching his quarter: down in cover, facing out.
         if m.cover and isAt(body, m.cover) and not standing then hunkerDown(body) end
         local p = m.point
-        if p and LF.tick % 40 == 0 and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
+        if p and LF.due(40, 0) and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
         if m.fighter then topUp(body, m, false, rec) end
     elseif m.state == "assist" then
         -- Down beside the gun, watching what it fires at.
         if m.cover and isAt(body, m.cover) then hunkerDown(body) end
-        if LF.tick % 30 == 0 and not body:isPerformingAnAction() and LF.MG then
+        if LF.due(30, 0) and not body:isPerformingAnAction() and LF.MG then
             local ax, ay = LF.MG.aimOf(rec)
             if ax then body:faceLocation(ax, ay) end
         end
@@ -1332,7 +1332,7 @@ local function act(id, body, rec, m)
         if m.fileThere and not body:isPerformingAnAction() then
             if m.fileGait ~= "aim" and m.fileGait ~= "march" and m.fileGait ~= "wait" then hunkerDown(body) end
             local f = m.fileFace
-            if f and LF.tick % 20 == 0 then body:faceLocation(f.x, f.y) end
+            if f and LF.due(20, 0) then body:faceLocation(f.x, f.y) end
         end
     elseif m.state == "down" then
         -- Wounded in a defence: stays down where he is, bandages himself, fires at what he sees.
@@ -1448,7 +1448,7 @@ local function stepNpc(id, body, rec)
     -- (0.52: Cpl. Kozlov, Pvt. Smirnov). He's watched by the state itself, not just the flag, and
     -- let out of it by telling the state machine the animation has finished.
     -- (Stagger and down-too-long: checked every 5 ticks - their limits are 70 ticks and more.)
-    if (LF.tick + id) % 5 == 0 then
+    if LF.due(5, -id) then
     local okB, bumped = pcall(bumpedUp, body)
     local inBump = st == "BumpedState"
     if ((okB and bumped) or inBump) and not (LF.Medic and LF.Medic.busy(id)) then
@@ -1482,7 +1482,7 @@ local function stepNpc(id, body, rec)
         m.downSince = nil
     end
     end
-    if (LF.tick + id) % CFG.thinkTicks == 0 then
+    if LF.due(CFG.thinkTicks, -id) then
         if LF.Combat.health(body) <= 0 then
             m.zeroSince = m.zeroSince or LF.tick
             if LF.tick - m.zeroSince > 120 then
@@ -1515,7 +1515,7 @@ local function onTick()
             LF.guard("brain step", stepNpc, id, body, rec)
         end
     end
-    if LF.tick % CFG.cleanupTicks == 0 then
+    if LF.due(CFG.cleanupTicks, 0) then
         for id in pairs(minds) do
             if not LF.Bodies.get(id) then
                 LF.Cover.release(id)
@@ -1566,11 +1566,11 @@ function LF.Brain.report()
     LF.say("Brain report written to log")
 end
 
-Events.OnTick.Add(onTick)
+LF.on("OnTick", "Brain", onTick)
 
 -- Once a minute: how many scans marching men started (to check patrols scan as they walk).
-Events.OnTick.Add(function()
-    if LF.tick % 3600 ~= 1800 then return end
+LF.on("OnTick", "Brain", function()
+    if not LF.due(3600, 1800) then return end
     local n = LF.Brain.scans or 0
     if n > 0 then LF.log("PATROL " .. n .. " scans started by marching men in the last minute") end
     LF.Brain.scans = 0

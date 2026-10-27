@@ -2,6 +2,7 @@
 -- door), the breach, room by room; holding what's been cleared; a man knocked over inside
 -- dragged out and the team going again.
 
+require "LivingFront/Core/LF_Core"
 require "LivingFront/Tactics/LF_Tactics"
 require "LivingFront/Tactics/LF_Manoeuvre"
 require "LivingFront/Tactics/LF_Defence"
@@ -979,7 +980,7 @@ function LF.Tactics.testKnockBack(x, y)
     LF.say("Knocked over #" .. tostring(best:getModData().LF_id))
 end
 
-Events.OnTick.Add(function()
+LF.on("OnTick", "Clearing", function()
     if casualtyCount == 0 then return end
     local ids = {}
     for id in pairs(casualties) do ids[#ids + 1] = id end

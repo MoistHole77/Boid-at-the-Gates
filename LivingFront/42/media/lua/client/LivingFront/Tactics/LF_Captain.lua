@@ -601,8 +601,8 @@ end
 local lastLook = {}
 Events.OnInitGlobalModData.Add(function() lastLook = {} end)
 
-Events.OnTick.Add(function()
-    if not CFG.on or LF.tick % 60 ~= 29 then return end
+LF.on("OnTick", "Captain", function()
+    if not CFG.on or not LF.due(60, 29) then return end
     for _, c in pairs(LF.Units.all()) do
         if c.kind == "company" then
             local cap = captainOf(c)

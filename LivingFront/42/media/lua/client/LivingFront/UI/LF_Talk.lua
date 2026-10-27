@@ -645,8 +645,8 @@ function LF.Talk.open(id, keyed)
 end
 
 -- He walked off, died, or you walked away: the conversation ends.
-Events.OnTick.Add(function()
-    if LF.tick % 30 ~= 11 then return end
+LF.on("OnTick", "Talk", function()
+    if LF.frame % 30 ~= 11 then return end
     local p = getPlayer()
     for id, w in pairs(open) do
         local rec = LF.Records.get(id)
@@ -714,8 +714,8 @@ local function typing()
     return false
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % 2 ~= 0 then return end
+LF.on("OnTick", "Talk", function()
+    if LF.frame % 2 ~= 0 then return end
     -- (Mid-conversation: no prompt on anyone else.)
     facingId = not anyOpen() and LF.try("talk target", talkTarget) or nil
 end)
@@ -733,7 +733,7 @@ Events.OnKeyPressed.Add(function(key)
     LF.guard("talk key", LF.Talk.open, facingId, true)
 end)
 
-Events.OnPostUIDraw.Add(function()
+LF.on("OnPostUIDraw", "Talk", function()
     if not facingId or open[facingId] then return end
     LF.guard("talk prompt", function()
         -- Over his head, in the font of the game's messages: "[E] Talk", or "[E] Talk to Pvt. Moroz"

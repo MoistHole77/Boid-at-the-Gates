@@ -751,9 +751,9 @@ local function live(list)
     return out
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % 30 ~= 23 then return end
-    local slow = LF.tick % 120 == 83
+LF.on("OnTick", "AidPost", function()
+    if not LF.due(30, 23) then return end
+    local slow = LF.due(120, 83)
     local lists, order = byCompany()
     for _, c in ipairs(order) do
         local list = lists[c.id]

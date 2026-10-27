@@ -142,7 +142,7 @@ end
 -- A retreat whose route leads back toward the enemy (the path goes round an obstacle the wrong
 -- way) is abandoned: better to stay put than to run through the enemy line.
 local function headingIntoEnemy(self)
-    if not (self.awayStart and LF.tick % 10 == 0) then return false end
+    if not (self.awayStart and LF.due(10, 0)) then return false end
     local c = self.character
     return LF.dist(c:getX(), c:getY(), self.awayX, self.awayY) < self.awayStart - 2.5
 end
@@ -150,7 +150,7 @@ end
 function LF_MoveAction:update()
     -- Before the path step, so this frame's movement and animation both see the gait.
     applyGait(self.character, self.gait)
-    if LF.Config.logGait and LF.tick % 60 == 0 then
+    if LF.Config.logGait and LF.due(60, 0) then
         LF.log("GAIT #" .. tostring(self.character:getModData().LF_id) .. " want=" .. self.gait
             .. " running=" .. tostring(self.character:isRunning())
             .. " sprinting=" .. tostring(self.character:isSprinting())
@@ -276,7 +276,7 @@ local function ghost(c)
     ghosts[c] = LF.tick + GHOST_TICKS
 end
 
-Events.OnTick.Add(function()
+LF.on("OnTick", "MoveAction", function()
     if ghostCount == 0 then return end
     for c, untilTick in pairs(ghosts) do
         if LF.tick >= untilTick or c:isDead() then
@@ -297,8 +297,8 @@ local function moving(b)
     local a = q and q.queue and q.queue[1]
     return a ~= nil and (a.Type == "LF_MoveAction" or a.Type == "ISWalkToTimedAction")
 end
-Events.OnTick.Add(function()
-    if LF.tick % 10 ~= 3 then return end
+LF.on("OnTick", "MoveAction", function()
+    if not LF.due(10, 3) then return end
     for _, b in pairs(LF.Bodies.all()) do
         if not b:isDead() and not ghosts[b] then
             local s = not moving(b)
@@ -322,7 +322,7 @@ local function someoneAgainst(c)
 end
 
 function LF_MoveAction.jamCheck(self)
-    if LF.tick % 5 ~= 0 then return end
+    if not LF.due(5, 0) then return end
     local c = self.character
     local tx, ty = self.location:getX() + 0.5, self.location:getY() + 0.5
     local d = LF.dist(c:getX(), c:getY(), tx, ty)
@@ -425,7 +425,7 @@ local function inTheWay(c, dx, dy)
 end
 
 function LF_MoveAction.steer(self)
-    if LF.tick % 6 ~= 0 then return end
+    if not LF.due(6, 0) then return end
     local c = self.character
     local px, py, pz = c:getX(), c:getY(), math.floor(c:getZ())
     if self.side then

@@ -218,7 +218,7 @@ local function checkBody(id, body)
     if rec.aid then
         -- In the aid post's care (on the way, waiting, treated): his buddy or the surgeon keeps
         -- the bleeding stopped; he dies of his wounds only by his clock (or the enemy).
-        if LF.tick % 300 < 60 then stopBleeding(body) end
+        if LF.due(300, 41) then stopBleeding(body) end
         local hp = healthOf(body)
         if hp < CFG.floorAid then pcall(function() for _ = 1, 4 do body:getBodyDamage():AddGeneralHealth(5) end end) end
     end
@@ -361,11 +361,11 @@ local function calls()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % 60 == 41 then
+LF.on("OnTick", "Wounds", function()
+    if LF.due(60, 41) then
         for id, b in pairs(LF.Bodies.all()) do LF.guard("wound check", checkBody, id, b) end
     end
-    if LF.tick % 120 == 77 then
+    if LF.due(120, 77) then
         LF.guard("wound clocks", clocks)
         LF.guard("wound calls", calls)
     end

@@ -88,7 +88,7 @@ local function update()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.updateTicks ~= 41 then return end
+LF.on("OnTick", "Aftermath", function()
+    if not LF.due(CFG.updateTicks, 41) then return end
     LF.guard("aftermath", update)
 end)

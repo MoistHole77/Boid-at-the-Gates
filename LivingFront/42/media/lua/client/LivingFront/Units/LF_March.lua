@@ -653,8 +653,8 @@ end
 
 -- Every half second: the men without bodies walk on; the marches whose commander has no body
 -- here move on by themselves.
-Events.OnTick.Add(function()
-    if LF.tick % 30 ~= 11 then return end
+LF.on("OnTick", "March", function()
+    if not LF.due(30, 11) then return end
     local due = {}
     for sid, M in pairs(store()) do
         if not M.follow and (not M.lead or M.lead == sid) then due[#due + 1] = sid end

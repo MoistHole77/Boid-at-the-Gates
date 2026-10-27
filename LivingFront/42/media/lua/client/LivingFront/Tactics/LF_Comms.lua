@@ -111,7 +111,7 @@ local function deliver()
     end
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.checkTicks ~= 3 then return end
+LF.on("OnTick", "Comms", function()
+    if not LF.due(CFG.checkTicks, 3) then return end
     LF.guard("comms", deliver)
 end)

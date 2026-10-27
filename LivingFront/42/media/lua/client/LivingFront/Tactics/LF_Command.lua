@@ -2,6 +2,7 @@
 -- standby when there's nothing to do, and the squad update that runs it all (LF_Tactics holds the
 -- shared state; LF_Manoeuvre, LF_Defence and LF_Clearing the drills it calls on).
 
+require "LivingFront/Core/LF_Core"
 require "LivingFront/Tactics/LF_Tactics"
 require "LivingFront/Tactics/LF_Manoeuvre"
 require "LivingFront/Tactics/LF_Defence"
@@ -401,13 +402,13 @@ local function updateSquad(squad)
 end
 
 local function onTick()
-    if LF.tick % CFG.updateTicks ~= 0 then return end
+    if not LF.due(CFG.updateTicks, 0) then return end
     for _, u in pairs(LF.Units.all()) do
         if u.kind == "squad" then LF.guard("tactics", updateSquad, u) end
     end
 end
 
-Events.OnTick.Add(onTick)
+LF.on("OnTick", "Command", onTick)
 
 function LF.Tactics.forgetAll()
     for _, t in ipairs({ squads, teams, shouts }) do

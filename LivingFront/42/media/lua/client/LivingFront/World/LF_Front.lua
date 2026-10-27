@@ -440,8 +440,8 @@ function LF.Front.objectiveBelief(side, id)
     return OB and OB[id] or nil
 end
 
-Events.OnTick.Add(function()
-    if LF.tick % CFG.passTicks ~= 151 then return end
+LF.on("OnTick", "Front", function()
+    if not LF.due(CFG.passTicks, 151) then return end
     LF.guard("front", pass)
 end)
 Events.OnInitGlobalModData.Add(function() lastSeq = nil; units = {}; shape.sig = nil end)

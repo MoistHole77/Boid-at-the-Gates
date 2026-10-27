@@ -451,14 +451,14 @@ local function stepCrit(id, c)
     -- Held above death every tick (his bleeding can't take him before the clock does), and kept
     -- down on his back - nothing gets him up or out of it.
     if hp(b) < CFG2.floor + 3 then healTo(b, CFG2.floor + 6) end
-    if LF.tick % 30 == 0 and not busyAs(id) then
+    if LF.due(30, 0) and not busyAs(id) then
         LF.log("CRITICAL #" .. id .. " wasn't lying down - back down")
         LF.Medic.holdDown(id, b)
     end
     -- Being worked on: the clock stops.
     local treating = false
     for _, J in pairs(jobs2) do if J.pid == id and J.phase == "treat" then treating = true end end
-    if treating then c.untilTick = c.untilTick + 1 end
+    if treating then c.untilTick = c.untilTick + LF.dTicks() end
     if LF.tick >= c.untilTick then
         crit[id] = nil
         setBusy(id, nil)
@@ -551,14 +551,14 @@ local function monitor()
     end
 end
 
-Events.OnTick.Add(function()
+LF.on("OnTick", "Medic", function()
     for id, c in pairs(crit) do LF.guard("critical", stepCrit, id, c) end
-    if LF.tick % 10 == 5 then LF.guard("dying check", monitor) end
-    if LF.tick % 30 == 0 then
+    if LF.due(10, 5) then LF.guard("dying check", monitor) end
+    if LF.due(30, 0) then
         for id, s in pairs(stable) do LF.guard("stabilised", stepStable, id, s) end
         for mid, J in pairs(jobs2) do LF.guard("medic job", stepJob, mid, J) end
     end
-    if LF.tick % 30 ~= 15 then return end
+    if not LF.due(30, 15) then return end
     -- Medics without a job look for one.
     for _, squad in pairs(LF.Units.all()) do
         if squad.kind == "squad" and not squad.teamOnly then
