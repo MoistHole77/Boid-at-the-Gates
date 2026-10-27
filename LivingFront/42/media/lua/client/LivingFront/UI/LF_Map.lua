@@ -14,6 +14,7 @@
 
 require "ISUI/Maps/ISWorldMap"
 require "ISUI/Maps/ISMiniMap"
+require "ISUI/ISButton"
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Units/LF_Objective"
 require "LivingFront/Tactics/LF_Platoon"
@@ -31,6 +32,8 @@ local CFG = {
     trackers = true,        -- unit markers on the maps (for following off-screen fights)
     unitLabelZoom = 13.5,   -- unit names and status from this zoom in (world map)
     platoonPicture = false, -- what each lieutenant believes of his squads, beside where they really are
+    revealAll = false,      -- show the whole map, not just where you have been (debug tools)
+    mapRuns = true,         -- the game keeps running while the world map is open (debug tools)
     warView = "truth",      -- the front on the map: "truth", "GER" / "SOV" (what that side believes), "off"
     sectorFill = 0.10,
     frontWidth = 3,
@@ -493,12 +496,71 @@ local function addMapOptions(ctx, wx, wy)
     end
 end
 
+-- ---- the map as a commander's map: the whole of it, the game running, time at your command ----------
+
+local SPEEDS = { { 0, "Pause" }, { 1, "1x" }, { 2, "5x" }, { 3, "20x" }, { 4, "40x" } }
+
+local function setSpeed(n)
+    pcall(function() setGameSpeed(n) end)
+    pcall(function() UIManager.getSpeedControls():SetCurrentGameSpeed(n) end)
+end
+
+local function applyReveal(map)
+    if map and map.setHideUnvisitedAreas then pcall(function() map:setHideUnvisitedAreas(not CFG.revealAll) end) end
+end
+function LF.Map.setRevealAll(on)
+    CFG.revealAll = on
+    if ISWorldMap_instance then applyReveal(ISWorldMap_instance) end
+end
+
+-- (The game pauses while the map is open only if this says so.)
+local shouldPause = ISWorldMap.shouldPause
+function ISWorldMap.shouldPause()
+    if CFG.mapRuns then return false end
+    return shouldPause()
+end
+
+local showMap = ISWorldMap.ShowWorldMap
+function ISWorldMap.ShowWorldMap(...)
+    showMap(...)
+    if CFG.revealAll then applyReveal(ISWorldMap_instance) end
+end
+
+-- Speed buttons along the top of the world map.
+local function speedButtons(map)
+    if map.lfSpeedButtons then return map.lfSpeedButtons end
+    local list = {}
+    local x = 20
+    for _, s in ipairs(SPEEDS) do
+        local n = s[1]
+        local b = ISButton:new(x, 92, 54, 22, s[2], map, function() setSpeed(n) end)
+        b:initialise()
+        b:instantiate()
+        b.lfSpeed = n
+        map:addChild(b)
+        list[#list + 1] = b
+        x = x + 58
+    end
+    map.lfSpeedButtons = list
+    return list
+end
+
+local function updateSpeedButtons(map)
+    local cur = getGameSpeed()
+    for _, b in ipairs(speedButtons(map)) do
+        local on = b.lfSpeed == cur
+        b.backgroundColor = on and { r = 0.25, g = 0.45, b = 0.25, a = 0.9 } or { r = 0, g = 0, b = 0, a = 0.6 }
+        b:bringToTop()
+    end
+end
+
 -- ---- hooks -------------------------------------------------------------------------------------
 
 local worldPrerender = ISWorldMap.prerender
 function ISWorldMap:prerender()
     worldPrerender(self)
     LF.guard("map objectives", drawAll, self, self.mapAPI, false)
+    LF.guard("map speed", updateSpeedButtons, self)
 end
 
 -- (A hovered objective takes the place of the street name under the mouse.)
@@ -531,6 +593,13 @@ if ISMiniMapInner then
     local miniPrerender = ISMiniMapInner.prerender
     function ISMiniMapInner:prerender()
         miniPrerender(self)
+        if CFG.revealAll and self.mapAPI and not self.lfRevealed then
+            self.lfRevealed = true
+            pcall(function() self.mapAPI:setBoolean("HideUnvisited", false) end)
+        elseif not CFG.revealAll and self.lfRevealed then
+            self.lfRevealed = nil
+            pcall(function() self.mapAPI:setBoolean("HideUnvisited", true) end)
+        end
         if self.mapAPI then LF.guard("minimap objectives", drawAll, self, self.mapAPI, true) end
     end
 end

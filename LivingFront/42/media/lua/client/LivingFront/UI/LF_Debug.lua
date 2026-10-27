@@ -608,6 +608,17 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.say("Unit trackers on the map: " .. (LF.Map.CFG.trackers and "ON" or "OFF"))
         end)
     end
+    if LF.Map and LF.Map.CFG then
+        local reveal, runs = LF.Map.CFG.revealAll, LF.Map.CFG.mapRuns
+        tools:addOption("Map: show the whole map: " .. (reveal and "ON (click to hide unvisited)" or "OFF (click to show all)"), nil, function()
+            LF.Map.setRevealAll(not LF.Map.CFG.revealAll)
+            LF.say("Whole map shown: " .. (LF.Map.CFG.revealAll and "ON" or "OFF"))
+        end)
+        tools:addOption("Map: the game keeps running while it's open: " .. (runs and "ON (click to pause instead)" or "OFF (click to keep running)"), nil, function()
+            LF.Map.CFG.mapRuns = not LF.Map.CFG.mapRuns
+            LF.say("Game keeps running with the map open: " .. (LF.Map.CFG.mapRuns and "ON - speed buttons on the map" or "OFF"))
+        end)
+    end
     if LF.Captain then
         local on = LF.Captain.CFG.on
         tools:addOption("Captains command their companies: " .. (on and "ON (click to stop)" or "OFF (click to start)"), nil, function()
