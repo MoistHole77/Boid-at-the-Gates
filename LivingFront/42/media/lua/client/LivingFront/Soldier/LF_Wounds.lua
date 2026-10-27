@@ -13,9 +13,10 @@
 -- itself (LF_Clash). A man whose body is put away and given a new one keeps his grade: the new
 -- body is brought down to match.
 --
--- The squad leader's call, every 2 s for each critical man of his: a buddy goes back with him if
--- the squad is out of contact and keeps CFG.sendQuiet fit men without the buddy - or, in a fight,
--- CFG.sendContact. Otherwise the man waits (and his clock runs).
+-- The squad leader's call, every 2 s for each critical man of his: a buddy goes back with him once
+-- the squad is out of contact and keeps CFG.sendQuiet fit men without the buddy. Nobody is sent
+-- back across a fight (0.69 did: men limped and walked through the middle of it). Until then the
+-- man waits under cover (and his clock runs).
 --
 -- rec.wound = { grade, at, healAt, dieAt } (game hours); rec.wounded = true while serious or
 -- critical (out of the fight, as before). What he is doing about it is rec.aid (LF_AidPost).
@@ -35,7 +36,7 @@ local CFG = {
     dawn = 6,               -- light wounds heal at this hour ...
     nightMin = 6,           -- ... at least this many hours after the wound
     sendQuiet = 2,          -- fit men the squad keeps (besides the buddy) to spare one, out of contact
-    sendContact = 6,        -- ... in a fight
+    floorAid = 15,          -- health a man on his way to (or at) the aid post is kept above
     contactTicks = 1800,    -- an enemy seen this recently (~30 s) means "in contact"
     showSerious = 45,       -- a new body for a seriously wounded man: health brought down to this
     showCritical = 22,      -- ... critically
@@ -120,6 +121,9 @@ end
 
 -- He dies of his wounds.
 function LF.Wounds.die(rec, why)
+    -- (A body dies on the next pass of LF_Bodies: until then nobody sends him anywhere - 0.69
+    -- sent four dead men back to the aid post.)
+    if rec.wound then rec.wound.dead, rec.wound.dieAt = true, nil end
     LF.log("WOUND #" .. rec.id .. " " .. title(rec) .. " DIES of his wounds (" .. (why or "?") .. ")")
     local seen = {}
     if rec.squad then
@@ -163,6 +167,21 @@ local function healthOf(body)
     return LF.Combat.health(body)
 end
 
+local function stopBleeding(body)
+    pcall(function()
+        local parts = body:getBodyDamage():getBodyParts()
+        for i = 0, parts:size() - 1 do
+            local p = parts:get(i)
+            if p:bleeding() then
+                p:setBleeding(false)
+                p:setBleedingTime(0)
+                p:setBandaged(true, 10)
+            end
+        end
+    end)
+end
+LF.Wounds.stopBleeding = stopBleeding
+
 local function bringDown(body, to)
     local hp = healthOf(body)
     if hp <= to + 5 then return end
@@ -188,8 +207,20 @@ local function checkBody(id, body)
     if w and md.LF_woundShown ~= w.grade then
         md.LF_woundShown = w.grade
         md.LF_gradeHold = LF.tick + 600
-        if w.grade ~= "light" then bringDown(body, w.grade == "critical" and CFG.showCritical or CFG.showSerious) end
+        if w.grade ~= "light" then
+            -- (His wounds were dressed where he fell, off-screen: the new body doesn't bleed to
+            -- death in its first minute - up to 0.69.1 men at the aid post died the moment you came.)
+            stopBleeding(body)
+            bringDown(body, w.grade == "critical" and CFG.showCritical or CFG.showSerious)
+        end
         return
+    end
+    if rec.aid then
+        -- In the aid post's care (on the way, waiting, treated): his buddy or the surgeon keeps
+        -- the bleeding stopped; he dies of his wounds only by his clock (or the enemy).
+        if LF.tick % 300 < 60 then stopBleeding(body) end
+        local hp = healthOf(body)
+        if hp < CFG.floorAid then pcall(function() for _ = 1, 4 do body:getBodyDamage():AddGeneralHealth(5) end end) end
     end
     if w and md.LF_gradeHold then
         if LF.tick < md.LF_gradeHold and LF.tick + 1200 > md.LF_gradeHold then
@@ -227,7 +258,7 @@ local function clocks()
             if not GRADE[w.grade] then rec.wound = nil
             elseif w.healAt and h >= w.healAt then
                 LF.Wounds.heal(rec, "a light wound, healed overnight")
-            elseif w.dieAt and h >= w.dieAt and not rec.captured then
+            elseif w.dieAt and h >= w.dieAt and not rec.captured and not w.dead then
                 LF.Wounds.die(rec, w.grade == "critical" and "critical, never reached the surgeon"
                     or "serious, not seen by the surgeon in time")
             end
@@ -283,7 +314,7 @@ local function decideFor(u, c)
         local r = LF.Records.get(rid)
         local w = r and r.wound
         local walker = w and w.grade == "serious" and (u.companyHQ or u.kind == "hq")
-        if w and r.alive and not r.aid and not r.captured and (w.grade == "critical" or walker)
+        if w and not w.dead and r.alive and not r.aid and not r.captured and (w.grade == "critical" or walker)
             and not (LF.Medic and LF.Medic.isCritical and LF.Medic.isCritical(rid)) then
             -- (Just saved by the medic, still on his back or getting up: once he's on his feet.)
             local phase = LF.Medic and LF.Medic.stablePhase and LF.Medic.stablePhase(rid)
@@ -302,18 +333,17 @@ local function decideFor(u, c)
                     for _, mid in ipairs(LF.Units.members(u.id)) do
                         if mid ~= rid and fitMan(LF.Records.get(mid)) then fit = fit + 1 end
                     end
-                    local need = contact and CFG.sendContact or CFG.sendQuiet
-                    local esc = fit - 1 >= need and pickEscort(u, r, cmd) or nil
+                    local esc = not contact and fit - 1 >= CFG.sendQuiet and pickEscort(u, r, cmd) or nil
                     if esc then
-                        LF.AidPost.send(c, r, esc, contact and "in contact, but he can spare one" or "out of contact")
+                        LF.AidPost.send(c, r, esc, "out of contact")
                         if cmd and LF.Bodies.get(cmd) and LF.Tactics then
                             LF.Tactics.shout(cmd, (esc.forename or "You") .. ", get " .. (r.surname or "him")
                                 .. " back to the aid post - go!")
                         end
                     elseif not w.waitLogged then
                         w.waitLogged = true
-                        LF.log(string.format("WOUND %s: %s can't spare a man to take %s back yet (%d fit, %s)", u.name,
-                            cmd and title(LF.Records.get(cmd)) or "nobody", title(r), fit, contact and "in contact" or "out of contact"))
+                        LF.log(string.format("WOUND %s: %s can't send %s back yet (%d fit, %s)", u.name,
+                            cmd and title(LF.Records.get(cmd)) or "the squad", title(r), fit, contact and "in contact" or "too few men"))
                     end
                 end
             end

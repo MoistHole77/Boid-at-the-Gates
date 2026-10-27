@@ -41,7 +41,8 @@ local CFG = {
     supplies = 40,                         -- a new aid post's stock
     maxSupplies = 60,
     kit = 8,                               -- a squad medic's dressings
-    limpPace = 0.45, walkPace = 0.9,       -- tiles a simulated second, off-screen
+    limpPace = 0.75, walkPace = 0.9,       -- tiles a simulated second, off-screen (a critical man
+                                           -- helped along keeps up a walk; on-screen he limps)
     arrive = 6,                            -- tiles from the post: there
     rejoin = 8,                            -- tiles from his squad: back with it
     surgeonWork = 600,                     -- ticks he works on a man before going to the next
@@ -490,15 +491,31 @@ local function stayNear(c, rec, A)
     else A.at = LF.simTime end
 end
 
+-- (Bodies only) an enemy in sight within 25 tiles?
+local function enemyInSight(rec)
+    local b = LF.Bodies.get(rec.id)
+    if not b or b:isDead() or not LF.Sense then return false end
+    local ok, seen = pcall(LF.Sense.look, rec.id, b, rec, 25)
+    return ok and seen ~= nil and #seen > 0
+end
+
 local function walkers(c, list, S)
     local x, y, z = LF.AidPost.anchor(c)
     if not x then return end
     local wi, pi = 0, 0
     local treatN = 0
     for _, rec in ipairs(list) do
-        local A = rec.aid
-        if LF.Bodies.get(rec.id) and not LF.Medic.busyAs(rec.id) then LF.Medic.setBusy(rec.id, "aid") end
-        if A.state == "toAid" then
+        local A = rec.aid or {}
+        if LF.Bodies.get(rec.id) and rec.aid and not LF.Medic.busyAs(rec.id) then LF.Medic.setBusy(rec.id, "aid") end
+        if not rec.aid then
+            -- (let go earlier in this pass)
+        elseif (A.state == "toAid" or A.state == "escort" or A.state == "back") and enemyInSight(rec) then
+            -- Walking back with the enemy in sight: down, and wait for it to pass.
+            local b = LF.Bodies.get(rec.id)
+            if LF.Medic.moving(b) then ISTimedActionQueue.clear(b) end
+            if LF.Posture and not LF.Posture.crouched(b) then LF.Posture.set(b, true) end
+            A.at = LF.simTime
+        elseif A.state == "toAid" then
             if LF.Bodies.get(rec.id) and LF.Medic.busyAs(rec.id) == "lying" then
                 local b = LF.Bodies.get(rec.id)
                 LF.Medic.getUp(rec.id, b, function() if rec.aid then LF.Medic.setBusy(rec.id, "aid") end end)
@@ -575,7 +592,7 @@ local function surgeonAtWork(c, list, S)
     if sb and not sb:isDead() and S then
         for _, rec in ipairs(list) do
             local pb = LF.Bodies.get(rec.id)
-            if rec.aid.state == "treating" and pb and not pb:isDead() and pb:getModData().LF_aidLying then patients[#patients + 1] = rec end
+            if rec.aid and rec.aid.state == "treating" and pb and not pb:isDead() and pb:getModData().LF_aidLying then patients[#patients + 1] = rec end
         end
     end
     local hq = LF.Company.hq(c)
@@ -726,16 +743,24 @@ local function byCompany()
     return out, order
 end
 
+-- (Only the men still in its care: one let go earlier in the same pass - rejoined, died - is
+-- left out. Up to 0.69.1 that was an error, "attempted index: state of non-table".)
+local function live(list)
+    local out = {}
+    for _, r in ipairs(list) do if r.alive and r.aid then out[#out + 1] = r end end
+    return out
+end
+
 Events.OnTick.Add(function()
     if LF.tick % 30 ~= 23 then return end
     local slow = LF.tick % 120 == 83
     local lists, order = byCompany()
     for _, c in ipairs(order) do
         local list = lists[c.id]
-        if slow then LF.guard("aid treat", treat, c, list) end
+        if slow then LF.guard("aid treat", treat, c, live(list)) end
         local S = LF.guard("aid spots", spotsOf, c)
-        LF.guard("aid walkers", walkers, c, list, S)
-        LF.guard("aid surgeon", surgeonAtWork, c, list, S)
+        LF.guard("aid walkers", walkers, c, live(list), S)
+        LF.guard("aid surgeon", surgeonAtWork, c, live(list), S)
     end
 end)
 

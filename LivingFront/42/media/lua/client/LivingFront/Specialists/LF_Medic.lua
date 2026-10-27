@@ -146,7 +146,8 @@ local function medicOf(squadId)
     for _, rid in ipairs(LF.Units.members(squadId)) do
         local r = LF.Records.get(rid)
         if r and r.medic then
-            if r.alive and not crit[rid] and not stable[rid] and (r.kit or 0) > 0 then return r end
+            -- (Not a medic himself out of the fight, or away at the aid post.)
+            if r.alive and not crit[rid] and not stable[rid] and not r.wounded and not r.aid and (r.kit or 0) > 0 then return r end
             return nil
         end
     end

@@ -115,6 +115,10 @@ function LF.Bodies.spawn(rec)
     if (rec.faction ~= "CIV" or rec.armed) and LF.Combat then LF.guard("arm on spawn", LF.Combat.arm, body) end
 
     -- Wounded off-screen (LF_Clash): the wound is on him now.
+    -- (Seriously or critically wounded - LF_Wounds: his grade sets how he is, dressed, not the raw
+    -- wound - which up to 0.69.1 could kill a man outright the moment his body came.)
+    local g = rec.wound and rec.wound.grade
+    if g == "serious" or g == "critical" then rec.offWound = nil end
     if rec.offWound and LF.Combat and LF.Combat.blastWound then
         local w = rec.offWound
         rec.offWound = nil

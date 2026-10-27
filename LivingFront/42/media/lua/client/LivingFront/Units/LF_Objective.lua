@@ -40,6 +40,7 @@ local CFG = {
     clearRange = 35,        -- ... if the squad is within this of it
     updateTicks = 30,
     labelRange = 80,
+    stormStand = 8,         -- storming off-screen, the men close up to this far from its middle (at the walls)
 }
 LF.Objective.CFG = CFG
 
@@ -509,14 +510,29 @@ end
 --              minutes - it storms: the men go in (and the defenders lose most of their cover).
 --              No fit enemy left: the wounded inside are taken prisoner, the men walk in and the
 --              objective is taken.
-local function walkMen(squad, tx, ty, z, speed, t)
+-- spread (tiles): each man to his own place along a line across the way in, not all to one
+-- point (0.69: ten men piled on the objective's middle square, among its defenders).
+local function walkMen(squad, tx, ty, z, speed, t, spread)
     local dt = LF.simTime - (t.walkAt or LF.simTime)
     t.walkAt = LF.simTime
     if dt <= 0 then return 0 end
     local far = 0
-    for _, rid in ipairs(LF.Units.members(squad.id)) do
+    local list = LF.Units.members(squad.id)
+    local ox, oy = 0, 0
+    if spread then
+        local ax, ay = LF.Squad.anchor(squad.id)
+        if ax then
+            local dx, dy = tx - ax, ty - ay
+            local l = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+            ox, oy = -dy / l * spread, dx / l * spread
+        end
+    end
+    local gx, gy = tx, ty
+    for i, rid in ipairs(list) do
         local r = LF.Records.get(rid)
-        if r and r.alive and not LF.Bodies.get(rid) then
+        if r and r.alive and not r.aid and not LF.Bodies.get(rid) then
+            local k = i - (#list + 1) / 2
+            tx, ty = gx + ox * k, gy + oy * k
             local d = LF.dist(r.x, r.y, tx, ty)
             local step = speed * dt
             if d <= step then r.x, r.y = tx + (r.x - tx) * 0.1, ty + (r.y - ty) * 0.1
@@ -588,7 +604,18 @@ local function updateTakeOffscreen(squad, obj)
                 end
             end
             if t.storm then
-                walkMen(squad, obj.x, obj.y, obj.z, 1.0, t)        -- (in at a rush)
+                -- In at a rush - up to the walls on their side, spread out, not into the middle
+                -- of the defenders: if you come, the fight at the house goes on from there with
+                -- bodies (0.69.1 put both squads on the same few squares, in the open).
+                local ax, ay = LF.Squad.anchor(squad.id)
+                local sx, sy = obj.x, obj.y
+                if ax then
+                    local dx, dy = ax - obj.x, ay - obj.y
+                    local l = math.max(0.1, math.sqrt(dx * dx + dy * dy))
+                    local back = math.min(l, CFG.stormStand)
+                    sx, sy = obj.x + dx / l * back, obj.y + dy / l * back
+                end
+                walkMen(squad, sx, sy, obj.z, 1.0, t, 1.5)
             elseif t.rally then
                 walkMen(squad, t.rally.x, t.rally.y, obj.z, 0.5, t)   -- (forward by bounds to the rally point)
             end
