@@ -189,7 +189,7 @@ local function unitPos(u)
                 local x, y = r.x, r.y
                 if b and not b:isDead() then x, y = b:getX(), b:getY() end
                 sx, sy, n = sx + x, sy + y, n + 1
-                if not r.wounded then fit = fit + 1 end
+                if not r.wounded and not r.aid then fit = fit + 1 end
             end
         end
     end
@@ -356,9 +356,37 @@ local function drawPictures(ui, api)
 end
 
 -- Draw every objective on a map UI (world map or minimap), and the unit trackers.
+-- Each company's aid post (LF_AidPost): a red cross by its headquarters; hover for how it stands.
+local function drawAidPosts(ui, api)
+    if not LF.AidPost then return end
+    local side = viewSide()
+    local mx, my = nil, nil
+    if ui:isMouseOver() and not ui:isMouseOverChild() then mx, my = ui:getMouseX(), ui:getMouseY() end
+    local hover = nil
+    for _, c in pairs(LF.Units.all()) do
+        if c.kind == "company" and (not side or c.faction == side) and LF.Company.hq(c) then
+            local x, y = LF.AidPost.anchor(c)
+            if x then
+                local fx, fy = (c.facingX or 1), (c.facingY or 0)
+                local wx, wy = x - fx * 6, y - fy * 6
+                local sx, sy = api:worldToUIX(wx, wy), api:worldToUIY(wx, wy)
+                ui:drawRect(sx - 6, sy - 6, 12, 12, 0.95, 1, 1, 1)
+                ui:drawRect(sx - 1.5, sy - 5, 3, 10, 1, 0.8, 0.05, 0.05)
+                ui:drawRect(sx - 5, sy - 1.5, 10, 3, 1, 0.8, 0.05, 0.05)
+                if mx and math.abs(mx - sx) <= 8 and math.abs(my - sy) <= 8 then hover = { c = c, sx = sx, sy = sy } end
+            end
+        end
+    end
+    if hover then
+        local lines = LF.AidPost.status(hover.c)
+        label(ui, lines, hover.sx, hover.sy, COLORS[hover.c.faction] or COLORS.none)
+    end
+end
+
 local function drawAll(ui, api, mini)
     LF.guard("map front", drawFront, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
+    if CFG.trackers and not mini then LF.guard("map aid posts", drawAidPosts, ui, api) end
     if CFG.platoonPicture and not mini then LF.guard("map pictures", drawPictures, ui, api) end
     local list = {}
     local any = false

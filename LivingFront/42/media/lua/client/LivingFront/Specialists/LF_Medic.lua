@@ -2,7 +2,8 @@
 --
 -- Who: in every full squad, the medic - Bravo's fifth man, behind it - is a private. He carries a
 -- leather satchel of dressings (Bag_Satchel_Leather) and a sub-machine gun instead of a rifle
--- (MP40 / PPSh). His kit holds CFG2.kit dressings; it doesn't refill in a fight.
+-- (MP40 / PPSh). His kit holds CFG2.kit dressings; it doesn't refill in a fight - only when his
+-- squad comes back to the company headquarters (LF_AidPost, from the XO's medical supplies).
 --
 -- Critical, not dead: when a man of a squad whose medic is alive and has dressings left is brought
 -- to death's door (health 10 or less, by a hit or by bleeding) - not by a head shot or the middle
@@ -10,8 +11,9 @@
 -- he goes down critical instead. He lies on his back calling for the medic, and nothing can kill
 -- him until his clock runs out - 60-90 s, 30% longer with a veteran medic (the game's god mode
 -- holds him; the enemy stops shooting at him). Reached in time, he's stabilised: he gets up,
--- limps to cover and tends his wounds there until the fight is over, then rejoins as wounded.
--- Nobody comes: he dies when the clock runs out.
+-- limps to cover and tends his wounds there - critically wounded (LF_Wounds): his squad leader
+-- sends him back to the surgeon with a buddy as soon as he can spare one. Nobody comes: he dies
+-- when the clock runs out. (The medic patches up; only the surgeon heals serious and critical men.)
 --
 -- The medic: every half second he looks for the worst case in his squad within 30 tiles - the
 -- critical first (soonest to die), then badly hurt men still bleeding - and goes to him at a run
@@ -62,6 +64,15 @@ function LF.Medic.isCritical(id) return crit[id] ~= nil end
 function LF.Medic.isStable(id) return stable[id] ~= nil end
 function LF.Medic.critLeft(id) local c = crit[id]; return c and math.max(0, c.untilTick - LF.tick) or nil end
 function LF.Medic.job(id) return jobs2[id] end
+-- Where a man the medic saved is: nil (not one), "rising", "limp" or "rest" (LF_Wounds waits for
+-- him to be on his feet before he is sent back).
+function LF.Medic.stablePhase(id) local s = stable[id]; return s and (s.phase or "down") or nil end
+-- He's going back to the aid post (LF_AidPost): the medic's care of him ends here.
+function LF.Medic.release(id)
+    if not stable[id] then return end
+    stable[id] = nil
+    setBusy(id, nil)
+end
 
 local SMG = { GER = "MP40", SOV = "PPSh" }
 
@@ -175,6 +186,7 @@ function LF.Medic.onHit(body, cause, part, force)
     local id = body:getModData().LF_id
     local rec = id and LF.Records.get(id)
     if not (rec and rec.alive and rec.squad and rec.faction ~= "CIV") then return end
+    if rec.aid then return end      -- (on his way to, or at, the aid post: the surgeon's, not the medic's)
     if hp(body) > CFG2.dyingAt then return end
     if crit[id] then return end
     if stable[id] or rec.critOnce then return end
@@ -291,6 +303,11 @@ local function finishTreat(mid, J)
         setBusy(J.pid, "lying")
         healTo(pb, CFG2.stableFloor + 5)
         mrec.medicSaves = (mrec.medicSaves or 0) + 1
+        -- Saved, but critical: he must get back to the surgeon (LF_Wounds, LF_AidPost).
+        if LF.Wounds then
+            pb:getModData().LF_woundShown = "critical"
+            LF.Wounds.grade(prec, "critical", "saved by " .. LF.Units.title(mrec))
+        end
         LF.log(string.format("MEDIC #%d %s stabilises #%d %s (%d wounds dressed; %d saved; kit %d)", mid,
             LF.Units.title(mrec), J.pid, LF.Units.title(prec), n, mrec.medicSaves, mrec.kit))
         if LF.Tactics then LF.Tactics.shout(mid, "He'll live - keep your head down!") end
@@ -526,7 +543,7 @@ local function monitor()
     for id, b in pairs(LF.Bodies.all()) do
         if not crit[id] and not stable[id] and not b:isDead() then
             local r = LF.Records.get(id)
-            if r and r.alive and not r.critOnce and r.squad and r.faction ~= "CIV" and LF.Combat.health(b) <= CFG2.dyingAt + 5 then
+            if r and r.alive and not r.critOnce and not r.aid and r.squad and r.faction ~= "CIV" and LF.Combat.health(b) <= CFG2.dyingAt + 5 then
                 LF.Medic.onHit(b, "bleeding")
             end
         end

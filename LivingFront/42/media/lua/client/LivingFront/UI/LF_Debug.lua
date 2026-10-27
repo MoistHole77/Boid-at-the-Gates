@@ -657,6 +657,26 @@ local function onMenu(playerNum, context, worldObjects, test)
         tools:addOption("LF bridge: " .. (st.alive and ("running - language model " .. (words[st.llm] or st.llm))
             or "not running - soldiers answer in Living Front's own words"))
     end
+    if LF.Wounds and LF.AidPost then
+        local wm = sub(tools, "Wounds and the aid post")
+        for _, g in ipairs({ "light", "serious", "critical" }) do
+            wm:addOption("Give the nearest soldier a " .. g .. " wound", nil, function() LF.Wounds.test(x, y, g) end)
+        end
+        if LF.XO then wm:addOption("Supply run now (every company)", nil, LF.XO.runNow) end
+        wm:addOption("Company status (aid post, replacements, supplies) - to the log", nil, function()
+            local n = 0
+            for _, c in pairs(LF.Units.all()) do
+                if c.kind == "company" and LF.Company.hq(c) then
+                    n = n + 1
+                    for _, l in ipairs(LF.AidPost.status(c)) do LF.log("STATUS " .. l) end
+                    local xo = LF.XO and LF.XO.of(c)
+                    LF.log("STATUS XO: " .. (xo and LF.Units.title(xo) or "none"))
+                end
+            end
+            LF.say(n > 0 and ("Status of " .. n .. " compan" .. (n == 1 and "y" or "ies") .. " written to the log (hover the red cross on the map too)")
+                or "No companies")
+        end)
+    end
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Delete ALL NPCs", nil, deleteAll)
     tools:addOption("Reset world (clear bodies, blood, debris; refuel vehicles; heal me; 08:00; no fog)", nil, function() resetWorld(playerNum) end)

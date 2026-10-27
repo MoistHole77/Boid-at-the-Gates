@@ -257,7 +257,7 @@ function LF.Platoon.handOver(hq, rec, why)
     local p = LF.Units.get(hq.platoon)
     local team = LF.Units.get(hq.teams[1])
     local function able(r)
-        if not (r and r.alive and not r.wounded) then return false end
+        if not (r and r.alive and not r.wounded and not r.aid) then return false end
         local b = bodyOf(r.id)
         return not b or LF.Combat.health(b) >= LF.Units.woundedHealth
     end
@@ -445,12 +445,12 @@ local function apply(p, o)
         else
             LF.Objective.hold(squad, obj)
         end
-    elseif o.kind == "probe" or o.kind == "rejoin" then
+    elseif o.kind == "probe" or o.kind == "rejoin" or o.kind == "refit" then
         -- A probe: a patrol to a point to look (LF_Captain watches it there and brings it back);
-        -- rejoin: back to its platoon.
+        -- rejoin: back to its platoon; refit: back to the company headquarters (LF_XO).
         clearTask(squad)
         squad.objTask, squad.pendingHold = nil, nil
-        squad.platoonTask = o.kind == "probe" and "probe" or nil
+        squad.platoonTask = (o.kind == "probe" or o.kind == "refit") and o.kind or nil
         local ok, why = LF.March.order(squad, o.x, o.y, o.z or 0, "auto", { noGather = true })
         if not ok and why ~= "already there" then
             LF.log("PLATOON " .. squad.name .. " can't " .. o.kind .. ": " .. tostring(why))
@@ -521,6 +521,7 @@ local function issue(p, o)
 end
 
 LF.Platoon.issue = function(p, o) return issue(p, o) end
+LF.Platoon.apply = function(p, o) return apply(p, o) end
 
 -- ---- lending squads (LF_Captain) -------------------------------------------------------------
 -- A captain can lend a squad to another of his platoons for an assault (it comes under that

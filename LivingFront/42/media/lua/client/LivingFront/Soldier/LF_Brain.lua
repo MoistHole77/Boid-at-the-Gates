@@ -905,6 +905,39 @@ local function decide(id, body, rec, m)
     -- defence, stays down where he is).
     if m.crawl and fighter then hp = math.min(hp, CFG.fleeHealth - 1) end
 
+    -- Seriously or critically wounded (LF_Wounds): out of the fight. He doesn't shoot; with the
+    -- enemy about he gets into cover, otherwise he limps along behind his squad and, when it
+    -- stops, sits down there nursing his wound - until he gets to the surgeon.
+    if fighter and inSquad and LF.Wounds and LF.Wounds.outOfFight(rec) then
+        m.targetId = nil
+        local rx, ry, rz = LF.Squad.rear(rec, CFG.rearDistance)
+        if leader then rx = nil end          -- (nobody fit to take over: he stays where he is)
+        local c = threat or nil
+        if not c and rx then
+            local k = LF.Squad.bestContact(rec.squad, body:getX(), body:getY(), CFG.contactMemory, CFG.sightRange)
+            if k then c = LF.Tactics.point(k.x, k.y, k.z or body:getZ()) end
+        end
+        if c then
+            if m.state ~= "flee" then setState(id, body, rec, m, "flee", "wounded, out of the fight - into cover") end
+            local others = LF.Squad.contactPoints(rec.squad, CFG.contactMemory, 6)
+            if not planHide(id, body, m, c, rx, ry, others) and rx then fallBack(m, body, rx, ry, rz, c) end
+            return
+        end
+        if m.hide then leavePosition(id, body, m) end
+        if rx and LF.dist(body:getX(), body:getY(), rx, ry) > 4 then
+            if m.state ~= "wounded" then setState(id, body, rec, m, "wounded", "wounded - limping after his squad") end
+            if m.rest and LF.Idle then LF.Idle.stop(body, m) end
+            if not isMoving(body) and LF.tick - m.lastPath > 90 then
+                if walkNear(body, rx, ry, rz, 2, "limp") then m.lastPath = LF.tick end
+            end
+            return
+        end
+        if m.state ~= "wounded" then setState(id, body, rec, m, "wounded", "wounded - waiting with his squad") end
+        if isMoving(body) then ISTimedActionQueue.clear(body) end
+        if LF.Idle and LF.Idle.nurse then LF.Idle.nurse(body, m) end
+        return
+    end
+
     -- The slot this soldier is leashed to (none for the squad leader, who sets the pace).
     local ax, ay, az = nil, nil, nil
     if inSquad and not leader then ax, ay, az = LF.Squad.slot(rec) end

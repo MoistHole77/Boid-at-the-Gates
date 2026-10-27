@@ -124,6 +124,9 @@ local function sentence(ev, rec)
     elseif ev.kind == "wounded" then
         if ev.who == rec.id then return "You were wounded" .. tail end
         return manWords(ev.who, rec) .. " was wounded" .. tail
+    elseif ev.kind == "diedOfWounds" then
+        if ev.who == rec.id then return nil end
+        return manWords(ev.who, rec) .. " died of his wounds" .. tail
     elseif ev.kind == "captured" then
         return manWords(ev.who, rec) .. " was taken prisoner" .. tail
     elseif ev.kind == "broke" then
@@ -175,6 +178,7 @@ function LF.Memory.profile(rec)
         unit = u and u.name or "", platoon = p and p.name or "",
         role = rec.hqRole or rec.mgRole or (LF.Units.leads(rec) and "leader") or "rifleman",
         morale = word, wounded = rec.wounded and true or false,
+        wound = LF.Wounds and LF.Wounds.words(rec) or nil,
         kills = svc.kills or 0, lost = svc.lost or 0,
     }
 end

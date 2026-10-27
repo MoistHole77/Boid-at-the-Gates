@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.63.1"
+VERSION = "0.63.2"
 HERE = Path(__file__).resolve().parent
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 CHASM_MODELS = APPDATA / "com.chasm.app" / "data" / "default-user" / "models"
@@ -576,7 +576,9 @@ def character(req: dict) -> str:
         lines.append(f"How he talks: {p.get('speech')}.")
     lines.append(f"His name is {name} - he never gives any other name.")
     state = [f"His morale right now: {s.get('morale', 'steady')}."]
-    if s.get("wounded"):
+    if s.get("wound"):
+        state.append(f"His condition: {s['wound']}." + (" He is in pain." if s.get("wounded") else ""))
+    elif s.get("wounded"):
         state.append("He is wounded and in pain.")
     if s.get("lost"):
         state.append(f"He has lost {s['lost']} comrades.")

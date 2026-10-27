@@ -22,6 +22,7 @@
 --      and squads from other platoons are lent to him until the group has CFG.odds times the
 --      enemy he expects there (a machine-gun squad goes along as support when there is one free).
 --      As many at once as he has lieutenants free and squads to fill them.
+-- (Before all of these: squads that need to go back to the company headquarters go - LF_XO.)
 -- Orders go to the lieutenants by radio (instant) and from them to the squads by voice or runner;
 -- they are heard on the radio net. Every decision is logged with its reasons ("CAPTAIN ...").
 
@@ -82,7 +83,7 @@ local function fitOf(sq)
     local n = 0
     for _, rid in ipairs(LF.Units.members(sq.id)) do
         local r = LF.Records.get(rid)
-        if r and r.alive and not r.wounded and not r.captured then n = n + 1 end
+        if r and r.alive and not r.wounded and not r.captured and not r.aid then n = n + 1 end
     end
     return n
 end
@@ -170,10 +171,12 @@ local function squadsOf(c)
             local p = u.platoon and mine[u.platoon]
             local g = u.garrison and u.garrison.company == c.id
             local pr = u.probe and u.probe.company == c.id
-            if p or g or pr then
+            local rf = u.refit and u.refit.company == c.id
+            if p or g or pr or rf then
                 local state = "free"
                 if pr then state = "probe"
                 elseif g then state = "garrison"
+                elseif rf then state = "refit"
                 elseif p.mission and BUSY[p.mission.kind] and not (p.mission.kind == "take" and p.mission.phase == "taken") then state = "busy"
                 elseif p.move then state = "busy" end
                 out[#out + 1] = { sq = u, p = p, state = state, fit = fitOf(u), mg = isMG(u) }
@@ -338,6 +341,7 @@ local canLead, ownFree            -- (set inside decide: they see its lists)
 local function decide(c, cap)
     endJobs(c, cap)
     updateProbes(c)
+    if LF.XO then LF.XO.updateRefits(c, cap) end
     local side = c.faction
     local all = squadsOf(c)
     local owners = LF.Front.owners(side)
@@ -359,6 +363,14 @@ local function decide(c, cap)
         elseif e.state == "free" and e.fit > 0 and e.p then
             free[#free + 1] = e
         end
+    end
+    -- 0. Back to headquarters, squads that need to (wounded for the surgeon, men waiting for them
+    -- there - LF_XO).
+    if LF.XO then
+        LF.XO.refits(c, cap, all, function(e) takeFrom(free, e) end, function(obj)
+            local _, contested = believed(c, obj)
+            return not contested and enemyNear(c, obj.x, obj.y, CFG.threat) == 0
+        end)
     end
     -- (A probe's report still on its way: wait for it rather than send another.)
     for oid, i in pairs(intelOf(c)) do

@@ -86,7 +86,12 @@ local function plainReply(rec, mems, n, text)
     return LF.Persona.line(rec, n)
 end
 
+local AID_DOING = { toAid = "making his way back to the aid post", escort = "helping a wounded man back to the aid post",
+                    back = "on his way back to his squad", waiting = "waiting for the surgeon", treating = "with the surgeon",
+                    ready = "waiting at headquarters for his squad", pool = "waiting at headquarters for his squad" }
+
 local function doing(rec)
+    if rec.aid and AID_DOING[rec.aid.state] then return AID_DOING[rec.aid.state] end
     local u = rec.squad and LF.Units.get(rec.squad)
     if not u then return "" end
     local t = u.objTask
@@ -370,6 +375,9 @@ end
 
 local function condition(rec, body)
     if not rec.alive then return "dead" end
+    -- Graded wounds and the aid post (LF_Wounds, LF_AidPost): what you can see of how he is.
+    local ww = LF.Wounds and LF.Wounds.words(rec)
+    if ww then return ww end
     if LF.Medic and LF.Medic.busy and LF.Medic.busy(rec.id) and rec.wounded then return "down, being seen to" end
     local h = body and LF.Combat and LF.Combat.health(body) or 100
     if h >= 95 then return rec.wounded and "wounded, patched up" or "unhurt" end
@@ -460,6 +468,14 @@ local BUSY_STATES = { alert = "on the alert", assist = "helping a wounded man", 
 function LF.Talk.busy(rec)
     if not (rec and rec.alive) then return "dead" end
     if rec.captured then return "a prisoner" end
+    -- At the aid post or waiting at headquarters, he has time; on the way there, he hasn't.
+    local A = rec.aid
+    if A then
+        if A.state == "toAid" or A.state == "escort" then return "getting a wounded man back" end
+        if A.state == "back" or (A.state == "pool" and not A.arrived) then return "on the move" end
+        if LF.Medic and LF.Medic.busyAs and LF.Medic.busyAs(rec.id) == "rising" then return "getting up" end
+        return nil
+    end
     if LF.Medic and LF.Medic.busy and LF.Medic.busy(rec.id) then return "busy with the wounded" end
     local st = LF.Brain and LF.Brain.stateOf and LF.Brain.stateOf(rec.id)
     if st and BUSY_STATES[st] then return BUSY_STATES[st] end

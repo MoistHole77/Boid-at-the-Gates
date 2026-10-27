@@ -202,7 +202,7 @@ local function survey()
                     if b and not b:isDead() then x, y = b:getX(), b:getY() end
                     if x and y then
                         sx, sy, n = sx + x, sy + y, n + 1
-                        if not r.wounded then fit = fit + 1 end
+                        if not r.wounded and not r.aid then fit = fit + 1 end
                     end
                 end
             end

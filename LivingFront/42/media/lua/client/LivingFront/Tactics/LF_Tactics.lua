@@ -215,7 +215,7 @@ Events.OnPostUIDraw.Add(function() LF.guard("draw shouts", drawShouts) end)
 -- A soldier without a body (out of range of the player) counts as fit, so a unit that is
 -- only partly near the player doesn't think it has lost half its men.
 local function fit(rec)
-    if not (rec and rec.alive and not rec.wounded) then return false end
+    if not (rec and rec.alive and not rec.wounded and not rec.aid) then return false end
     if LF.Medic and LF.Medic.busy(rec.id) then return false end   -- down on his back, or dragging one
     local body = LF.Bodies.get(rec.id)
     return body == nil or LF.Combat.health(body) >= CFG.fitHealth

@@ -93,7 +93,7 @@ local function survey()
                 local men, sx, sy, sz, bodies = {}, 0, 0, 0, 0
                 for _, rid in ipairs(LF.Units.members(u.id)) do
                     local r = LF.Records.get(rid)
-                    if r and r.alive then
+                    if r and r.alive and not r.aid then      -- (not men away at the aid post: LF_AidPost)
                         men[#men + 1] = r
                         local b = bodyOf(rid)
                         if b then bodies = bodies + 1; sx, sy, sz = sx + b:getX(), sy + b:getY(), sz + b:getZ()
@@ -190,8 +190,17 @@ local function hit(e, by)
         note("killed", { who = r.id, unit = e.u.id, by = by.u.id, x = math.floor(r.x), y = math.floor(r.y), seen = witnesses(e, by) })
     else
         local part = HIT_PARTS[ZombRand(#HIT_PARTS) + 1]
-        r.offWound = { part = part, severity = 40 + ZombRand(40), impact = 20 + ZombRand(25) }
-        if not (LF.Units.leads(r) and LF.Units.relieve(r)) then r.wounded = true end
+        local severity = 40 + ZombRand(40)
+        if LF.Wounds then
+            -- Graded (LF_Wounds): a light one he fights on with; serious or critical, he's out.
+            local g, impact = LF.Wounds.offscreen(severity)
+            if r.offWound then impact = math.max(impact, r.offWound.impact or 0) end
+            r.offWound = { part = part, severity = severity, impact = impact }
+            LF.Wounds.grade(r, g, "hit off-screen by " .. by.u.name)
+        else
+            r.offWound = { part = part, severity = severity, impact = 20 + ZombRand(25) }
+            if not (LF.Units.leads(r) and LF.Units.relieve(r)) then r.wounded = true end
+        end
         LF.Morale.unitEvent(e.u.id, -3, title .. " wounded (off-screen)")
         LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " wounded off-screen (" .. part .. ") by " .. by.u.name)
         note("wounded", { who = r.id, unit = e.u.id, by = by.u.id, part = part, x = math.floor(r.x), y = math.floor(r.y), seen = witnesses(e, by) })

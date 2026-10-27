@@ -638,7 +638,7 @@ local function walkRecords(M)
     local head = math.min(M.head, M.total)
     for _, rid in ipairs(M.order) do
         local r = LF.Records.get(rid)
-        if r and r.alive and not LF.Bodies.get(rid) and M.off[rid] then
+        if r and r.alive and not r.aid and not LF.Bodies.get(rid) and M.off[rid] then
             if not M.joined[rid] and (M.arrived or head >= (M.proj[rid] or 0) - 1) then M.joined[rid] = true end
             if M.joined[rid] then
                 local x, y = placeOf(M, rid)

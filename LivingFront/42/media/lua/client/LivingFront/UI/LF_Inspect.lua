@@ -18,7 +18,7 @@ local RANK_NAME = { LT = "Lieutenant", SSG = "Staff Sergeant", SGT = "Sergeant",
 local STATE_WORDS = {
     idle = "standing by", guard = "on guard", alert = "alert, covering", engage = "firing",
     bound = "moving under fire", file = "on the move", hide = "taking cover (wounded)", down = "down, wounded",
-    flee = "wounded, getting to safety", cover = "in cover",
+    flee = "wounded, getting to safety", cover = "in cover", wounded = "wounded, out of the fight",
 }
 
 LF_InspectWindow = ISCollapsableWindow:derive("LF_InspectWindow")
