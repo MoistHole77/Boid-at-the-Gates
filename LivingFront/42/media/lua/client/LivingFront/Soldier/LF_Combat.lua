@@ -56,8 +56,15 @@ local function overallHealth(body)
     return body:getBodyDamage():getOverallBodyHealth()
 end
 
+-- (Kept for the tick: asked many times a think for every man - 0.75.2.)
+local hTick, hVal = -1, {}
 function LF.Combat.health(body)
-    return LF.guard("overallHealth", overallHealth, body) or 0
+    if hTick ~= LF.tick then hTick = LF.tick; hVal = {} end
+    local v = hVal[body]
+    if v then return v end
+    v = LF.guard("overallHealth", overallHealth, body) or 0
+    hVal[body] = v
+    return v
 end
 
 -- Is this body holding a firearm?
@@ -413,12 +420,15 @@ function LF.Combat.knock(target, sx, sy, fall) return LF.guard("knock", knockFro
 -- (Sitting on the ground counts as "on the floor" to the game: a man resting while his unit
 -- stands by isn't knocked down - up to 0.37 the brain took him for one and never woke him when
 -- the unit was given orders.)
+-- (Plain functions handed to pcall, not new ones each call - 0.75.2.)
+local function bumpedOf(b) return b:isBumped() end
+local function downOf(b) return b:isBumped() or b:isOnFloor() or b:isKnockedDown() end
 function LF.Combat.knockedDown(body)
     if LF.Idle and LF.Idle.isSitting(body) then
-        local ok, v = pcall(function() return body:isBumped() end)
+        local ok, v = pcall(bumpedOf, body)
         return ok and v or false
     end
-    local ok, v = pcall(function() return body:isBumped() or body:isOnFloor() or body:isKnockedDown() end)
+    local ok, v = pcall(downOf, body)
     return ok and v or false
 end
 
@@ -441,11 +451,18 @@ local function setCrawlVars(body, on)
 end
 
 -- Set (or clear) his crawling. Returns whether he crawls.
+-- (The animation variables are only written when it changes - 0.75.2: six writes a think per man.)
+local crawlSet = {}
+local crawlSweep = 0
 function LF.Combat.updateCrawl(body)
     local ok, out = pcall(LF.Combat.legsOut, body)
     local crawl = ok and out or false
-    setCrawlVars(body, crawl)
-    body:setVariable("LFCrawlSpeed", 1.0)
+    if LF.tick - crawlSweep > 3600 or crawlSweep > LF.tick then crawlSet, crawlSweep = {}, LF.tick end
+    if crawlSet[body] ~= crawl then
+        crawlSet[body] = crawl
+        setCrawlVars(body, crawl)
+        body:setVariable("LFCrawlSpeed", 1.0)
+    end
     if crawl then
         body:setRunning(false)
         body:setSprinting(false)
