@@ -19,6 +19,7 @@ require "LivingFront/Core/LF_Records"
 require "LivingFront/World/LF_Bodies"
 require "LivingFront/Soldier/LF_Combat"
 require "LivingFront/Soldier/LF_Brain"
+require "LivingFront/World/LF_Influence"
 require "LivingFront/Soldier/LF_MoveAction"
 require "LivingFront/Units/LF_Units"
 require "LivingFront/Units/LF_Squad"
@@ -1340,6 +1341,17 @@ local function onMenu(playerNum, context, worldObjects, test)
                 local nxt = ORDER[i % #ORDER + 1]
                 C.warView = nxt
                 LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
+            end)
+        end
+    end
+    if LF.Influence then
+        local im = sub(tools, "Influence map round you (0.77) - to the log")
+        for _, f in ipairs({ { "GER", "German" }, { "SOV", "Soviet" } }) do
+            local side = f[1]
+            im:addOption(f[2] .. " map (own strength / the enemy it believes in)", nil, function()
+                local p = getSpecificPlayer(playerNum)
+                if p then LF.Influence.dump(side, p:getX(), p:getY(), 80) end
+                LF.say(f[2] .. " influence map written to the log")
             end)
         end
     end

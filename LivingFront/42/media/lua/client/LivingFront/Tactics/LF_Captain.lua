@@ -33,6 +33,7 @@ require "LivingFront/Units/LF_Objective"
 require "LivingFront/Tactics/LF_Platoon"
 require "LivingFront/Tactics/LF_Company"
 require "LivingFront/World/LF_Front"
+require "LivingFront/World/LF_Influence"
 
 LF.Captain = LF.Captain or {}
 
@@ -118,8 +119,10 @@ local function expectedAt(c, obj)
     return age and men or nil, age
 end
 
--- Is the enemy (as reported) within r tiles of (x, y)? Fit men.
+-- Is the enemy (as reported) within r tiles of (x, y)? Fit men. (0.77: read off his side's influence
+-- map - LF_Influence, its threat layer drawn from the same sightings, news under CFG.stale old.)
 local function enemyNear(c, x, y, r)
+    if LF.Influence then return LF.Influence.threatNear(c.faction, x, y, r) end
     local men = 0
     local rsq = r * r
     for _, s in pairs(LF.Front.sightings(c.faction)) do
