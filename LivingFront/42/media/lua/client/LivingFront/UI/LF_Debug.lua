@@ -417,6 +417,7 @@ end
 -- costliest modules, the most bodies. Stand where you can see the building.
 
 local stress = nil
+local summary076           -- (below)
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
 local pooled = { on = 0, off = 0, nOn = 0, nOff = 0 }   -- every run this session, on and off screen (one fight is ~15 hits: too few to judge alone)
 
@@ -457,21 +458,42 @@ end
 
 -- offscreen: the same fight with nobody given a body - settled the off-screen way (LF_Clash) even
 -- with you standing there, to compare with the real thing (the 0.72 gate: within 20%).
-local function stressTest(x, y, z, offscreen)
+-- opts (0.76): walkIn - the fight runs off screen for 60 s, then every man gets his body where he
+-- stands (walking into a fight under way); big - two platoons a side (~170 men) with the cap on
+-- bodies at 80 if none is set.
+local function stressTest(x, y, z, offscreen, opts)
+    opts = opts or {}
     local obj = objectiveAt(x, y, z)
     if not obj then LF.say("Right-click on a building for the stress test"); return end
     if not (LF.Config.logPerf) then LF.Perf.toggle() end
     local ger = LF.Platoon.create("GER", obj.x + 0.5, obj.y + 0.5, obj.z or 0, 1, 0, true)
     local sov = LF.Platoon.create("SOV", obj.x + 70.5, obj.y + 0.5, obj.z or 0, -1, 0, true)
     local gerMen, sovMen = platoonMen(ger), platoonMen(sov)
+    local ger2, sov2 = nil, nil
+    if opts.big then
+        ger2 = LF.Platoon.create("GER", obj.x - 12.5, obj.y + 14.5, obj.z or 0, 1, 0, true)
+        sov2 = LF.Platoon.create("SOV", obj.x + 70.5, obj.y + 25.5, obj.z or 0, -1, 0, true)
+        for _, rid in ipairs(platoonMen(ger2)) do gerMen[#gerMen + 1] = rid end
+        for _, rid in ipairs(platoonMen(sov2)) do sovMen[#sovMen + 1] = rid end
+        if (LF.Config.maxBodies or 0) <= 0 then LF.Config.maxBodies = 80; opts.setCap = true end
+    end
+    if opts.walkIn then offscreen = true end
     if offscreen then
         for _, rid in ipairs(gerMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
         for _, rid in ipairs(sovMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
     end
     local okH, whyH = LF.Platoon.hold(ger, obj)
     local okT, whyT = LF.Platoon.take(sov, obj)
+    if ger2 then LF.Platoon.hold(ger2, obj); LF.Platoon.take(sov2, obj) end
     stress = { started = getTimestampMs(), sim = LF.simTime, windows = {}, seen = LF.Perf.last(), obj = obj.name,
-               ger = gerMen, sov = sovMen, offscreen = offscreen }
+               ger = gerMen, sov = sovMen, offscreen = offscreen, big = opts.big, setCap = opts.setCap,
+               walkIn = opts.walkIn and { at = LF.simTime + 60, pos = {}, moved = {} } or nil }
+    if opts.walkIn then
+        LF.log("TEST 0.76 walk-in: the fight runs off screen for 60 s, then every man gets his body where he stands")
+    end
+    if opts.big then
+        LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
+    end
     LF.log(string.format("STRESS start%s at %s (%d,%d): %s holds it (%s), %s attacks from 70 tiles east (%s); version %s",
         offscreen and " (OFF-SCREEN: no bodies)" or "", obj.name, math.floor(obj.x), math.floor(obj.y), ger.name,
         okH and "ok" or tostring(whyH), sov.name, okT and "ok" or tostring(whyT), tostring(LF.VERSION)))
@@ -659,6 +681,85 @@ local function gateSummary(modMs, bodies)
         nIdle, nOpen, at72))
 end
 
+-- ---- the 0.76 tests: walking into a fight under way; a big fight under the cap on bodies ----------
+-- Walk-in: after 60 s off screen every man is given his body where his record stands. Each man's
+-- position is taken when his body appears and again 15 s later: positions hold if few men have
+-- moved far (a man moving under orders - a bound, a flank - is told apart from one re-forming).
+-- The usual gate looks (open ground, squads mixing) run from the hand-over on.
+local function walkInTick()
+    local W = stress.walkIn
+    if not W.done then
+        if LF.simTime < W.at then return end
+        W.done = LF.simTime
+        for _, list in ipairs({ stress.ger or {}, stress.sov or {} }) do
+            for _, rid in ipairs(list) do
+                local r = LF.Records.get(rid)
+                if r then r.noBody = nil end
+            end
+        end
+        stress.offscreen = false
+        stress.sim = LF.simTime
+        stress.windows = {}
+        stress.seen = LF.Perf.last()
+        LF.log("TEST 0.76 walk-in: hand-over - every man gets his body where he stands")
+        LF.say("Walk-in: the fight comes on screen now")
+        return
+    end
+    if not LF.due(30, 9) then return end
+    for _, list in ipairs({ stress.ger or {}, stress.sov or {} }) do
+        for _, rid in ipairs(list) do
+            local b = LF.Bodies.get(rid)
+            if b and not b:isDead() then
+                local p = W.pos[rid]
+                if not p then
+                    W.pos[rid] = { x = b:getX(), y = b:getY(), t = LF.simTime }
+                elseif not W.moved[rid] and LF.simTime - p.t >= 15 then
+                    local st = LF.Brain.stateOf(rid)
+                    W.moved[rid] = { d = LF.dist(p.x, p.y, b:getX(), b:getY()), orders = (st == "bound" or st == "file") }
+                end
+            end
+        end
+    end
+end
+
+summary076 = function()
+    local G = stress.gate or { openMen = {}, crossMen = {} }
+    local nOpen, nCross = 0, 0
+    for _ in pairs(G.openMen or {}) do nOpen = nOpen + 1 end
+    for _ in pairs(G.crossMen or {}) do nCross = nCross + 1 end
+    local W = stress.windows
+    local n = #W
+    local f, m, fps, bodies = 0, 0, 0, 0
+    for _, w in ipairs(W) do f, m, fps, bodies = f + w.frame, m + w.mod, fps + w.fps, math.max(bodies, w.bodies) end
+    if n > 0 then f, m, fps = f / n, m / n, fps / n end
+    local at72 = bodies > 0 and m / bodies * 72 or 0
+    if stress.walkIn then
+        local cnt, far, sum, ordered = 0, 0, 0, 0
+        for _, v in pairs(stress.walkIn.moved) do
+            cnt = cnt + 1
+            sum = sum + v.d
+            if v.d > 8 then
+                if v.orders then ordered = ordered + 1 else far = far + 1 end
+            end
+        end
+        local avg = cnt > 0 and sum / cnt or 0
+        local ok = cnt > 0 and far <= math.max(2, cnt * 0.1) and nCross == 0
+        LF.log(string.format("TEST 0.76 walk-in %s: %d men measured 15 s after their bodies appeared - average %.1f tiles moved, %d moved over 8 tiles re-forming (%d more moving under orders); %d among another squad; %d left in the open; %.1f fps, %.2f ms at 72 bodies",
+            ok and "PASS" or "FAIL", cnt, avg, far, ordered, nCross, nOpen, fps, at72))
+        LF.say(string.format("Walk-in %s: avg %.1f tiles moved, %d re-formed far, %d mixing", ok and "PASS" or "FAIL", avg, far, nCross))
+    else
+        local alive = 0
+        for _, list in ipairs({ stress.ger or {}, stress.sov or {} }) do
+            for _, rid in ipairs(list) do local r = LF.Records.get(rid); if r and r.alive then alive = alive + 1 end end
+        end
+        local ok = fps >= 30
+        LF.log(string.format("TEST 0.76 big fight %s: %d men in it (%d alive at the end), at most %d bodies (cap %s); %.1f fps, frame %.1f ms, mod %.2f ms (%.2f at 72); %d left in the open, %d among another squad",
+            ok and "PASS" or "FAIL", #(stress.ger or {}) + #(stress.sov or {}), alive, bodies,
+            (LF.Config.maxBodies or 0) > 0 and tostring(LF.Config.maxBodies) or (stress.setCap and "80" or "none"), fps, f, m, at72, nOpen, nCross))
+        LF.say(string.format("Big fight %s: %.1f fps with %d bodies", ok and "PASS" or "FAIL", fps, bodies))
+    end
+end
+
 local function stressSummary()
     local W = stress.windows
     local n = #W
@@ -700,6 +801,11 @@ local function stressSummary()
         LF.say("Test 4: run not counted (its men were deleted before the end)")
         return
     end
+    if stress.setCap then LF.Config.maxBodies = 0 end
+    if stress.walkIn or stress.big then
+        LF.guard("0.76 summary", summary076)
+        return
+    end
     local hits = hitCount(stress.ger or {}) + hitCount(stress.sov or {})
     local k = stress.offscreen and "Off" or "On"
     pooled[k == "On" and "on" or "off"] = pooled[k == "On" and "on" or "off"] + hits
@@ -719,6 +825,7 @@ local function stressSummary()
 end
 
 LF.onTick("Debug", function()
+    if stress and stress.walkIn then LF.guard("walk-in", walkInTick) end
     if stress and not stress.offscreen and LF.due(300, 151) and LF.simTime - (stress.sim or 0) > 15 then
         LF.guard("gate sample", gateSample)
     end
@@ -1115,6 +1222,12 @@ local function onMenu(playerNum, context, worldObjects, test)
             tm:addOption(string.format("Stress test off screen (same building; with the on-screen runs: 0.73 test 4) - %d run(s) so far", pooled.nOff), nil,
                 function() stressTest(x, y, z, true) end)
         end
+        if not stress then
+            tm:addOption("0.76 walk-in: the stress fight off screen for 60 s, then on screen where the men stand (right-click a building)", nil,
+                function() stressTest(x, y, z, false, { walkIn = true }) end)
+            tm:addOption("0.76 big fight: two platoons a side (~170 men), the cap on bodies at 80 (right-click a building)", nil,
+                function() stressTest(x, y, z, false, { big = true }) end)
+        end
         local old = sub(tm, "0.73 tests (passed)")
         old:addOption("1. MG pins a squad in the open (right-click open ground, open to the far side)", nil,
             function() startTest("open", x, y, z, playerNum) end)
@@ -1146,6 +1259,16 @@ local function onMenu(playerNum, context, worldObjects, test)
                 LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[LF.Ground.cycleDir() + 1])
             end)
         end
+    end
+    do
+        local CAPS = { 0, 40, 60, 80, 100 }
+        local cur = LF.Config.maxBodies or 0
+        tools:addOption("Cap on bodies near you: " .. (cur > 0 and tostring(cur) or "none") .. " (click to change)", nil, function()
+            local i = 1
+            for k, v in ipairs(CAPS) do if v == cur then i = k end end
+            LF.Config.maxBodies = CAPS[i % #CAPS + 1]
+            LF.say("Cap on bodies: " .. (LF.Config.maxBodies > 0 and tostring(LF.Config.maxBodies) or "none"))
+        end)
     end
     if LF.SquadBrain then
         local on = LF.SquadBrain.enabled

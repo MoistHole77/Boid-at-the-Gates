@@ -22,7 +22,13 @@
 --     changes hands (LF_Objective).
 -- The handoff: if either side of a contact has men with bodies (near you), the fight is real -
 -- the other side is given its bodies too where the ground is loaded (LF.Bodies.want). Only
--- fights with nobody near you are settled here.
+-- fights with nobody near you are settled here - and (0.76) fights between a unit with bodies and
+-- one the cap on bodies has left without (LF.Bodies.capped): those are settled here both ways, a
+-- hit on a man with a body wounding (or killing) that body as a round on screen would.
+-- (0.76) A unit with no bodies coming into a fight off screen deploys: its men go to their places in
+-- a line facing the enemy (the squad's formation turned toward him), each onto a square with cover
+-- against him where there is one close by - so when you come up, their bodies appear in a firing
+-- line, not in the file they were marching in.
 -- Every hit and every break is written to the event log (LF.Clash.events) with who saw it - the
 -- raw material for the reports and memories of roadmap phase 4.
 
@@ -52,6 +58,7 @@ local CFG = {
     eventsKept = 400,
 }
 LF.Clash.CFG = CFG
+local deploy               -- (below)
 
 local function bodyOf(id)
     local b = id and LF.Bodies.get(id)
@@ -191,6 +198,15 @@ local function hit(e, by, cls)
     local shooters = {}
     for _, s in ipairs(by.men) do if s.alive and fitOf(s) and not s.unarmed then shooters[#shooters + 1] = s end end
     local sh = shooters[1] and shooters[ZombRand(#shooters) + 1] or nil
+    -- (0.76) A man with a body: the round lands on it as one fired on screen would.
+    local rb = bodyOf(r.id)
+    if rb then
+        local did = LF.Combat.inflictPart and LF.Combat.inflictPart(rb, part, sh and LF.Weapons.profile(sh) or nil)
+        LF.log("CLASH " .. title .. " #" .. r.id .. " of " .. e.u.name .. " hit (" .. part .. ", " .. tostring(did)
+            .. ") by " .. by.u.name .. " - fighting as records beyond the cap on bodies")
+        note("wounded", { who = r.id, unit = e.u.id, by = by.u.id, part = part, x = math.floor(rb:getX()), y = math.floor(rb:getY()), seen = witnesses(e, by) })
+        return
+    end
     local out = LF.Shot.outcome(part, sh and LF.Weapons.profile(sh) or nil, r.wound and r.wound.grade or (r.wounded and "serious" or nil))
     if out == "killed" then
         r.alive = false
@@ -236,6 +252,58 @@ local function breakUnit(e, enemy)
     if not ok and LF.Tactics then LF.Tactics.setStance(u, "defensive") end
 end
 
+-- ---- deploying for a fight off screen (0.76) -------------------------------------------------------
+
+-- A square near (x, y) with cover against (tx, ty), free to stand on: x, y (square centre) or nil.
+-- (Only where the ground is loaded - off screen it often isn't; then he keeps his place.)
+local function coverNear(x, y, z, tx, ty, r)
+    local cell = getCell()
+    local bx, by = math.floor(x), math.floor(y)
+    for d = 0, r do
+        for dx = -d, d do
+            for dy = -d, d do
+                if math.max(math.abs(dx), math.abs(dy)) == d then
+                    local q = cell:getGridSquare(bx + dx, by + dy, z)
+                    if q and q:isFree(false) and not q:getBuilding()
+                        and LF.Cover.quality(bx + dx, by + dy, z, tx, ty) ~= LF.Cover.NONE then
+                        return bx + dx + 0.5, by + dy + 0.5
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+deploy = function(e, enemy)
+    local u = e.u
+    if u.kind ~= "squad" then return end
+    if coverOf(e) == "building" then return end             -- (holding its objective: LF_Objective has them)
+    if u.objTask and u.objTask.storm then return end
+    local dx, dy = enemy.x - e.x, enemy.y - e.y
+    local d = math.sqrt(dx * dx + dy * dy)
+    if d < 1 then return end
+    u.facingX, u.facingY = dx / d, dy / d
+    local n, covered = 0, 0
+    for _, r in ipairs(e.men) do
+        if r.alive and not r.aid and not bodyOf(r.id) then
+            local x, y = LF.Squad.slot(r)
+            if x then
+                local z = math.floor(r.z or e.z or 0)
+                local cx, cy = nil, nil
+                if LF.Cover then cx, cy = coverNear(x, y, z, enemy.x, enemy.y, 3) end
+                if cx then x, y, covered = cx, cy, covered + 1 end
+                r.x, r.y, r.z = x, y, z
+                n = n + 1
+            end
+        end
+    end
+    if n > 0 then
+        LF.log(string.format("CLASH %s deploys off-screen facing %s: %d men to their places in line, %d of them in cover",
+            u.name, enemy.u.name, n, covered))
+    end
+end
+
 -- ---- each simulated second -------------------------------------------------------------------
 
 local lastSim = nil
@@ -262,7 +330,9 @@ local function update()
     local fights = {}
     for _, pr in ipairs(pairs_) do
         local a, b = pr.a, pr.b
-        if a.bodies > 0 or b.bodies > 0 then
+        local capA = a.bodies == 0 and LF.Bodies.capped and LF.Bodies.capped(a.u.id)
+        local capB = b.bodies == 0 and LF.Bodies.capped and LF.Bodies.capped(b.u.id)
+        if (a.bodies > 0 or b.bodies > 0) and not capA and not capB then
             -- Near you: fought for real. Give the side with no bodies its bodies where it can.
             if a.bodies == 0 and LF.Bodies.want then LF.Bodies.want(a.u.id) end
             if b.bodies == 0 and LF.Bodies.want then LF.Bodies.want(b.u.id) end
@@ -326,6 +396,7 @@ local function update()
         local u = e.u
         u.offAmmo = math.max(0, (u.offAmmo or 1) - CFG.ammoUse * dt)
         if not u.offContactAt or u.offContactAt > LF.simTime or LF.simTime - u.offContactAt > 60 then
+            if e.bodies == 0 then LF.guard("deploy", deploy, e, e.targets[1].t) end
             note("contact", { unit = u.id, by = e.targets[1].t.u.id, x = math.floor(e.x), y = math.floor(e.y),
                               seen = witnesses(e, e.targets[1].t) })
         end
@@ -386,7 +457,7 @@ local function update()
         e.fit = fitN
         local share = fitN / math.max(1, #e.men)
         local broken = u.offBroken and u.offBroken <= LF.simTime and LF.simTime - u.offBroken < 120
-        if not broken and (share < CFG.breakFit or LF.Morale.average(u.id) < CFG.breakMorale) then
+        if not broken and e.bodies == 0 and (share < CFG.breakFit or LF.Morale.average(u.id) < CFG.breakMorale) then
             breakUnit(e, e.targets[1].t)
         end
     end

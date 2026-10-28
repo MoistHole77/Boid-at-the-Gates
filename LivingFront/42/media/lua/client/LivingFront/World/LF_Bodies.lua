@@ -160,6 +160,62 @@ function LF.Bodies.syncAll()
     end
 end
 
+-- ---- the cap on bodies (0.76) -----------------------------------------------------------------------
+-- With LF.Config.maxBodies set, only that many men near you get bodies: whole units at a time
+-- (a squad is never half bodies, half records), nearest unit first - a unit that already has its
+-- bodies counts as 10 tiles nearer, so two units at the edge don't swap back and forth. Men not
+-- in a unit count one by one. The units left out fight on as records (LF_Clash fights them against
+-- the ones with bodies too).
+local capped = {}          -- unit id -> true: left without bodies by the cap
+local capOK = {}           -- unit id -> true: within the cap (this pass)
+function LF.Bodies.capped(unitId) return unitId ~= nil and capped[unitId] == true end
+
+local capUnits = {}
+local function byCapDist(a, b) return a.d < b.d end
+local function capPass(px, py, range)
+    for k in pairs(capped) do capped[k] = nil end
+    for k in pairs(capOK) do capOK[k] = nil end
+    local cap = LF.Config.maxBodies or 0
+    if cap <= 0 then return false end
+    local units = capUnits
+    for i = #units, 1, -1 do units[i] = nil end
+    local by = {}
+    local rangeSq = range * range
+    for id, rec in pairs(LF.Records.all()) do
+        if rec.alive and not rec.noBody then
+            local b = bodies[id]
+            local x, y = rec.x, rec.y
+            if b then x, y = b:getX(), b:getY() end
+            local d2 = LF.distSq(x, y, px, py)
+            if d2 <= rangeSq then
+                local key = rec.squad or ("#" .. id)
+                local u = by[key]
+                if not u then u = { key = key, n = 0, d = math.huge, has = false }; by[key] = u; units[#units + 1] = u end
+                u.n = u.n + 1
+                local d = math.sqrt(d2)
+                if d < u.d then u.d = d end
+                if b then u.has = true end
+            end
+        end
+    end
+    for _, u in ipairs(units) do if u.has then u.d = u.d - 10 end end
+    table.sort(units, byCapDist)
+    local used = 0
+    for _, u in ipairs(units) do
+        if used + u.n <= cap then
+            used = used + u.n
+            capOK[u.key] = true
+        else
+            capped[u.key] = true
+        end
+    end
+    return true
+end
+local function capAllows(rec)
+    local key = rec.squad or ("#" .. rec.id)
+    return not capped[key]
+end
+
 -- Body manager: give nearby records bodies, put distant bodies away.
 -- NOTE: loops every record each pass. Fine for hundreds; will need spatial buckets later.
 local squadsNear = {}
@@ -186,6 +242,7 @@ local function managerPass()
     for sid, untilTick in pairs(wanted) do
         if untilTick > LF.tick then near[sid] = true else wanted[sid] = nil end
     end
+    local capOn = capPass(px, py, cfg.despawnRadius * 1.5)
     local cell = getCell()
     local function loaded(x, y, z)
         return cell:getGridSquare(math.floor(x), math.floor(y), math.floor(z or 0)) ~= nil
@@ -203,11 +260,12 @@ local function managerPass()
             if LF.Units then LF.guard("succession", LF.Units.onDeath, rec) end
             if LF.Memory then LF.guard("memory died", LF.Memory.died, rec) end
         elseif body then
-            if LF.distSq(body:getX(), body:getY(), px, py) > despawnSq
-                and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())) then
+            if (LF.distSq(body:getX(), body:getY(), px, py) > despawnSq
+                and not (rec.squad and near[rec.squad] and loaded(body:getX(), body:getY(), body:getZ())))
+                or (capOn and not capAllows(rec)) then
                 LF.Bodies.despawn(id)
             end
-        elseif rec.alive and not rec.noBody and spawned < cfg.maxSpawnsPerPass then      -- (noBody: the off-screen stress test)
+        elseif rec.alive and not rec.noBody and spawned < cfg.maxSpawnsPerPass and not (capOn and not capAllows(rec)) then      -- (noBody: the off-screen stress test)
             local d2 = LF.distSq(rec.x, rec.y, px, py)
             if d2 < spawnSq or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end

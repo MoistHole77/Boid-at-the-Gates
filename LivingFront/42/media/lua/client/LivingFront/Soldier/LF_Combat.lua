@@ -569,6 +569,13 @@ end
 
 -- A round that has hit: the wound, then knocked over, staggered - or just a flinch. Returns the
 -- body part hit (and what it did).
+-- (0.76) A hit settled off screen (LF_Clash) on a man who has a body - one of a unit with bodies
+-- fighting a unit left without them by the cap: the same wound, kill or medic's call as a round
+-- fired on screen. Returns what it did.
+function LF.Combat.inflictPart(target, partName, profile)
+    return LF.guard("wound", inflict, target, partName, profile)
+end
+
 local function applyHit(shooter, target, profile, dist)
     local parts = LF.Combat.hitParts and LF.guard("hit parts", LF.Combat.hitParts, shooter, target)
     local partName = LF.pick(parts or BODY_PARTS)

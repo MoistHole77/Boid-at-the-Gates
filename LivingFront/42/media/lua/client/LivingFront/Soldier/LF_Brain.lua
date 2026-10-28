@@ -45,6 +45,9 @@ local CFG = {
     thinkTicks = 20,        -- each NPC re-decides about three times a second
     quietThinkTicks = 60,   -- (0.75) ... once a second when idle or watching a quiet quarter, his squad seeing nobody
     actTicks = 3,           -- (0.75) his per-tick steps (aim, fire, crouch) every 3rd tick - 20 a second, plenty for a rifle
+    -- Level of detail (0.76): the further a man is from you, the less often he steps and thinks.
+    lodNear = 30,           -- within this (tiles): every 3rd tick, thinking 3 times a second
+    lodFar = 45,            -- within this: every 6th tick, thinking every 2/3 s; beyond: every 9th, once a second
     sightRange = 30,        -- tiles
     fireRange = 20,         -- fighters close in to this range before shooting
     fleeHealth = 35,        -- fighters flee below this overall health when threatened
@@ -1470,7 +1473,7 @@ local function bumpFallOf(b) return b:getVariableBoolean("BumpFall") end
 
 -- One step for a man: every CFG.actTicks ticks (0.75 - up to 0.74 every tick), his think on
 -- its own timer inside it.
-local function stepNpc(id, body, rec)
+local function stepNpc(id, body, rec, lod)
     -- Down and being looked after, or dragging a man (LF_Medic): that runs him, not the brain.
     if LF.Medic and LF.Medic.busy(id) then return end
     local m = mindOf(id)
@@ -1536,7 +1539,7 @@ local function stepNpc(id, body, rec)
     -- (Idle, or watching a quiet quarter, with his squad seeing nobody: he thinks once a second.)
     local quiet = (m.state == "idle" or m.state == "guard") and rec.squad and LF.SquadBrain.enabled
         and not LF.SquadBrain.seesAny(rec.squad)
-    if every(m, "thinkAt", quiet and CFG.quietThinkTicks or CFG.thinkTicks) then
+    if every(m, "thinkAt", (quiet and CFG.quietThinkTicks or CFG.thinkTicks) * (lod or 1)) then
         if LF.Combat.health(body) <= 0 then
             m.zeroSince = m.zeroSince or LF.tick
             if LF.tick - m.zeroSince > 120 then
@@ -1564,13 +1567,32 @@ local function stepNpc(id, body, rec)
     LF.Perf.stop("brain act", tA)
 end
 
+local lodCount = {}     -- record id -> beats counted (level of detail, 0.76)
+LF.Brain.lodStats = { 0, 0, 0 }
 local function onTick()
     if not LF.Brain.enabled then return end
     local t0 = LF.Perf.start()
+    local p = getPlayer()
+    local px, py = nil, nil
+    if p then px, py = p:getX(), p:getY() end
+    local nearSq, farSq = CFG.lodNear * CFG.lodNear, CFG.lodFar * CFG.lodFar
     for id, body in pairs(LF.Bodies.all()) do
-        local rec = LF.Records.get(id)
-        if rec and LF.due(CFG.actTicks, -id) and not body:isDead() then
-            LF.guard("brain step", stepNpc, id, body, rec)
+        if LF.due(CFG.actTicks, -id) then
+            local rec = LF.Records.get(id)
+            if rec and not body:isDead() then
+                -- (Level of detail: a man far from you steps on every 2nd or 3rd of his beats.)
+                local lod = 1
+                if px then
+                    local d2 = LF.distSq(body:getX(), body:getY(), px, py)
+                    if d2 > farSq then lod = 3 elseif d2 > nearSq then lod = 2 end
+                end
+                local n = (lodCount[id] or 0) + 1
+                lodCount[id] = n
+                if n % lod == 0 then
+                    LF.Brain.lodStats[lod] = LF.Brain.lodStats[lod] + 1
+                    LF.guard("brain step", stepNpc, id, body, rec, lod)
+                end
+            end
         end
     end
     if LF.due(CFG.cleanupTicks, 0) then
@@ -1582,6 +1604,7 @@ local function onTick()
                 LF.Weapons.forget(id)
                 claims[id] = nil
                 minds[id] = nil
+                lodCount[id] = nil
             end
         end
     end
