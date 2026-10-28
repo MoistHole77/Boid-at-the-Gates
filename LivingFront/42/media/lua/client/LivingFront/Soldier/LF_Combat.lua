@@ -454,10 +454,19 @@ end
 -- (The animation variables are only written when it changes - 0.75.2: six writes a think per man.)
 local crawlSet = {}
 local crawlSweep = 0
+local crawlHp = {}
 function LF.Combat.updateCrawl(body)
-    local ok, out = pcall(LF.Combat.legsOut, body)
-    local crawl = ok and out or false
-    if LF.tick - crawlSweep > 3600 or crawlSweep > LF.tick then crawlSet, crawlSweep = {}, LF.tick end
+    if LF.tick - crawlSweep > 3600 or crawlSweep > LF.tick then crawlSet, crawlHp, crawlSweep = {}, {}, LF.tick end
+    -- (His legs only change when his health does: looked at again only then - 0.75.3.)
+    local hp = LF.Combat.health(body)
+    local crawl
+    if crawlHp[body] == hp and crawlSet[body] ~= nil then
+        crawl = crawlSet[body]
+    else
+        local ok, out = pcall(LF.Combat.legsOut, body)
+        crawl = ok and out or false
+        crawlHp[body] = hp
+    end
     if crawlSet[body] ~= crawl then
         crawlSet[body] = crawl
         setCrawlVars(body, crawl)
