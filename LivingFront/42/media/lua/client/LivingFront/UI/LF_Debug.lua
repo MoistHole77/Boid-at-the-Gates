@@ -419,6 +419,7 @@ end
 local stress = nil
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
 local pair = {}                 -- the last stress run's men hit, on and off screen (the 0.73 test 4)
+local pooled = { on = 0, off = 0, n = 0 }   -- every pair this session (one fight is ~15 hits: too few to judge alone)
 
 -- Every man of a platoon (its headquarters and its squads).
 local function platoonMen(p)
@@ -511,10 +512,15 @@ local function stressSummary()
     if pair.on and pair.off then
         local big = math.max(pair.on, pair.off, 1)
         local diff = math.abs(pair.on - pair.off) / big
-        local verdict = diff <= 0.2 and "PASS" or "FAIL"
-        LF.log(string.format("TEST 4 %s: stress pair - on screen %d men hit, off screen %d (%.0f%% apart, 20%% allowed)",
-            verdict, pair.on, pair.off, diff * 100))
-        LF.say(string.format("Test 4 %s: on screen %d hit, off screen %d (%.0f%% apart)", verdict, pair.on, pair.off, diff * 100))
+        pooled.on, pooled.off, pooled.n = pooled.on + pair.on, pooled.off + pair.off, pooled.n + 1
+        local pdiff = math.abs(pooled.on - pooled.off) / math.max(pooled.on, pooled.off, 1)
+        -- (Judged on every pair run this session, from the third: one fight's ~15 hits swing by a
+        -- third either way by chance alone.)
+        local verdict = pooled.n < 3 and "RUN AGAIN" or (pdiff <= 0.2 and "PASS" or "FAIL")
+        LF.log(string.format("TEST 4 %s: stress pair %d - on screen %d men hit, off screen %d (%.0f%% apart); all %d pairs: on %d, off %d (%.0f%% apart, 20%% allowed, judged from 3 pairs)",
+            verdict, pooled.n, pair.on, pair.off, diff * 100, pooled.n, pooled.on, pooled.off, pdiff * 100))
+        LF.say(string.format("Test 4 %s: pair %d %d/%d; all pairs %d/%d (%.0f%% apart)", verdict, pooled.n, pair.on, pair.off,
+            pooled.on, pooled.off, pdiff * 100))
         pair = {}
     else
         LF.say("Test 4: " .. hits .. " men hit " .. (stress.offscreen and "off" or "on") .. " screen - now run the "
