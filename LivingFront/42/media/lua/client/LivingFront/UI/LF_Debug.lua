@@ -628,8 +628,8 @@ end
 --   (26: inside the 30 tiles a man can see - at 35, 0.73.1, the two never saw each other)
 --   3  break: offensive in the open with its nerve already gone (morale 25), gun 18 tiles off (a
 --             squad only falls back from inside 26 tiles): pinned, falls back at least 5 tiles
---             together (no man more than 12 tiles from the others' middle), then rallies - stops
---             falling back and holds
+--             together (spread no more than 4 tiles wider than it was before it broke), then
+--             rallies - stops falling back and holds
 
 local TESTS = {
     open = { n = 1, name = "MG pins a squad in the open", secs = 60 },
@@ -711,10 +711,11 @@ local function verdict()
     else
         local fell, rally = t.at.fell, t.at.rallied
         local back = t.backBy or 0
-        ok = t.at.pinned ~= nil and fell ~= nil and back >= 5 and t.far <= 12 and rally ~= nil
+        local base = t.baseFar or 12
+        ok = t.at.pinned ~= nil and fell ~= nil and back >= 5 and t.far <= base + 4 and rally ~= nil
         local parts = {}
         parts[#parts + 1] = t.at.pinned and string.format("pinned at %.0f s", t.at.pinned - fire) or string.format("never pinned (peak %.0f)", t.peak)
-        parts[#parts + 1] = fell and string.format("fell back at %.0f s, %.0f tiles, widest spread %.0f tiles", fell - fire, back, t.far)
+        parts[#parts + 1] = fell and string.format("fell back at %.0f s, %.0f tiles, widest spread %.0f tiles (%.0f before)", fell - fire, back, t.far, base)
             or "never fell back"
         parts[#parts + 1] = rally and string.format("rallied at %.0f s (%s)", rally - fire, t.rallyState or "?") or "never stopped falling back"
         words = table.concat(parts, "; ")
@@ -740,6 +741,7 @@ local function testTick()
     if st == "pinned" and not t.at.suppressed then t.at.suppressed = el end
     local intent = LF.Tactics.intent(t.target)
     local sp = squadSpread(t.target)
+    if sp and not t.at.fell then t.baseFar = math.max(t.baseFar or 0, sp.far) end
     if intent == "FALLBACK" and not t.at.fell then
         t.at.fell = el
         if sp then t.fromGun = LF.dist(sp.x, sp.y, t.gx, t.gy) end

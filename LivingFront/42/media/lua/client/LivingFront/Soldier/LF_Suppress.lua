@@ -35,6 +35,10 @@ local CFG = {
     shareMin = 0.15,        -- ... at least this much of it, at most all of it
     recover = 6,            -- squad meter drained per simulated second in the open
     coverRecover = { [0] = 1, [1] = 1.75, [2] = 2.5, [3] = 2.5 },
+    -- (0.73.4) and cover takes the edge off the fire coming in: rounds smacking into a wall shake
+    -- men less than rounds cracking past them in the open (test 2: a squad holding a building was
+    -- pinned in 16 s)
+    coverIntake = { [0] = 1, [1] = 0.75, [2] = 0.5, [3] = 0.5 },
     quietAfter = 7,         -- simulated seconds with no round in: ...
     quietMul = 4,           -- ... it drains this much faster
     rifleCap = 55,          -- (0.73.2) rifle and pistol fire alone can suppress a squad, not pin it: only
@@ -129,7 +133,8 @@ function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
     end
     local share = math.max(CFG.shareMin, math.min(1, CFG.share / S.fit))
     local top = math.min(CFG.max, cap or CFG.max)
-    if S.v < top then S.v = math.min(top, S.v + amount * share * (mul or 1)) end
+    local intake = CFG.coverIntake[S.cover or 0] or 1
+    if S.v < top then S.v = math.min(top, S.v + amount * share * (mul or 1) * intake) end
     S.lastRound = LF.simTime
     if sx then S.sx, S.sy = sx, sy end
     local st = stateOf(S.v)

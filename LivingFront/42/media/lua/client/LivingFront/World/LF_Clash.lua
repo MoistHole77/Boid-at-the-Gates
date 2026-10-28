@@ -172,7 +172,7 @@ end
 -- How a unit stands to fire coming in: cover class (LF_Ground) and posture (LF_Shot).
 -- (0.72.2: halted in the open, men get behind what there is - light cover; 0.72 had none, and the
 -- attackers off screen took twice the hits they do on screen.)
-local CLASS = { building = 3, dug = 1, open = 1, march = 0 }
+local CLASS = { building = 3, dug = 1, open = 0, march = 0 }     -- (0.73.4: open back to none - with the guns firing on screen, 0.73.3, the attackers there took 15 hits to 4 off screen)
 local POSTURE = { building = 1, dug = 1, open = 0.7, march = 1 }
 
 -- One man of target unit e is hit by unit by (cls: e's cover class against by).

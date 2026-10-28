@@ -340,7 +340,7 @@ local function updateSquad(squad)
         end
         if done then intent, why = "HOLD", "flankers in position"
         elseif sq.flank and LF.tick - sq.flank.started > CFG.flankTimeout then intent, why = "HOLD", "flank took too long" end
-    elseif intent == "HOLD" and squad.leader and not squad.supportOnly and front <= CFG.advanceResume and not clearing(squad)
+    elseif intent == "HOLD" and squad.leader and not squad.supportOnly and not sq.broken and front <= CFG.advanceResume and not clearing(squad)
         and LF.tick - (sq.holdSince or LF.tick) >= CFG.flankMinHold
         and LF.tick - (sq.lastFlank or -100000) >= CFG.flankCooldown
         and total > 0 and fitN / total >= CFG.flankFit
