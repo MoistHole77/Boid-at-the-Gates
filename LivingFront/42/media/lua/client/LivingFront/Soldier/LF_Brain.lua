@@ -36,6 +36,7 @@ require "LivingFront/Soldier/LF_Aid"
 require "LivingFront/Soldier/LF_Weapons"
 require "LivingFront/Units/LF_Stance"
 require "LivingFront/World/LF_Building"
+require "LivingFront/Tactics/LF_SquadBrain"
 
 LF.Brain = LF.Brain or {}
 LF.Brain.enabled = true
@@ -309,6 +310,16 @@ function LF.Brain.isStuck(id, x, y)
     return m ~= nil and stuckNear(m, x, y)
 end
 
+-- Where to take cover: a squad soldier is given his spot by his squad's placement (LF_SquadBrain,
+-- 0.74); anyone else still looks for himself.
+local function firingSpot(id, body, threat, maxRange, ax, ay, leash, loose)
+    local rec = LF.Records.get(id)
+    if rec and rec.squad and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
+        return LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, loose)
+    end
+    return LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, loose)
+end
+
 local function withinLeash(x, y, ax, ay, extra, leash)
     if not ax then return true end
     local r = (leash or CFG.leash) + (extra or 0)
@@ -327,7 +338,7 @@ local function planCover(id, body, m, threat, ax, ay, leash, sticky)
         if m.cover.loose and not sticky and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.coverSearchTicks then
             -- Sheltering without a shot: keep looking for a real firing position.
             m.lastCoverSearch = LF.tick
-            local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
+            local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
             if x then
                 leavePosition(id, body, m)
                 takeSpot(id, body, m, "cover", x, y, z, "firing position")
@@ -352,10 +363,10 @@ local function planCover(id, body, m, threat, ax, ay, leash, sticky)
     end
     if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
     m.lastCoverSearch = LF.tick
-    local x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
+    local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
     if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
     -- No firing position: at least get out of the open (any cover, a little further out).
-    x, y, z = LF.Cover.findFiringPosition(id, body, threat, CFG.sightRange + 10, ax, ay,
+    x, y, z = firingSpot(id, body, threat, CFG.sightRange + 10, ax, ay,
         ax and ((leash or CFG.leash) + (sticky and 1 or 3)), true)
     if x then
         takeSpot(id, body, m, "cover", x, y, z, "shelter")
@@ -555,7 +566,7 @@ local function holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPo
         and LF.tick - math.max(m.lastSight or -100000, m.sectorSince) > CFG.blindTicks
         and LF.tick - (m.lastSectorShift or -100000) >= st.shiftInterval then
         m.lastSectorShift = LF.tick
-        local x, y, z = LF.Cover.findFiringPosition(id, body, point, CFG.fireRange + 10, sx, sy, st.shiftLeash)
+        local x, y, z = firingSpot(id, body, point, CFG.fireRange + 10, sx, sy, st.shiftLeash)
         if x and not (x == m.cover.x and y == m.cover.y) then
             LF.log("BRAIN #" .. id .. " " .. title(rec) .. " has no shot from his cover; shifting within his quarter")
             leavePosition(id, body, m)
@@ -893,7 +904,10 @@ local function decide(id, body, rec, m)
     local gunner = rec.mgRole == "gunner" and LF.MG ~= nil
     local fireRange = gunner and LF.MG.CFG.range or CFG.fireRange
 
-    local visible = LF.Sense.look(id, body, rec, CFG.sightRange)
+    -- (A squad soldier sees what his squad has seen and he has a line to - LF_SquadBrain, 0.74.)
+    local visible
+    if inSquad and LF.SquadBrain.enabled then visible = LF.SquadBrain.look(id, body, rec, CFG.sightRange)
+    else visible = LF.Sense.look(id, body, rec, CFG.sightRange) end
     if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
     local pick = nil
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end

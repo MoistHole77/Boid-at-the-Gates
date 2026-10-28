@@ -479,6 +479,121 @@ local function stressTest(x, y, z, offscreen)
         .. sov.name .. " attacks - summary in the log in 2 minutes")
 end
 
+
+-- ---- the 0.74 gate, watched during an on-screen stress test -------------------------------------
+-- Every 5 s, every fit man of the two platoons with a body:
+--   in the open: holding (engaged, covering or watching, not on the move), no cover against the
+--     nearest enemy his squad knows of, outside any building - and a square with cover against
+--     that enemy within 10 tiles of him. Two looks running (10 s) = left in the open.
+--   among another squad: nearer another squad of his own side's middle than his own (by 3 tiles
+--     or more, and 8 or more from his own). Two looks running = crossing.
+-- The summary gives both counts (the gate: none of either) and the mod's cost per frame.
+local HOLDING = { engage = true, alert = true, guard = true }
+
+local function moving(body)
+    local q = ISTimedActionQueue.getTimedActionQueue(body)
+    local a = q and q.queue and q.queue[1]
+    return a ~= nil and (a.Type == "LF_MoveAction" or a.Type == "ISWalkToTimedAction")
+end
+
+-- The nearest square within r of (x, y) with cover against (tx, ty): its distance, or nil.
+local function coverWithin(x, y, z, tx, ty, r)
+    local bx, by = math.floor(x), math.floor(y)
+    local cell = getCell()
+    for d = 1, r do
+        for dx = -d, d do
+            for dy = -d, d do
+                if math.max(math.abs(dx), math.abs(dy)) == d then
+                    local sq = cell:getGridSquare(bx + dx, by + dy, z)
+                    if sq and sq:isFree(false) and LF.Cover.quality(bx + dx, by + dy, z, tx, ty) ~= LF.Cover.NONE then
+                        return d
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function gateSample()
+    local G = stress.gate
+    if not G then G = { open = {}, cross = {}, openMen = {}, crossMen = {}, looks = 0 }; stress.gate = G end
+    G.looks = G.looks + 1
+    -- The middles of every squad of the two platoons.
+    local mids = {}
+    local ids = {}
+    for _, list in ipairs({ stress.ger or {}, stress.sov or {} }) do
+        for _, rid in ipairs(list) do ids[#ids + 1] = rid end
+    end
+    for _, rid in ipairs(ids) do
+        local r = LF.Records.get(rid)
+        local b = LF.Bodies.get(rid)
+        if r and r.alive and r.squad and b and not b:isDead() then
+            local m = mids[r.squad]
+            if not m then m = { x = 0, y = 0, n = 0, faction = r.faction }; mids[r.squad] = m end
+            m.x, m.y, m.n = m.x + b:getX(), m.y + b:getY(), m.n + 1
+        end
+    end
+    for _, m in pairs(mids) do m.x, m.y = m.x / m.n, m.y / m.n end
+    for _, rid in ipairs(ids) do
+        local r = LF.Records.get(rid)
+        local b = LF.Bodies.get(rid)
+        local fit = r and r.alive and not r.wounded and not r.aid and r.squad and b and not b:isDead()
+        local inOpen, crossing = false, false
+        if fit then
+            local x, y, z = b:getX(), b:getY(), math.floor(b:getZ())
+            local st = LF.Brain.stateOf(rid)
+            local sq = getCell():getGridSquare(math.floor(x), math.floor(y), z)
+            if st and HOLDING[st] and not moving(b) and sq and not sq:getBuilding() then
+                local c = LF.Squad.bestContact(r.squad, x, y, 600, 45)
+                if c and LF.Cover.quality(math.floor(x), math.floor(y), z, c.x, c.y) == LF.Cover.NONE then
+                    local d = coverWithin(x, y, z, c.x, c.y, 10)
+                    if d then inOpen = true; G.lastOpen = G.lastOpen or {}; G.lastOpen[rid] = d end
+                end
+            end
+            local own = mids[r.squad]
+            if own and own.n >= 3 then
+                local d0 = LF.dist(x, y, own.x, own.y)
+                if d0 >= 8 then
+                    for sid, m in pairs(mids) do
+                        if sid ~= r.squad and m.faction == r.faction and m.n >= 3 and LF.dist(x, y, m.x, m.y) <= d0 - 3 then
+                            crossing = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        G.open[rid] = inOpen and ((G.open[rid] or 0) + 1) or nil
+        G.cross[rid] = crossing and ((G.cross[rid] or 0) + 1) or nil
+        if G.open[rid] == 2 then
+            G.openMen[rid] = true
+            LF.log(string.format("STRESS gate: %s left in the open 10 s at %d,%d (%s), cover %d tiles away",
+                LF.Units.title(r), math.floor(b:getX()), math.floor(b:getY()), tostring(LF.Brain.stateOf(rid)), G.lastOpen[rid] or -1))
+        end
+        if G.cross[rid] == 2 then
+            G.crossMen[rid] = true
+            LF.log(string.format("STRESS gate: %s among another squad for 10 s at %d,%d", LF.Units.title(r),
+                math.floor(b:getX()), math.floor(b:getY())))
+        end
+    end
+end
+
+local function gateSummary(modMs, bodies)
+    local G = stress.gate
+    if not G then return end
+    local nOpen, nCross = 0, 0
+    for _ in pairs(G.openMen) do nOpen = nOpen + 1 end
+    for _ in pairs(G.crossMen) do nCross = nCross + 1 end
+    local perBody = bodies > 0 and modMs / bodies or 0
+    local at72 = perBody * 72
+    local ok = nOpen == 0 and nCross == 0 and at72 <= 3
+    LF.log(string.format("TEST 0.74 %s: %d men left in the open with cover inside 10 tiles, %d among another squad (%d looks); mod %.2f ms at %d bodies (%.2f ms at 72; the gate 3) - squad brain %s",
+        ok and "PASS" or "FAIL", nOpen, nCross, G.looks, modMs, bodies, at72, LF.SquadBrain.enabled and "ON" or "OFF"))
+    LF.say(string.format("0.74 gate %s: %d in the open, %d among another squad, %.2f ms at 72 bodies", ok and "PASS" or "FAIL",
+        nOpen, nCross, at72))
+end
+
 local function stressSummary()
     local W = stress.windows
     local n = #W
@@ -505,6 +620,7 @@ local function stressSummary()
         LF.simTime - (stress.sim or LF.simTime), stress.offscreen and " (off-screen)" or "", casualties(stress.ger or {}),
         casualties(stress.sov or {})))
     LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
+    if not stress.offscreen then LF.guard("gate summary", gateSummary, m / n, bodies) end
     -- Test 4: the same fight on and off screen should hit about as many men (within 20%).
     -- Test 4: the same fight on and off screen should hit about as many men - the average of every
     -- run this session each way, judged once there are 3 of each (one fight's ~15 hits swing by a
@@ -538,6 +654,9 @@ local function stressSummary()
 end
 
 LF.onTick("Debug", function()
+    if stress and not stress.offscreen and LF.due(300, 151) and LF.simTime - (stress.sim or 0) > 15 then
+        LF.guard("gate sample", gateSample)
+    end
     if not stress or LF.frame % 30 ~= 0 then return end
     local w = LF.Perf.last()
     if w and w ~= stress.seen then
@@ -918,25 +1037,26 @@ local function onMenu(playerNum, context, worldObjects, test)
     if not any then orders:addOption("(no units yet - spawn some)") end
 
 
-    -- Tests (0.73).
+    -- Tests.
     LF.guard("menu: tests", function()
-        local tm = sub(main, "Tests (0.73)")
+        local tm = sub(main, "Tests")
         local line = testLine()
         if line then tm:addOption(line, nil, function() test = nil; LF.say("Test stopped") end) end
-        tm:addOption("1. MG pins a squad in the open (right-click open ground, open to the far side)", nil,
-            function() startTest("open", x, y, z, playerNum) end)
-        tm:addOption("2. The same squad behind a wall only gets suppressed (right-click inside a building)", nil,
-            function() startTest("wall", x, y, z, playerNum) end)
-        tm:addOption("3. A broken squad falls back together and rallies (right-click open ground)", nil,
-            function() startTest("broke", x, y, z, playerNum) end)
         if stress then
-            tm:addOption("4. Stress pair: running - summary in the log when done")
+            tm:addOption("Stress test running - summary and verdicts in the log when done")
         else
-            tm:addOption(string.format("4a. Stress, on screen (right-click a building) - %d run(s) so far", pooled.nOn), nil,
+            tm:addOption(string.format("0.74 gate: stress test on screen (right-click a building) - nobody left in the open, no squads mixing, the mod's cost - %d run(s) so far", pooled.nOn), nil,
                 function() stressTest(x, y, z) end)
-            tm:addOption(string.format("4b. Stress, off screen (same building) - %d run(s) so far", pooled.nOff), nil,
+            tm:addOption(string.format("Stress test off screen (same building; with the on-screen runs: 0.73 test 4) - %d run(s) so far", pooled.nOff), nil,
                 function() stressTest(x, y, z, true) end)
         end
+        local old = sub(tm, "0.73 tests (passed)")
+        old:addOption("1. MG pins a squad in the open (right-click open ground, open to the far side)", nil,
+            function() startTest("open", x, y, z, playerNum) end)
+        old:addOption("2. The same squad behind a wall only gets suppressed (right-click inside a building)", nil,
+            function() startTest("wall", x, y, z, playerNum) end)
+        old:addOption("3. A broken squad falls back together and rallies (right-click open ground)", nil,
+            function() startTest("broke", x, y, z, playerNum) end)
         tm:addOption("(Before each: Tools > Delete ALL NPCs. Verdicts: TEST lines in the log)")
     end)
 
@@ -961,6 +1081,13 @@ local function onMenu(playerNum, context, worldObjects, test)
                 LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[LF.Ground.cycleDir() + 1])
             end)
         end
+    end
+    if LF.SquadBrain then
+        local on = LF.SquadBrain.enabled
+        tools:addOption("Squad brain - squads look and place their men (0.74): " .. (on and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
+            LF.SquadBrain.enabled = not LF.SquadBrain.enabled
+            LF.say("Squad brain: " .. (LF.SquadBrain.enabled and "ON" or "OFF - every man looks and finds cover for himself, as up to 0.73"))
+        end)
     end
     if LF.Captain then
         local on = LF.Captain.CFG.on

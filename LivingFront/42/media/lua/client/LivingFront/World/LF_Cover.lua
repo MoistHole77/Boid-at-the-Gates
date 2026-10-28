@@ -145,6 +145,16 @@ local function isTaken(x, y, z, id)
     return false
 end
 
+-- (For the squad's placement, LF_SquadBrain: is this square, or one beside it, someone else's spot?)
+function LF.Cover.taken(x, y, z, id)
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if isTaken(x + dx, y + dy, z, id) then return true end
+        end
+    end
+    return false
+end
+
 function LF.Cover.reserve(x, y, z, id)
     reserved[key(x, y, z)] = { id = id, untilTick = LF.tick + CFG.reserveTicks }
 end
