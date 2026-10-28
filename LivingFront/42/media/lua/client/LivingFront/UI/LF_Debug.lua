@@ -529,7 +529,11 @@ local function gateSample()
         local u = r and r.squad and LF.Units.get(r.squad)
         if u and u.kind == "squad" then
             local it = LF.Tactics.intent(u.id)
-            if it == "FLANK" then flanking = flanking or u.id end
+            -- (A flank started since the last look counts too, however short - 0.75.5: a flank
+            -- whose target dropped out of sight a few seconds in was missed between looks.)
+            local st = LF.Tactics.state(u)
+            local started = st and st.flankStartTick and st.flankStartTick > LF.tick - 300 and LF.simTime - (stress.sim or 0) > 0
+            if it == "FLANK" or started then flanking = flanking or u.id end
             if it == "HOLD" and u.id ~= flanking then basing = true end
         end
     end
