@@ -834,3 +834,23 @@ end
 
 -- ---- shared with the other tactics files ----------------------------------------------------
 I.updateDefensive = updateDefensive
+
+-- (0.76) Where each man of a squad would stand in an all-round defence centred on (x, y), facing
+-- an enemy at (tx, ty) - the same quarters LF.Tactics.perimeterPlace gives on screen. For a dug-in
+-- squad deploying off screen (LF_Clash): when its bodies appear, the perimeter its sergeant forms
+-- round himself puts them where they already are (0.76 walk-in: men walked ~10 tiles from a line
+-- into their ring). Returns record id -> { x, y }.
+function LF.Tactics.perimeterSpots(squad, x, y, z, tx, ty)
+    local tmp = { perim = { x = x, y = y, z = z, mg = squad.mg }, lost = {}, contacts = {} }
+    faceThreat(tmp, tx, ty)
+    tmp.contact = LF.Tactics.point(tx, ty, z)
+    local out = {}
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local r = LF.Records.get(rid)
+        if r then
+            local _, sx, sy = LF.Tactics.perimeterPlace(squad, tmp, r)
+            if sx then out[rid] = { x = sx, y = sy } end
+        end
+    end
+    return out
+end

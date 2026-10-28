@@ -715,7 +715,9 @@ local function walkInTick()
                     W.pos[rid] = { x = b:getX(), y = b:getY(), t = LF.simTime }
                 elseif not W.moved[rid] and LF.simTime - p.t >= 15 then
                     local st = LF.Brain.stateOf(rid)
-                    W.moved[rid] = { d = LF.dist(p.x, p.y, b:getX(), b:getY()), orders = (st == "bound" or st == "file") }
+                    local r = LF.Records.get(rid)
+                    W.moved[rid] = { d = LF.dist(p.x, p.y, b:getX(), b:getY()), orders = (st == "bound" or st == "file"),
+                                     squad = r and r.squad, state = st }
                 end
             end
         end
@@ -743,6 +745,23 @@ summary076 = function()
             end
         end
         local avg = cnt > 0 and sum / cnt or 0
+        -- (Which squads re-formed: name, how many, their stance and what the men were doing.)
+        local bySq = {}
+        for _, v in pairs(stress.walkIn.moved) do
+            if v.d > 8 and not v.orders and v.squad then
+                local e = bySq[v.squad]
+                if not e then e = { n = 0, states = {} }; bySq[v.squad] = e end
+                e.n = e.n + 1
+                e.states[tostring(v.state)] = (e.states[tostring(v.state)] or 0) + 1
+            end
+        end
+        for sid, e in pairs(bySq) do
+            local u = LF.Units.get(sid)
+            local parts = {}
+            for st, k in pairs(e.states) do parts[#parts + 1] = st .. " " .. k end
+            LF.log(string.format("TEST 0.76 walk-in: %s - %d re-formed (stance %s, intent %s; %s)", u and u.name or tostring(sid), e.n,
+                u and LF.Stance.get(u).name or "?", tostring(LF.Tactics.intent(sid)), table.concat(parts, ", ")))
+        end
         local ok = cnt > 0 and far <= math.max(2, cnt * 0.1) and nCross == 0
         LF.log(string.format("TEST 0.76 walk-in %s: %d men measured 15 s after their bodies appeared - average %.1f tiles moved, %d moved over 8 tiles re-forming (%d more moving under orders); %d among another squad; %d left in the open; %.1f fps, %.2f ms at 72 bodies",
             ok and "PASS" or "FAIL", cnt, avg, far, ordered, nCross, nOpen, fps, at72))

@@ -284,14 +284,26 @@ deploy = function(e, enemy)
     local d = math.sqrt(dx * dx + dy * dy)
     if d < 1 then return end
     u.facingX, u.facingY = dx / d, dy / d
+    -- (A dug-in squad: its places in the all-round defence its sergeant will form round himself.)
+    local ring = nil
+    if LF.Stance and LF.Stance.get(u).name == "defensive" and LF.Tactics and LF.Tactics.perimeterSpots then
+        local ax, ay, az = LF.Squad.anchor(u.id)
+        if ax then ring = LF.Tactics.perimeterSpots(u, ax, ay, math.floor(az or e.z or 0), enemy.x, enemy.y) end
+    end
     local n, covered = 0, 0
     for _, r in ipairs(e.men) do
         if r.alive and not r.aid and not bodyOf(r.id) then
-            local x, y = LF.Squad.slot(r)
+            local x, y = nil, nil
+            if ring then
+                local sp = ring[r.id]
+                if sp then x, y = sp.x, sp.y end
+            else
+                x, y = LF.Squad.slot(r)
+            end
             if x then
                 local z = math.floor(r.z or e.z or 0)
                 local cx, cy = nil, nil
-                if LF.Cover then cx, cy = coverNear(x, y, z, enemy.x, enemy.y, 3) end
+                if LF.Cover then cx, cy = coverNear(x, y, z, enemy.x, enemy.y, ring and 2 or 3) end
                 if cx then x, y, covered = cx, cy, covered + 1 end
                 r.x, r.y, r.z = x, y, z
                 n = n + 1
@@ -299,8 +311,8 @@ deploy = function(e, enemy)
         end
     end
     if n > 0 then
-        LF.log(string.format("CLASH %s deploys off-screen facing %s: %d men to their places in line, %d of them in cover",
-            u.name, enemy.u.name, n, covered))
+        LF.log(string.format("CLASH %s deploys off-screen facing %s: %d men to their places %s, %d of them in cover",
+            u.name, enemy.u.name, n, ring and "in its all-round defence" or "in line", covered))
     end
 end
 
