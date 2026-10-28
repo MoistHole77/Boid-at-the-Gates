@@ -57,7 +57,7 @@ local CFG = {
     burstMin = 180, burstMax = 300,
     minBurstSecs = 3,       -- a belt / pan with less than 3 s of firing left is changed first
     driftTiles = 1.6,       -- the gun stays set up unless he moves this far from where he set it
-    atGun = 1.5,            -- the gunner counts as on the gun's spot this close to it
+    atGun = 0.8,            -- the gunner counts as on the gun's spot this close to it (0.74.3: was 1.5 - he set the gun up on the square beside his covered one, in the open)
     settleTicks = 360,      -- en route to the spot this long with the enemy in sight: set up where he is
     windowArc = 0.3,        -- a gun in a window fires only out of it (cosine off the window's facing)
     adjust = 45,            -- after every burst, relaying the gun (~0.75 s at least)

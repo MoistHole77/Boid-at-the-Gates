@@ -528,7 +528,8 @@ local function gateSample()
     for _, rid in ipairs(ids) do
         local r = LF.Records.get(rid)
         local b = LF.Bodies.get(rid)
-        if r and r.alive and r.squad and b and not b:isDead() then
+        local u = r and r.squad and LF.Units.get(r.squad)
+        if r and r.alive and u and u.kind == "squad" and b and not b:isDead() then
             local m = mids[r.squad]
             if not m then m = { x = 0, y = 0, n = 0, faction = r.faction }; mids[r.squad] = m end
             m.x, m.y, m.n = m.x + b:getX(), m.y + b:getY(), m.n + 1
@@ -544,15 +545,24 @@ local function gateSample()
             local x, y, z = b:getX(), b:getY(), math.floor(b:getZ())
             local st = LF.Brain.stateOf(rid)
             local sq = getCell():getGridSquare(math.floor(x), math.floor(y), z)
-            if st and HOLDING[st] and not moving(b) and sq and not sq:getBuilding() then
-                local c = LF.Squad.bestContact(r.squad, x, y, 600, 45)
+            -- (Judged against the enemy he's facing - his target, else the point he covers - and not
+            -- while pinned: then it's the fire holding him there, not his squad - 0.74.3.)
+            if st and HOLDING[st] and not moving(b) and sq and not sq:getBuilding() and not LF.Suppress.isPinned(b) then
+                local mm = LF.Brain.mindOf(rid)
+                local tb = mm.targetId and LF.Bodies.get(mm.targetId)
+                local c = nil
+                if tb and not tb:isDead() then c = { x = tb:getX(), y = tb:getY() }
+                elseif mm.point then c = { x = mm.point:getX(), y = mm.point:getY() }
+                else c = LF.Squad.bestContact(r.squad, x, y, 600, 45) end
                 if c and LF.Cover.quality(math.floor(x), math.floor(y), z, c.x, c.y) == LF.Cover.NONE then
                     local d = coverWithin(x, y, z, c.x, c.y, 10)
                     if d then inOpen = true; G.lastOpen = G.lastOpen or {}; G.lastOpen[rid] = d end
                 end
             end
             local own = mids[r.squad]
-            if own and own.n >= 3 then
+            -- (Men holding still - not marching in a file or moving under orders, where squads
+            -- pass close by design - 0.74.3.)
+            if own and own.n >= 3 and st and HOLDING[st] and not moving(b) then
                 local d0 = LF.dist(x, y, own.x, own.y)
                 if d0 >= 8 then
                     for sid, m in pairs(mids) do

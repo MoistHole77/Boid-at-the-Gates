@@ -102,6 +102,34 @@ local function reusePoint(cache, id)
     return p
 end
 
+-- (0.74.3) How far out this squad's perimeter goes (share of the stance's radius): drawn in when
+-- another defending squad of its side has its perimeter close by, so the two don't overlap and
+-- their men mix (0.74 gate: a platoon's squads dug in 10 tiles apart, each 7 tiles round).
+local function perimScale(squad, sq)
+    local P = sq.perim
+    if sq.perimKAt and sq.perimKAt <= LF.tick and LF.tick - sq.perimKAt < 300 and sq.perimKFor == P then return sq.perimK end
+    local st = LF.Stance.get(squad)
+    local k, near, nd = 1, nil, nil
+    for _, u in pairs(LF.Units.all()) do
+        if u ~= squad and (u.kind == "squad" or u.kind == "hq") and u.faction == squad.faction and LF.Stance.get(u).name == "defensive" then
+            local o = LF.Tactics.state(u)
+            local Q = o and o.perim
+            if Q and Q.x then
+                local d = LF.dist(P.x, P.y, Q.x, Q.y)
+                local want = (d / 2 - 1) / (st.radius or 7)
+                if want < k then k, near, nd = want, u, d end
+            end
+        end
+    end
+    k = math.max(0.45, k)
+    if k < 1 and (sq.perimK or 1) >= 1 then
+        LF.log(string.format("PERIMETER %s draws in to %.0f tiles - %s's perimeter is %.0f tiles away", squad.name,
+            (st.radius or 7) * k, near and near.name or "?", nd or 0))
+    end
+    sq.perimK, sq.perimKAt, sq.perimKFor = k, LF.tick, P
+    return k
+end
+
 -- Where a soldier stands in the perimeter and what he faces:
 -- "sector", x, y, z, point (the enemy he covers, or where he watches), watching (no enemy in his
 -- arc), coverPoint (what his cover must face: out of his quarter).
@@ -124,7 +152,7 @@ function LF.Tactics.perimeterPlace(squad, sq, rec)
         end
     else
         dx, dy = sectorDir(sq, i)
-        local r = sectorScale(sq, i)
+        local r = sectorScale(sq, i) * perimScale(squad, sq)
         if squad.teamOnly then
             sx, sy = P.x + dx * st.loneRadius * r, P.y + dy * st.loneRadius * r
         else
