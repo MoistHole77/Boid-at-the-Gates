@@ -33,7 +33,10 @@ end
 --   modules, costliest first. (Up to 0.69 "mod" was four sections - brain, draw, manager, spawn -
 --   and 29 modules ran untimed.)
 -- Old sections still timed inside a module (brain, manager, spawn) are logged as detail only.
-local INNER = { brain = true, manager = true, spawn = true }
+local INNER = { brain = true, manager = true, spawn = true,
+    -- (0.74.1: the brain's parts - its decision, its per-tick acting, its look, its cover search.
+    -- Timed per call in whole milliseconds: over thousands of calls the average comes out right.)
+    ["brain decide"] = true, ["brain act"] = true, ["brain look"] = true, ["brain cover"] = true }
 
 local last = nil            -- the last window's figures (LF.Perf.last(): the stress test reads them)
 function LF.Perf.last() return last end

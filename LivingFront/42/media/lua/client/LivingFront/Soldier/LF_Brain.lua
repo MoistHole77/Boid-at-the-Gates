@@ -312,12 +312,18 @@ end
 
 -- Where to take cover: a squad soldier is given his spot by his squad's placement (LF_SquadBrain,
 -- 0.74); anyone else still looks for himself.
-local function firingSpot(id, body, threat, maxRange, ax, ay, leash, loose)
+local function firingSpotOf(id, body, threat, maxRange, ax, ay, leash, loose)
     local rec = LF.Records.get(id)
     if rec and rec.squad and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
         return LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, loose)
     end
     return LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, loose)
+end
+local function firingSpot(id, body, threat, maxRange, ax, ay, leash, loose)
+    local t0 = getTimestampMs()
+    local x, y, z, q = firingSpotOf(id, body, threat, maxRange, ax, ay, leash, loose)
+    LF.Perf.stop("brain cover", t0)
+    return x, y, z, q
 end
 
 local function withinLeash(x, y, ax, ay, extra, leash)
@@ -906,8 +912,10 @@ local function decide(id, body, rec, m)
 
     -- (A squad soldier sees what his squad has seen and he has a line to - LF_SquadBrain, 0.74.)
     local visible
+    local tLook = getTimestampMs()
     if inSquad and LF.SquadBrain.enabled then visible = LF.SquadBrain.look(id, body, rec, CFG.sightRange)
     else visible = LF.Sense.look(id, body, rec, CFG.sightRange) end
+    LF.Perf.stop("brain look", tLook)
     if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
     local pick = nil
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
@@ -1513,14 +1521,18 @@ local function stepNpc(id, body, rec)
         -- Staggering, down on the ground or getting up: nothing else until he's on his feet.
         if LF.Combat.knockedDown(body) then return end
         m.crawl = LF.Combat.updateCrawl(body)
+        local tD = getTimestampMs()
         LF.Brain.decide(id, body, rec, m)
+        LF.Perf.stop("brain decide", tD)
         -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
         -- he is in position.
         local moving = m.state == "bound" or m.state == "file" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))
         LF.Suppress.setMoving(id, moving)
     end
     if LF.Combat.knockedDown(body) then return end
+    local tA = getTimestampMs()
     LF.Brain.act(id, body, rec, m)
+    LF.Perf.stop("brain act", tA)
 end
 
 local function onTick()

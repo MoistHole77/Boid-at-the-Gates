@@ -568,8 +568,14 @@ local function gateSample()
         G.cross[rid] = crossing and ((G.cross[rid] or 0) + 1) or nil
         if G.open[rid] == 2 then
             G.openMen[rid] = true
-            LF.log(string.format("STRESS gate: %s left in the open 10 s at %d,%d (%s), cover %d tiles away",
-                LF.Units.title(r), math.floor(b:getX()), math.floor(b:getY()), tostring(LF.Brain.stateOf(rid)), G.lastOpen[rid] or -1))
+            -- (Why: his order, the spot his brain has, and when it last looked for one.)
+            local m = LF.Brain.mindOf(rid)
+            local c = m.cover
+            LF.log(string.format("STRESS gate: %s left in the open 10 s at %d,%d (%s, order %s, %s, looked for cover %s ago, squad %s), cover %d tiles away",
+                LF.Units.title(r), math.floor(b:getX()), math.floor(b:getY()), tostring(LF.Brain.stateOf(rid)), tostring(m.order),
+                c and string.format("spot %d,%d%s %.0f tiles off", c.x, c.y, c.loose and " (shelter)" or "", LF.dist(b:getX(), b:getY(), c.x + 0.5, c.y + 0.5)) or "no spot",
+                m.lastCoverSearch and string.format("%.0f s", (LF.tick - m.lastCoverSearch) / 60) or "never",
+                tostring(LF.Tactics.intent(r.squad)), G.lastOpen[rid] or -1))
         end
         if G.cross[rid] == 2 then
             G.crossMen[rid] = true

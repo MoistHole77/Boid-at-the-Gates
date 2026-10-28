@@ -145,6 +145,8 @@ local function isTaken(x, y, z, id)
     return false
 end
 
+function LF.Cover.takenExactly(x, y, z, id) return isTaken(x, y, z, id) end
+
 -- (For the squad's placement, LF_SquadBrain: is this square, or one beside it, someone else's spot?)
 function LF.Cover.taken(x, y, z, id)
     for dx = -1, 1 do

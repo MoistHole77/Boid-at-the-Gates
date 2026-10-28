@@ -122,6 +122,7 @@ local function squadLook(sid, s)
     for i = #seen, 1, -1 do seen[i] = nil end
     if n == 0 then return end
     local squad = LF.Units.get(sid)
+    s.mx, s.my, s.mn, s.faction = cx, cy, n, squad.faction
     local spread = 0
     for i = 1, n do spread = math.max(spread, LF.dist(cx, cy, men[i].body:getX(), men[i].body:getY())) end
     nCands = 0
@@ -278,6 +279,22 @@ local function spacing(s, id, x, y)
     return 1
 end
 
+-- (0.74.1) Is (x, y) nearer another squad of the same side's middle than its own (by 3 tiles)?
+-- Squads keep to their own ground: men don't take cover in among another squad's.
+local function amongOthers(sid, faction, x, y)
+    local own = S[sid]
+    if not (own and own.mx) then return false end
+    local d0 = LF.dist(x, y, own.mx, own.my)
+    if d0 < 5 then return false end
+    for osid, o in pairs(S) do
+        if osid ~= sid and o.mx and o.faction == faction and o.mn and o.mn >= 3
+            and LF.tick - (o.seenAt or -100000) < 300 and LF.dist(x, y, o.mx, o.my) <= d0 - 3 then
+            return true
+        end
+    end
+    return false
+end
+
 local scored = {}
 local function byScore(a, b) return a.score > b.score end
 
@@ -321,6 +338,8 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
                     + CFG.W_SPACE * spacing(s, id, c.x, c.y)
                     + CFG.W_DIST * (1 - math.sqrt(dsq) / lim)
                     - math.max(0, LF.dist(bx, by, tx, ty) - c.td) * 0.5       -- (not walking at the enemy)
+                    - (LF.Cover.taken(c.x, c.y, bz, id) and 15 or 0)          -- (right beside another man's spot)
+                    - (amongOthers(sid, rec.faction, c.x, c.y) and CFG.W_SPACE * 1.5 or 0)   -- (in among another squad, 0.74.1)
             end
         end
         for i = #scored, m + 1, -1 do scored[i] = nil end
@@ -335,7 +354,7 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
             local c = e.c
             local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
             if (q == LF.Cover.LOW or (loose and q == LF.Cover.HIGH)) and not LF.Brain.hardClaimed(c.x, c.y, bz, id)
-                and not LF.Cover.taken(c.x, c.y, bz, id) then
+                and not LF.Cover.takenExactly(c.x, c.y, bz, id) then
                 local sq = cell:getGridSquare(c.x, c.y, bz)
                 if sq and sq:isFree(false) and not sq:getBuilding() then
                     checks = checks + 1
@@ -356,6 +375,8 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
         if not loose then break end          -- (a firing position stays on the leash; shelter may go further)
     end
     s.spots[id] = nil
+    stats.none = (stats.none or 0) + 1
+    if #s.cands == 0 then stats.noCands = (stats.noCands or 0) + 1 end
     return nil
 end
 
@@ -374,9 +395,9 @@ LF.onTick("SquadBrain", function()
     end
     -- A line a minute in the log: how much looking it took.
     if LF.due(3600, 7) and stats.looks > 0 then
-        LF.log(string.format("SQUADBRAIN last minute: %d squad looks, %d sight checks, %d placements, %d spots handed out",
-            stats.looks, stats.los, stats.places, stats.spots))
-        stats.looks, stats.los, stats.places, stats.spots = 0, 0, 0, 0
+        LF.log(string.format("SQUADBRAIN last minute: %d squad looks, %d sight checks, %d placements, %d spots asked for, %d found nothing (%d with no covered square round the squad at all)",
+            stats.looks, stats.los, stats.places, stats.spots, stats.none or 0, stats.noCands or 0))
+        stats.looks, stats.los, stats.places, stats.spots, stats.none, stats.noCands = 0, 0, 0, 0, 0, 0
     end
 end)
 
