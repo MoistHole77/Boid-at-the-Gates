@@ -623,8 +623,9 @@ end
 -- One click sets each up and the log (TEST ...) gives the verdict. A Soviet rifle squad spawns
 -- where you click, a German machine-gun squad beyond it (on the far side from you) holding where
 -- it is; the Soviet squad's meter is watched once a second.
---   1  open:  defensive in the open, gun 35 tiles off: pinned within 30 s of the gun opening up
---   2  wall:  holding the building you clicked, gun 35 tiles off: suppressed but never pinned
+--   1  open:  defensive in the open, gun 26 tiles off: pinned within 30 s of the gun opening up
+--   2  wall:  holding the building you clicked, gun 26 tiles off: suppressed but never pinned
+--   (26: inside the 30 tiles a man can see - at 35, 0.73.1, the two never saw each other)
 --   3  break: offensive in the open with its nerve already gone (morale 25), gun 18 tiles off (a
 --             squad only falls back from inside 26 tiles): pinned, falls back at least 5 tiles
 --             together (no man more than 12 tiles from the others' middle), then rallies - stops
@@ -669,7 +670,7 @@ local function startTest(kind, x, y, z, playerNum)
     local len = math.sqrt(fx * fx + fy * fy)
     if len < 2 then fx, fy = 1, 0 else fx, fy = fx / len, fy / len end
     local tx, ty = x + 0.5, y + 0.5
-    local range = kind == "broke" and 18 or 35
+    local range = kind == "broke" and 18 or 26
     local gx, gy = tx + fx * range, ty + fy * range
     local target = LF.Units.createSquad("SOV", tx, ty, z, fx, fy)
     local gun = LF.Units.createSquad("GER", gx, gy, 0, -fx, -fy, false, true)
@@ -684,7 +685,8 @@ local function startTest(kind, x, y, z, playerNum)
         end
     end
     test = { kind = kind, T = T, target = target.id, gun = gun.id, t0 = LF.simTime, peak = 0, at = {},
-             state = "steady", gx = gx, gy = gy, far = 0 }
+             state = "steady", gx = gx, gy = gy, far = 0, bursts = LF.MG and LF.MG.bursts or 0,
+             rounds = LF.MG and LF.MG.rounds or 0 }
     LF.log(string.format("TEST %d start: %s - %s at (%d,%d), %s %d tiles away at (%d,%d); version %s",
         T.n, T.name, target.name, math.floor(tx), math.floor(ty), gun.name, range, math.floor(gx), math.floor(gy), tostring(LF.VERSION)))
     LF.say("Test " .. T.n .. ": " .. T.name .. " - verdict in the log in " .. T.secs .. " s (game time)")
@@ -717,6 +719,9 @@ local function verdict()
         parts[#parts + 1] = rally and string.format("rallied at %.0f s (%s)", rally - fire, t.rallyState or "?") or "never stopped falling back"
         words = table.concat(parts, "; ")
     end
+    local guns = string.format("the gun fired %d bursts (%d rounds)", (LF.MG and LF.MG.bursts or 0) - t.bursts,
+        (LF.MG and LF.MG.rounds or 0) - t.rounds)
+    words = words .. "; " .. guns
     LF.log(string.format("TEST %d %s: %s - %s", T.n, ok and "PASS" or "FAIL", T.name, words))
     LF.say("Test " .. T.n .. (ok and " PASS: " or " FAIL: ") .. words)
     test = nil

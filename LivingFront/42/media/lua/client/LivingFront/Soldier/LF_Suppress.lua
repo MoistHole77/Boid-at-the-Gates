@@ -37,6 +37,8 @@ local CFG = {
     coverRecover = { [0] = 1, [1] = 1.75, [2] = 2.5, [3] = 2.5 },
     quietAfter = 7,         -- simulated seconds with no round in: ...
     quietMul = 4,           -- ... it drains this much faster
+    rifleCap = 55,          -- (0.73.2) rifle and pistol fire alone can suppress a squad, not pin it: only
+                            -- machine guns, grenades and the like push it past this
 }
 LF.Suppress.CFG = CFG
 
@@ -115,7 +117,8 @@ local function stateOf(v)
 end
 
 -- Add to a squad's meter. (sx, sy): where the fire comes from (for its cover while it recovers).
-function LF.Suppress.addSquad(sid, amount, sx, sy, mul)
+-- cap (optional): this fire can't take the meter past it.
+function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
     local S = squadNow(sid)
     if not S then
         S = { v = 0, t = LF.simTime, cover = 0 }
@@ -125,7 +128,8 @@ function LF.Suppress.addSquad(sid, amount, sx, sy, mul)
         S.fit, S.fitAt = fitIn(sid), LF.simTime
     end
     local share = math.max(CFG.shareMin, math.min(1, CFG.share / S.fit))
-    S.v = math.min(CFG.max, S.v + amount * share * (mul or 1))
+    local top = math.min(CFG.max, cap or CFG.max)
+    if S.v < top then S.v = math.min(top, S.v + amount * share * (mul or 1)) end
     S.lastRound = LF.simTime
     if sx then S.sx, S.sy = sx, sy end
     local st = stateOf(S.v)
@@ -198,8 +202,9 @@ function LF.Suppress.setMoving(id, moving)
     immune[id] = moving or nil
 end
 
--- A round at (or close to) this man. from (optional): the shooter's body.
-function LF.Suppress.add(body, amount, from)
+-- A round at (or close to) this man. from (optional): the shooter's body. cap (optional): see
+-- addSquad (LF.Suppress.CFG.rifleCap for rifle fire).
+function LF.Suppress.add(body, amount, from, cap)
     local id = idOf(body)
     if not id or immune[id] then return end
     local mul = 1
@@ -209,7 +214,7 @@ function LF.Suppress.add(body, amount, from)
     if sid then
         local sx, sy = nil, nil
         if from then sx, sy = from:getX(), from:getY() end
-        LF.Suppress.addSquad(sid, amount, sx, sy, mul)
+        LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
         return
     end
     local was = valueOf(id)

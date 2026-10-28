@@ -199,7 +199,7 @@ local function upkeep(team)
             if gr then gr.mgRole, gr.weapon = "ammo", nil end      -- (if he comes back, with a rifle)
             new.mgRole, new.weapon = "gunner", LF.Weapons.MG_OF[team.faction]
             arm(new)
-            g.set, g.gunnerId, g.service, g.firing = false, new.id, nil, false
+            g.set, g.gunnerId, g.service, g.firing, g.unsetBy = false, new.id, nil, false, "a new gunner"
             LF.log("MG " .. team.name .. ": " .. title(new) .. " takes the gun" .. (gr and (" from " .. title(gr)) or ""))
             LF.Tactics.shout(new.id, "I've got the gun!")
             gr = new
@@ -244,7 +244,8 @@ end
 function LF_MGSetupAction:stop() ISBaseTimedAction.stop(self) end
 function LF_MGSetupAction:perform()
     local g, b = self.g, self.character
-    g.set, g.setX, g.setY = true, b:getX(), b:getY()
+    g.set, g.setX, g.setY, g.setAt = true, b:getX(), b:getY(), LF.tick
+    g.setups = (g.setups or 0) + 1
     if self.gun then LF.guard("mg rack", play, b, self.gun:getRackSound()) end
     LF.log("MG #" .. tostring(b:getModData().LF_id) .. " sets up the gun at " .. math.floor(b:getX()) .. "," .. math.floor(b:getY())
         .. (self.stand and " (in a window)" or ""))
@@ -395,6 +396,8 @@ local function finish(self)
     local g = self.g
     g.firing = false
     g.lastEnd = LF.tick
+    LF.MG.bursts = (LF.MG.bursts or 0) + 1
+    LF.MG.rounds = (LF.MG.rounds or 0) + self.fired
     g.readyAt = LF.tick + CFG.adjust + ZombRand(30)
     g.soloPause = CFG.soloPause[1] + ZombRand(CFG.soloPause[2] - CFG.soloPause[1] + 1)
     local t = self.target
@@ -510,12 +513,21 @@ function LF.MG.fire(body, rec, m, target, area)
     -- (Not the exact square: a man jostled half a tile by the man beside him hasn't moved the
     -- gun - up to 0.43 that set it up again and again without ever firing.)
     if not g.set or LF.dist(body:getX(), body:getY(), g.setX or -1000, g.setY or -1000) > CFG.driftTiles then
-        g.set = false
+        -- (0.73.2, diagnosis: the guns set up again and again and hardly fire - say why.)
+        if g.setX and (g.setups or 0) >= 1 and LF.tick - (g.whyAt or -100000) > 120 then
+            g.whyAt = LF.tick
+            LF.log(string.format("MG #%s sets up again: set %s, %.1f tiles from where he set it up %.1f s ago, gun %s, by %s",
+                tostring(rec.id), tostring(g.set), LF.dist(body:getX(), body:getY(), g.setX, g.setY),
+                (LF.tick - (g.setAt or LF.tick)) / 60, tostring(g), tostring(g.unsetBy)))
+        end
+        g.set, g.unsetBy = false, nil
         ISTimedActionQueue.add(LF_MGSetupAction:new(body, g, LF.Combat.arm(body), stand, target))
         return
     end
     local P = profileFor(g.faction)
+    g.block = nil
     if g.service then
+        g.block = "service " .. tostring(g.service.kind)
         if g.service.kind == "cool" and heatNow(g) <= CFG.coolTo then
             g.service = nil
             LF.log("MG " .. team.name .. ": cooled, back in action")
@@ -532,13 +544,13 @@ function LF.MG.fire(body, rec, m, target, area)
     if P.coolAt and h >= P.coolAt then startService(g, "cool", body, rec, team, stand); return end
     local ready = LF.Combat.readyToFire(body, target)
     if ready then g.aimedAt = LF.tick end
-    if LF.tick < (g.readyAt or 0) then return end
+    if LF.tick < (g.readyAt or 0) then g.block = "adjusting after a burst"; return end
     if not ready then
         m.combat.turnStart = m.combat.turnStart or LF.tick
-        if LF.tick - m.combat.turnStart < 180 then return end
+        if LF.tick - m.combat.turnStart < 180 then g.block = "turning onto the target"; return end
     end
     m.combat.turnStart = nil
-    if not mayFire(g) then return end
+    if not mayFire(g) then g.block = "waiting its turn (the other gun / pause)"; return end
     g.firing = true
     ISTimedActionQueue.add(LF_MGBurstAction:new(body, g, target, LF.Combat.arm(body), P, area, stand))
 end
@@ -825,7 +837,7 @@ function LF.MG.driveTeam(team, t, squad, sq)
     t.pos.B.x, t.pos.B.y = p.x - dx * 2.5, p.y - dy * 2.5      -- security just behind the gun
     t.shifting, t.phaseStart = true, LF.tick
     local g = guns[team.id]
-    if g then g.set = false end
+    if g then g.set, g.unsetBy = false, "the gun moving" end
     if team.leader then LF.Tactics.shout(team.leader, team.name .. words .. " Keep firing!") end
     LF.log("MG " .. team.name .. " of " .. squad.name .. (order == "ADVANCE" and " moves up " or " pulls back ")
         .. math.floor(math.abs(len)) .. " tiles while the other gun covers")
@@ -984,6 +996,17 @@ local function onTick()
         else
             g.teamName = team.name
             LF.guard("mg upkeep", upkeep, team)
+            -- (0.73.2, diagnosis: set up, wanted, and not firing for 5 s - say what's holding it.)
+            if g.set and not g.firing and LF.tick - (g.wantAt or -100000) < 60
+                and LF.tick - math.max(g.lastEnd or -100000, g.setAt or -100000) > 300
+                and LF.tick - (g.blockAt or -100000) > 300 then
+                g.blockAt = LF.tick
+                local gb = g.gunnerId and LF.Bodies.get(g.gunnerId)
+                local q = gb and ISTimedActionQueue.getTimedActionQueue(gb)
+                local a = q and q.queue and q.queue[1]
+                LF.log("MG " .. team.name .. ": set up but not firing for 5 s - " .. tostring(g.block or "no fire step reached")
+                    .. ", gunner's action " .. tostring(a and a.Type or "none"))
+            end
             -- A job on the gun that never finished (he was knocked over, say): call it off.
             local s = g.service
             if s and s.kind ~= "cool" and LF.tick - s.since > (s.ticks or 300) * 2 + 120 then g.service = nil end
