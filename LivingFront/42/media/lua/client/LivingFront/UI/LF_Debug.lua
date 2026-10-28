@@ -418,8 +418,7 @@ end
 
 local stress = nil
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
-local pair = {}                 -- the last stress run's men hit, on and off screen (the 0.73 test 4)
-local pooled = { on = 0, off = 0, n = 0 }   -- every pair this session (one fight is ~15 hits: too few to judge alone)
+local pooled = { on = 0, off = 0, nOn = 0, nOff = 0 }   -- every run this session, on and off screen (one fight is ~15 hits: too few to judge alone)
 
 -- Every man of a platoon (its headquarters and its squads).
 local function platoonMen(p)
@@ -507,25 +506,35 @@ local function stressSummary()
         casualties(stress.sov or {})))
     LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
     -- Test 4: the same fight on and off screen should hit about as many men (within 20%).
-    local hits = hitCount(stress.ger or {}) + hitCount(stress.sov or {})
-    pair[stress.offscreen and "off" or "on"] = hits
-    if pair.on and pair.off then
-        local big = math.max(pair.on, pair.off, 1)
-        local diff = math.abs(pair.on - pair.off) / big
-        pooled.on, pooled.off, pooled.n = pooled.on + pair.on, pooled.off + pair.off, pooled.n + 1
-        local pdiff = math.abs(pooled.on - pooled.off) / math.max(pooled.on, pooled.off, 1)
-        -- (Judged on every pair run this session, from the third: one fight's ~15 hits swing by a
-        -- third either way by chance alone.)
-        local verdict = pooled.n < 3 and "RUN AGAIN" or (pdiff <= 0.2 and "PASS" or "FAIL")
-        LF.log(string.format("TEST 4 %s: stress pair %d - on screen %d men hit, off screen %d (%.0f%% apart); all %d pairs: on %d, off %d (%.0f%% apart, 20%% allowed, judged from 3 pairs)",
-            verdict, pooled.n, pair.on, pair.off, diff * 100, pooled.n, pooled.on, pooled.off, pdiff * 100))
-        LF.say(string.format("Test 4 %s: pair %d %d/%d; all pairs %d/%d (%.0f%% apart)", verdict, pooled.n, pair.on, pair.off,
-            pooled.on, pooled.off, pdiff * 100))
-        pair = {}
-    else
-        LF.say("Test 4: " .. hits .. " men hit " .. (stress.offscreen and "off" or "on") .. " screen - now run the "
-            .. (stress.offscreen and "on" or "off") .. "-screen half")
+    -- Test 4: the same fight on and off screen should hit about as many men - the average of every
+    -- run this session each way, judged once there are 3 of each (one fight's ~15 hits swing by a
+    -- third either way by chance alone). A run whose men were deleted before the end doesn't count.
+    local all = stress.ger or {}
+    local gone = 0
+    for _, ids in ipairs({ stress.ger or {}, stress.sov or {} }) do
+        for _, rid in ipairs(ids) do if not LF.Records.get(rid) then gone = gone + 1 end end
     end
+    if gone > 0 and gone >= #all + #(stress.sov or {}) then
+        LF.log("TEST 4: this run doesn't count - its men were deleted before the end")
+        LF.say("Test 4: run not counted (its men were deleted before the end)")
+        return
+    end
+    local hits = hitCount(stress.ger or {}) + hitCount(stress.sov or {})
+    local k = stress.offscreen and "Off" or "On"
+    pooled[k == "On" and "on" or "off"] = pooled[k == "On" and "on" or "off"] + hits
+    pooled["n" .. k] = pooled["n" .. k] + 1
+    local mOn = pooled.nOn > 0 and pooled.on / pooled.nOn or nil
+    local mOff = pooled.nOff > 0 and pooled.off / pooled.nOff or nil
+    local verdict, diff = "RUN MORE", nil
+    if mOn and mOff then
+        diff = math.abs(mOn - mOff) / math.max(mOn, mOff, 1)
+        if pooled.nOn >= 3 and pooled.nOff >= 3 then verdict = diff <= 0.2 and "PASS" or "FAIL" end
+    end
+    LF.log(string.format("TEST 4 %s: this run %s screen %d men hit; on screen %d run(s), average %s; off screen %d run(s), average %s%s (20%% allowed, judged from 3 of each)",
+        verdict, k == "On" and "on" or "off", hits, pooled.nOn, mOn and string.format("%.1f", mOn) or "-", pooled.nOff,
+        mOff and string.format("%.1f", mOff) or "-", diff and string.format(", %.0f%% apart", diff * 100) or ""))
+    LF.say(string.format("Test 4 %s: %d hit; on %d runs avg %s, off %d runs avg %s", verdict, hits, pooled.nOn,
+        mOn and string.format("%.1f", mOn) or "-", pooled.nOff, mOff and string.format("%.1f", mOff) or "-"))
 end
 
 LF.onTick("Debug", function()
@@ -923,9 +932,9 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("4. Stress pair: running - summary in the log when done")
         else
-            tm:addOption("4a. Stress pair, on screen (right-click a building)" .. (pair.on and (" - done: " .. pair.on .. " hit") or ""), nil,
+            tm:addOption(string.format("4a. Stress, on screen (right-click a building) - %d run(s) so far", pooled.nOn), nil,
                 function() stressTest(x, y, z) end)
-            tm:addOption("4b. Stress pair, off screen (same building)" .. (pair.off and (" - done: " .. pair.off .. " hit") or ""), nil,
+            tm:addOption(string.format("4b. Stress, off screen (same building) - %d run(s) so far", pooled.nOff), nil,
                 function() stressTest(x, y, z, true) end)
         end
         tm:addOption("(Before each: Tools > Delete ALL NPCs. Verdicts: TEST lines in the log)")
