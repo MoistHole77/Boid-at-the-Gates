@@ -545,14 +545,14 @@ local function gateSample()
             local x, y, z = b:getX(), b:getY(), math.floor(b:getZ())
             local st = LF.Brain.stateOf(rid)
             local sq = getCell():getGridSquare(math.floor(x), math.floor(y), z)
-            -- (Judged against the enemy he's facing - his target, else the point he covers - and not
-            -- while pinned: then it's the fire holding him there, not his squad - 0.74.3.)
-            if st and HOLDING[st] and not moving(b) and sq and not sq:getBuilding() and not LF.Suppress.isPinned(b) then
+            -- (Judged against the enemy: his target, else the nearest his squad knows of. Not while
+            -- pinned - then it's the fire holding him there, not his squad - and not a man watching a
+            -- quiet quarter of a perimeter (guard): no fire comes from there - 0.74.4.)
+            if st and HOLDING[st] and st ~= "guard" and not moving(b) and sq and not sq:getBuilding() and not LF.Suppress.isPinned(b) then
                 local mm = LF.Brain.mindOf(rid)
                 local tb = mm.targetId and LF.Bodies.get(mm.targetId)
                 local c = nil
                 if tb and not tb:isDead() then c = { x = tb:getX(), y = tb:getY() }
-                elseif mm.point then c = { x = mm.point:getX(), y = mm.point:getY() }
                 else c = LF.Squad.bestContact(r.squad, x, y, 600, 45) end
                 if c and LF.Cover.quality(math.floor(x), math.floor(y), z, c.x, c.y) == LF.Cover.NONE then
                     local d = coverWithin(x, y, z, c.x, c.y, 10)
