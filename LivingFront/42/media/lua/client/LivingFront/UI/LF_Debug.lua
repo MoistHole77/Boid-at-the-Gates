@@ -711,12 +711,25 @@ local function walkInTick()
             local b = LF.Bodies.get(rid)
             if b and not b:isDead() then
                 local p = W.pos[rid]
+                local r = LF.Records.get(rid)
+                -- (Under orders: moving in a bound or a file, or his squad flanking, advancing, falling
+                -- back, regrouping or marching - when his body appeared or 15 s later. A column leaving
+                -- its file in contact, or a flank, should move men - 0.76.1.)
+                local function underOrders()
+                    local st = LF.Brain.stateOf(rid)
+                    if st == "bound" or st == "file" then return true end
+                    local sid = r and r.squad
+                    if not sid then return false end
+                    local it = LF.Tactics.intent(sid)
+                    if it == "FLANK" or it == "ADVANCE" or it == "FALLBACK" or it == "REGROUP" then return true end
+                    local M = LF.March.get(sid)
+                    return M ~= nil and not M.arrived
+                end
                 if not p then
-                    W.pos[rid] = { x = b:getX(), y = b:getY(), t = LF.simTime }
+                    W.pos[rid] = { x = b:getX(), y = b:getY(), t = LF.simTime, orders = underOrders() }
                 elseif not W.moved[rid] and LF.simTime - p.t >= 15 then
                     local st = LF.Brain.stateOf(rid)
-                    local r = LF.Records.get(rid)
-                    W.moved[rid] = { d = LF.dist(p.x, p.y, b:getX(), b:getY()), orders = (st == "bound" or st == "file"),
+                    W.moved[rid] = { d = LF.dist(p.x, p.y, b:getX(), b:getY()), orders = p.orders or underOrders(),
                                      squad = r and r.squad, state = st }
                 end
             end

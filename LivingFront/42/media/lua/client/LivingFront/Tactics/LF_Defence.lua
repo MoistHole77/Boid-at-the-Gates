@@ -6,6 +6,7 @@ require "LivingFront/Tactics/LF_Tactics"
 require "LivingFront/Tactics/LF_Manoeuvre"
 
 local I = LF.Tactics.I
+local digInRecords          -- (below)
 local CFG, fit, setIntent, squads, teams = I.CFG, I.fit, I.setIntent, I.squads, I.teams
 
 -- ---- defensive stance: all-round defence ---------------------------------------------------
@@ -818,6 +819,24 @@ function LF.Tactics.forgetUnit(squad)
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
 end
 
+digInRecords = function(squad)
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        if LF.Bodies.get(rid) then return end            -- (someone has a body: the perimeter forms on screen)
+    end
+    local ax, ay, az = LF.Squad.anchor(squad.id)
+    if not ax then return end
+    local tx, ty = ax + (squad.facingX or 1) * 15, ay + (squad.facingY or 0) * 15
+    local c = LF.Squad.bestContact(squad.id, ax, ay, 3600, 60)
+    if c then tx, ty = c.x, c.y end
+    local spots = LF.Tactics.perimeterSpots(squad, ax, ay, math.floor(az or 0), tx, ty)
+    local n = 0
+    for rid, sp in pairs(spots) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not r.aid then r.x, r.y, n = sp.x, sp.y, n + 1 end
+    end
+    if n > 0 then LF.log("STANCE " .. squad.name .. " digs in off screen: " .. n .. " men to their places in the all-round defence") end
+end
+
 function LF.Tactics.setStance(squad, stance, holdAt)
     -- Holding a building: standing-by fire teams nearby come and help hold it.
     if stance == "defensive" and holdAt and LF.Join then LF.guard("join", LF.Join.gather, squad, "defend") end
@@ -827,6 +846,10 @@ function LF.Tactics.setStance(squad, stance, holdAt)
     squads[squad.id] = nil
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
     LF.log("STANCE " .. squad.name .. " -> " .. stance)
+    -- (0.76.1) Digging in in the open with nobody of it in sight of you (a reserve arriving, a unit
+    -- at its rally point): its men go straight to their places in the all-round defence, facing the
+    -- enemy it knows of (else its front) - so when their bodies appear they are already there.
+    if stance == "defensive" and not holdAt and squad.kind == "squad" then LF.guard("dig in off screen", digInRecords, squad) end
     -- (A defensive unit's commander calls it when the perimeter goes up.)
     local cid = LF.Units.commander(squad)
     if stance ~= "defensive" and stance ~= "standby" and cid and LF.Bodies.get(cid) then LF.Tactics.shout(cid, "On me!") end
