@@ -496,6 +496,12 @@ local function startService(g, kind, gb, gr, team, stand)
         or " changes the barrel") .. (who == gr and (" himself (" .. tostring(why) .. ")") or "") .. ", heat " .. fmt(g.heat))
 end
 
+-- Something waiting in his action queue (not yet started).
+local function queued(body)
+    local q = ISTimedActionQueue.getTimedActionQueue(body)
+    return q ~= nil and q.queue ~= nil and #q.queue > 0
+end
+
 -- One fire step for a gunner (from the brain, every tick while he's fighting): target is a body
 -- (aimed fire) or a point (area fire).
 function LF.MG.fire(body, rec, m, target, area)
@@ -508,7 +514,9 @@ function LF.MG.fire(body, rec, m, target, area)
     g.teamName, g.gunnerId = team.name, rec.id
     g.wantAt = LF.tick
     g.x, g.y, g.z = body:getX(), body:getY(), body:getZ()
-    if body:isPerformingAnAction() then return end
+    -- (Anything queued counts, not only an action under way: up to 0.73.2 a set-up queued but not
+    -- yet started let the next tick queue another, and the gun spent half a minute setting up.)
+    if body:isPerformingAnAction() or queued(body) then return end
     local stand = m.cover ~= nil and m.cover.stand == true          -- (at a window or over low cover: standing to it)
     -- (Not the exact square: a man jostled half a tile by the man beside him hasn't moved the
     -- gun - up to 0.43 that set it up again and again without ever firing.)
@@ -516,9 +524,9 @@ function LF.MG.fire(body, rec, m, target, area)
         -- (0.73.2, diagnosis: the guns set up again and again and hardly fire - say why.)
         if g.setX and (g.setups or 0) >= 1 and LF.tick - (g.whyAt or -100000) > 120 then
             g.whyAt = LF.tick
-            LF.log(string.format("MG #%s sets up again: set %s, %.1f tiles from where he set it up %.1f s ago, gun %s, by %s",
+            LF.log(string.format("MG #%s sets up again: set %s, %.1f tiles from where he set it up %.1f s ago, by %s",
                 tostring(rec.id), tostring(g.set), LF.dist(body:getX(), body:getY(), g.setX, g.setY),
-                (LF.tick - (g.setAt or LF.tick)) / 60, tostring(g), tostring(g.unsetBy)))
+                (LF.tick - (g.setAt or LF.tick)) / 60, tostring(g.unsetBy)))
         end
         g.set, g.unsetBy = false, nil
         ISTimedActionQueue.add(LF_MGSetupAction:new(body, g, LF.Combat.arm(body), stand, target))
@@ -546,10 +554,12 @@ function LF.MG.fire(body, rec, m, target, area)
     if ready then g.aimedAt = LF.tick end
     if LF.tick < (g.readyAt or 0) then g.block = "adjusting after a burst"; return end
     if not ready then
-        m.combat.turnStart = m.combat.turnStart or LF.tick
-        if LF.tick - m.combat.turnStart < 180 then g.block = "turning onto the target"; return end
+        -- (Kept on the gun: the brain's combat memory is reset under him, and up to 0.73.2 the
+        -- 3 s "fire anyway" never came.)
+        g.turnStart = g.turnStart or LF.tick
+        if LF.tick - g.turnStart < 180 then g.block = "turning onto the target"; return end
     end
-    m.combat.turnStart = nil
+    g.turnStart = nil
     if not mayFire(g) then g.block = "waiting its turn (the other gun / pause)"; return end
     g.firing = true
     ISTimedActionQueue.add(LF_MGBurstAction:new(body, g, target, LF.Combat.arm(body), P, area, stand))
