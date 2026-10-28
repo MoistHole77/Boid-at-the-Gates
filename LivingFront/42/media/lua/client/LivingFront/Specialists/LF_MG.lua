@@ -374,6 +374,7 @@ function LF_MGBurstAction:start()
     local len = CFG.burstTicks + ZombRand(2 * CFG.burstJitter + 1) - CFG.burstJitter
     self.endAt = LF.tick + math.max(CFG.burstMin, math.min(CFG.burstMax, len))
     self.g.firing = true
+    if LF.Brain and LF.Brain.onShot then LF.guard("reaction", LF.Brain.onShot, self.character) end
 end
 function LF_MGBurstAction:update()
     local t = self.target

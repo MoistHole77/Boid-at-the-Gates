@@ -547,8 +547,8 @@ function LF_MoveAction.runSample(self)
             local was = LF.Move.RUN_PACE
             LF.Move.RUN_PACE = med
             if #list == 1 or #list % 5 == 0 then
-                LF.log(string.format("PACE run %.2f tiles/s (median of %d: %.2f%s)", speed, #list, med,
-                    was and string.format(", was %.2f", was) or ""))
+                if LF.Config.logVerbose then LF.log(string.format("PACE run %.2f tiles/s (median of %d: %.2f%s)", speed, #list, med,
+                    was and string.format(", was %.2f", was) or "")) end
             end
             saveScales()
         end

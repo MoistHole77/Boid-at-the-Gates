@@ -38,6 +38,10 @@ function LF.Posture.forget(id)
     want[id] = nil
 end
 
+-- (0.78) The crouch key is the same key for every body (they all read player 0's keyboard): it is
+-- read once a frame, by the first body updated, not once per body.
+local keyFrame, keyDown = -1, false
+
 local function onPlayerUpdate(body)
     local id = body:getModData().LF_id
     if not id then return end    -- the real player, or someone else's character
@@ -48,7 +52,10 @@ local function onPlayerUpdate(body)
         canReadKey = ok
         LF.log("POSTURE crouch-key prediction " .. (ok and "available" or "UNAVAILABLE (NPCs may twitch on the crouch key)"))
     end
-    if canReadKey and body:isCrouchButtonPressed() then target = not desired end
+    if canReadKey then
+        if keyFrame ~= LF.frame then keyFrame, keyDown = LF.frame, body:isCrouchButtonPressed() == true end
+        if keyDown then target = not desired end
+    end
     if body:isSneaking() ~= target then body:setSneaking(target) end
 end
 

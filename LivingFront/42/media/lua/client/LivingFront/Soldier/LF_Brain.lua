@@ -239,10 +239,14 @@ local KEEP_POSITION = { engage = true, alert = true, guard = true, assist = true
 local function setState(id, body, rec, m, state, detail)
     if m.state == state then return end
     m.detail = detail
+    -- (0.78 reaction test) The first man of his squad to start moving after a movement order.
+    if state == "bound" and rec.squad and LF.Brain.onMoveStart then LF.Brain.onMoveStart(rec.squad) end
     -- Out of his rest (an enemy, an order): he gets up and takes his rifle back.
     if m.rest and LF.Idle then LF.guard("end rest", LF.Idle.stop, body, m) end
-    LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
-        .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
+    if LF.Config.logVerbose then
+        LF.log("BRAIN #" .. id .. " " .. title(rec) .. " [" .. rec.faction .. "] "
+            .. m.state .. " -> " .. state .. (detail and (" (" .. detail .. ")") or ""))
+    end
     -- Losing and regaining sight (engage <-> alert <-> guard) keeps the soldier's position and rhythm;
     -- any other change starts fresh.
     if KEEP_POSITION[m.state] and KEEP_POSITION[state] then
@@ -261,11 +265,11 @@ local function takeSpot(id, body, m, field, x, y, z, label, gait, awayX, awayY)
     m[field] = { x = x, y = y, z = z, since = LF.tick, gait = gait or "run", awayX = awayX, awayY = awayY }
     LF.Cover.reserve(x, y, z, id)
     if isAt(body, m[field]) then
-        LF.log("BRAIN #" .. id .. " " .. label .. " here (" .. x .. "," .. y .. ")")
+        if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. label .. " here (" .. x .. "," .. y .. ")") end
     else
         walkTo(body, x, y, z, m[field].gait, awayX, awayY)
         m.lastPath = LF.tick
-        LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y)
+        if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y) end
     end
 end
 
@@ -489,6 +493,17 @@ end
 -- Pick a target among the visible enemies: near, not already covered by squad mates, exposed
 -- rather than behind cover, recognised leaders first. Lowest score wins.
 local function chooseTarget(id, body, rec, m, visible)
+    -- (0.78) The target his sergeant gave him, if he can see it and it isn't behind a wall from here.
+    local given = rec.squad and LF.SquadBrain.enabled and LF.SquadBrain.targetOf(rec.squad, id)
+    if given then
+        for i = 1, #visible do
+            local s = visible[i]
+            if s.id == given then
+                if not (LF.Cover.of(s.body, body) == LF.Cover.HIGH and s.dist > 2) then return s end
+                break
+            end
+        end
+    end
     local best, bestScore = nil, nil
     for i = 1, #visible do
         local s = visible[i]
@@ -562,8 +577,8 @@ local function holdSector(id, body, rec, m, sx, sy, sz, point, watching, coverPo
             setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
         elseif m.targetId ~= threatId then
-            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
-                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles")
+            if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
+                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles") end
         end
         m.targetId, m.targetDist = threatId, dist
     elseif watching then
@@ -684,8 +699,8 @@ local function holdPost(id, body, rec, m, sx, sy, sz, point, watching, stand, wi
             setState(id, body, rec, m, "engage", where .. ", target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
         elseif m.targetId ~= threatId then
-            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
-                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles")
+            if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
+                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles") end
         end
         m.targetId, m.targetDist = threatId, dist
     elseif watching then
@@ -930,7 +945,8 @@ local function decide(id, body, rec, m)
     else visible = LF.Sense.look(id, body, rec, CFG.sightRange) end
     LF.Perf.stop("brain look", tLook)
     local tT = getTimestampMs()
-    if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
+    -- (A squad soldier's sightings go into the squad's picture with its look - LF_SquadBrain, 0.78.)
+    if inSquad and #visible > 0 and not LF.SquadBrain.enabled then shareSightings(id, rec, visible) end
     local pick = nil
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
     LF.Perf.stop("brain target", tT)
@@ -1198,8 +1214,8 @@ local function decide(id, body, rec, m)
                     setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                         .. math.floor(dist) .. " tiles")
                 elseif m.targetId ~= threatId then
-                    LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
-                        .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles")
+                    if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
+                        .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles") end
                 end
                 m.targetId, m.targetDist = threatId, dist
             else
@@ -1216,8 +1232,8 @@ local function decide(id, body, rec, m)
             setState(id, body, rec, m, "engage", "target #" .. threatId .. " " .. title(pick.rec) .. " at "
                 .. math.floor(dist) .. " tiles")
         elseif m.targetId ~= threatId then
-            LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
-                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles")
+            if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. title(rec) .. " switches target to #" .. threatId .. " "
+                .. title(pick.rec) .. " at " .. math.floor(dist) .. " tiles") end
         end
         m.targetId = threatId
         m.targetDist = dist
@@ -1425,6 +1441,32 @@ local function act(id, body, rec, m)
             LF.guard("nurse", LF.Idle.nurse, body, m)
         end
     end
+end
+
+-- ---- reaction times (0.78 test) ----------------------------------------------------------------------
+-- How long a man takes to fire his first shot once his squad's contact begins (LF_SquadBrain), and
+-- how long a squad takes to start moving once it is given a movement order (LF_Tactics.setIntent).
+-- Kept as plain lists of seconds for the test to read.
+LF.Brain.reactions = { shot = {}, move = {} }
+function LF.Brain.onShot(body)
+    local id = body:getModData().LF_id
+    local m = id and minds[id]
+    local rec = id and LF.Records.get(id)
+    if not (m and rec and rec.squad and LF.SquadBrain.contactSince) then return end
+    local cs = LF.SquadBrain.contactSince(rec.squad)
+    if not cs or m.reactFor == cs then return end
+    m.reactFor = cs
+    local secs = (LF.tick - cs) / 60
+    local list = LF.Brain.reactions.shot
+    if secs >= 0 and secs <= 15 and #list < 2000 then list[#list + 1] = secs end
+end
+function LF.Brain.onMoveStart(sid)
+    local sq = LF.Tactics.state(LF.Units.get(sid))
+    if not (sq and sq.moveOrderAt) or sq.moveOrderMet then return end
+    sq.moveOrderMet = true
+    local secs = (LF.tick - sq.moveOrderAt) / 60
+    local list = LF.Brain.reactions.move
+    if secs >= 0 and secs <= 15 and #list < 2000 then list[#list + 1] = secs end
 end
 
 -- Extension points: later features hook in here without touching the loop.

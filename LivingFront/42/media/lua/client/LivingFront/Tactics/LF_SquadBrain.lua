@@ -44,6 +44,7 @@ local CFG = {
     manChecks = 2,          -- new checks a man makes of his own per think
     pairTicks = 60,         -- a man's line to an enemy is known this long
     maxSeen = 5,            -- enemies a man is given per think (nearest first)
+    spotChance = 25,        -- (0.78) percent a look to recognise a sergeant or corporal the squad sees
     placeEvery = 600,       -- placement is redone at least this often while in use
     placeTurn = 0.7,        -- ... or when the threat swings more than ~45 degrees (cos)
     placeMove = 4,          -- ... or the squad's middle has moved this far
@@ -58,10 +59,11 @@ local S = {}                -- squad id -> state
 local stats = { los = 0, looks = 0, places = 0, spots = 0, at = 0 }
 LF.SquadBrain.stats = stats
 
+local shareTargets           -- (below)
 local function stateOf(sid)
     local s = S[sid]
     if not s then
-        s = { seen = {}, seenAt = -100000, pairs = {}, cands = nil, spots = {} }
+        s = { sid = sid, seen = {}, seenAt = -100000, pairs = {}, cands = nil, spots = {} }
         S[sid] = s
     end
     return s
@@ -169,6 +171,22 @@ local function squadLook(sid, s)
             seen[#seen + 1] = v
         end
     end
+    -- (0.78) What it saw goes into the squad's picture once a look (not once per man a think), a
+    -- sergeant or corporal among them perhaps recognised; and the sergeant shares out the targets.
+    if #seen > 0 then
+        if not s.contactSince or LF.tick - (s.lastSeen or -100000) > 600 then s.contactSince = LF.tick end
+        s.lastSeen = LF.tick
+    end
+    for i = 1, #seen do
+        local v = seen[i]
+        LF.Squad.report(sid, v.id, v.body)
+        local rank = v.rec.rank
+        if (rank == "SGT" or rank == "CPL") and not LF.Squad.knowsLeader(sid, v.id) and ZombRand(100) < CFG.spotChance then
+            LF.Squad.markLeader(sid, v.id)
+            LF.log("SPOTTED " .. squad.name .. " recognised enemy leader #" .. v.id .. " " .. LF.Units.title(v.rec))
+        end
+    end
+    shareTargets(s, men, n, cx, cy)
     -- Forget lines to men no longer about (kept small).
     s.looks = (s.looks or 0) + 1
     if s.looks % 40 == 0 then
@@ -178,6 +196,72 @@ local function squadLook(sid, s)
             end
         end
     end
+end
+
+-- ---- the sergeant shares out the targets (0.78) -----------------------------------------------------
+-- Each look, every fit man is given one of the enemies the squad sees: the men from left to right
+-- along the squad's front take the enemies from left to right, so the fire spreads along the enemy
+-- line rather than everyone shooting the nearest man. A machine gun firing on them counts double
+-- (twice the men on it), a recognised leader half again. A man who can't see his own target keeps
+-- choosing for himself (LF_Brain).
+local slots, order = {}, {}
+local function byLat(a, b) return a.lat < b.lat end
+shareTargets = function(s, men, n, cx, cy)
+    s.assign = s.assign or {}
+    for k in pairs(s.assign) do s.assign[k] = nil end
+    local seen = s.seen
+    if #seen == 0 or n == 0 then return end
+    local ex, ey = 0, 0
+    for i = 1, #seen do ex, ey = ex + seen[i].body:getX(), ey + seen[i].body:getY() end
+    ex, ey = ex / #seen - cx, ey / #seen - cy
+    local l = math.sqrt(ex * ex + ey * ey)
+    if l < 0.1 then ex, ey, l = 1, 0, 1 end
+    local rx, ry = -ey / l, ex / l              -- (the squad's right, facing the enemy)
+    local k = 0
+    for i = 1, #seen do
+        local v = seen[i]
+        local w = 2
+        if LF.MG and LF.MG.isFiring(v.id) then w = 4 elseif LF.Squad.knowsLeader(s.sid or 0, v.id) then w = 3 end
+        local lat = (v.body:getX() - cx) * rx + (v.body:getY() - cy) * ry
+        for _ = 1, w do
+            k = k + 1
+            local e = slots[k]
+            if not e then e = {}; slots[k] = e end
+            e.id, e.lat = v.id, lat
+        end
+    end
+    for i = #slots, k + 1, -1 do slots[i] = nil end
+    table.sort(slots, byLat)
+    local m = 0
+    for i = 1, n do
+        local man = men[i]
+        local r = man.rec
+        if not r.wounded then
+            m = m + 1
+            local e = order[m]
+            if not e then e = {}; order[m] = e end
+            e.id, e.lat = man.id, (man.body:getX() - cx) * rx + (man.body:getY() - cy) * ry
+        end
+    end
+    for i = #order, m + 1, -1 do order[i] = nil end
+    table.sort(order, byLat)
+    for i = 1, m do
+        local j = math.min(k, math.floor((i - 0.5) * k / m) + 1)
+        s.assign[order[i].id] = slots[j].id
+    end
+end
+
+-- The target his sergeant gave a man (an enemy record id), or nil.
+function LF.SquadBrain.targetOf(sid, id)
+    local s = S[sid]
+    if not s or not s.assign or LF.tick - (s.seenAt or -100000) > CFG.lookTicks * 3 then return nil end
+    return s.assign[id]
+end
+
+-- When the squad's present contact began (the first look that saw an enemy after 10 s of none), or nil.
+function LF.SquadBrain.contactSince(sid)
+    local s = S[sid]
+    return s and s.contactSince
 end
 
 local out, res = {}, {}

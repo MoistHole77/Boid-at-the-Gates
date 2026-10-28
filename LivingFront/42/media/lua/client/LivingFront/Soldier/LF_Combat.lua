@@ -488,6 +488,7 @@ end
 LF.Combat.shotCount = 0
 local function shotEffects(shooter, gun)
     LF.Combat.shotCount = LF.Combat.shotCount + 1
+    if LF.Brain and LF.Brain.onShot then LF.guard("reaction", LF.Brain.onShot, shooter) end
     -- (The SMGs use a short gun's model - the sawn-off - with a sub-machine gun's report.)
     local prof = LF.Weapons.profileOf(shooter)
     shooter:playSound(prof.sound or gun:getSwingSound())

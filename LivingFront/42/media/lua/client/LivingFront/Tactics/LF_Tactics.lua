@@ -384,6 +384,10 @@ local function setIntent(squad, sq, cid, intent, why)
     if sq.intent == "FLANK" then sq.lastFlank, sq.flank = LF.tick, nil end
     sq.intent = intent
     if intent == "HOLD" then sq.holdSince = LF.tick end
+    -- (0.78 reaction test) A movement order: when did it come, has a man started moving yet.
+    if intent == "ADVANCE" or intent == "FALLBACK" or intent == "FLANK" or intent == "REGROUP" then
+        sq.moveOrderAt, sq.moveOrderMet = LF.tick, nil
+    end
     if intent and cid then
         local P = PLANS[intent]
         local words = P and P.squadBark

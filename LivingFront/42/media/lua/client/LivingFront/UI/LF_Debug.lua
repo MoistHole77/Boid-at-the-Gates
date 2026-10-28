@@ -419,6 +419,7 @@ end
 
 local stress = nil
 local summary076           -- (below)
+local reactionSummary      -- (below)
 local STRESS_WINDOWS = 24       -- PERF windows (5 s each) = 2 minutes
 local pooled = { on = 0, off = 0, nOn = 0, nOff = 0 }   -- every run this session, on and off screen (one fight is ~15 hits: too few to judge alone)
 
@@ -487,10 +488,14 @@ local function stressTest(x, y, z, offscreen, opts)
     local okT, whyT = LF.Platoon.take(sov, obj)
     if ger2 then LF.Platoon.hold(ger2, obj); LF.Platoon.take(sov2, obj) end
     stress = { started = getTimestampMs(), sim = LF.simTime, windows = {}, seen = LF.Perf.last(), obj = obj.name,
-               ger = gerMen, sov = sovMen, offscreen = offscreen, big = opts.big, setCap = opts.setCap,
+               ger = gerMen, sov = sovMen, offscreen = offscreen, big = opts.big, setCap = opts.setCap, reaction = opts.reaction,
                walkIn = opts.walkIn and { at = LF.simTime + 60, pos = {}, moved = {} } or nil }
     if opts.walkIn then
         LF.log("TEST 0.76 walk-in: the fight runs off screen for 60 s, then every man gets his body where he stands")
+    end
+    if opts.reaction and LF.Brain.reactions then
+        LF.Brain.reactions.shot, LF.Brain.reactions.move = {}, {}
+        LF.log("TEST 0.78 reaction: the stress fight - first shots after contact, first moves after orders")
     end
     if opts.big then
         LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
@@ -542,6 +547,21 @@ local function gateSample()
     local G = stress.gate
     if not G then G = { open = {}, cross = {}, openMen = {}, crossMen = {}, looks = 0 }; stress.gate = G end
     G.looks = G.looks + 1
+    -- (0.78) Fire spread: of the men engaging a target, how many different targets.
+    do
+        local tset, firing = {}, 0
+        for _, list in ipairs({ stress.ger or {}, stress.sov or {} }) do
+            for _, rid in ipairs(list) do
+                if LF.Brain.stateOf(rid) == "engage" then
+                    local mm = LF.Brain.mindOf(rid)
+                    if mm.targetId then firing = firing + 1; tset[mm.targetId] = true end
+                end
+            end
+        end
+        local nt = 0
+        for _ in pairs(tset) do nt = nt + 1 end
+        G.firing, G.targets = (G.firing or 0) + firing, (G.targets or 0) + nt
+    end
     G.idle = G.idle or {}
     G.idleMen = G.idleMen or {}
     -- (0.75) The attackers' assault: a squad flanking while another holds as a base of fire (or
@@ -793,6 +813,33 @@ summary076 = function()
     end
 end
 
+-- ---- the 0.78 reaction test -------------------------------------------------------------------------
+-- From the stress fight: every man's first shot after his squad's contact began, and every squad's
+-- first man moving after a movement order (LF_Brain.reactions). The medians are the verdict: a first
+-- shot within 1.5 s, a move within 1 s. Also: how spread the fire was (different enemies under fire
+-- for each man firing), from the gate looks, and the mod's cost.
+local function median(list)
+    if #list == 0 then return nil end
+    local t = {}
+    for i, v in ipairs(list) do t[i] = v end
+    table.sort(t)
+    return t[math.floor((#t + 1) / 2)]
+end
+
+reactionSummary = function(modMs, bodies)
+    local R = LF.Brain.reactions
+    local shot, move = median(R.shot), median(R.move)
+    local G = stress.gate or {}
+    local spread = (G.firing or 0) > 0 and (G.targets or 0) / G.firing or 0
+    local at72 = bodies > 0 and modMs / bodies * 72 or 0
+    local ok = shot ~= nil and move ~= nil and shot <= 1.5 and move <= 1.0
+    LF.log(string.format("TEST 0.78 reaction %s: first shot after contact - median %s over %d men (1.5 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
+        ok and "PASS" or "FAIL", shot and string.format("%.1f s", shot) or "none", #R.shot,
+        move and string.format("%.1f s", move) or "none", #R.move, spread, at72))
+    LF.say(string.format("Reaction test %s: first shot %s, moving %s", ok and "PASS" or "FAIL",
+        shot and string.format("%.1f s", shot) or "-", move and string.format("%.1f s", move) or "-"))
+end
+
 local function stressSummary()
     local W = stress.windows
     local n = #W
@@ -819,6 +866,10 @@ local function stressSummary()
         LF.simTime - (stress.sim or LF.simTime), stress.offscreen and " (off-screen)" or "", casualties(stress.ger or {}),
         casualties(stress.sov or {})))
     LF.say(string.format("Stress test done: %.1f fps, frame %.1f ms, mod %.2f ms - see the log", fps / n, f / n, m / n))
+    if stress.reaction then
+        LF.guard("reaction summary", reactionSummary, m / n, bodies)
+        return
+    end
     if not stress.offscreen then LF.guard("gate summary", gateSummary, m / n, bodies) end
     -- Test 4: the same fight on and off screen should hit about as many men (within 20%).
     -- Test 4: the same fight on and off screen should hit about as many men - the average of every
@@ -1242,33 +1293,16 @@ local function onMenu(playerNum, context, worldObjects, test)
     if not any then orders:addOption("(no units yet - spawn some)") end
 
 
-    -- Tests.
+    -- Tests: the one test of this release (the plan "Cutting soldier thinking").
     LF.guard("menu: tests", function()
         local tm = sub(main, "Tests")
-        local line = testLine()
-        if line then tm:addOption(line, nil, function() test = nil; LF.say("Test stopped") end) end
         if stress then
-            tm:addOption("Stress test running - summary and verdicts in the log when done")
+            tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption(string.format("0.75 gate: stress test on screen (right-click a building) - a flank with a base of fire, nobody idle or left in the open, the mod's cost - %d run(s) so far", pooled.nOn), nil,
-                function() stressTest(x, y, z) end)
-            tm:addOption(string.format("Stress test off screen (same building; with the on-screen runs: 0.73 test 4) - %d run(s) so far", pooled.nOff), nil,
-                function() stressTest(x, y, z, true) end)
+            tm:addOption("0.78 reaction test: the stress fight (right-click a building) - first shot within 1.5 s of contact, moving within 1 s of an order", nil,
+                function() stressTest(x, y, z, false, { reaction = true }) end)
         end
-        if not stress then
-            tm:addOption("0.76 walk-in: the stress fight off screen for 60 s, then on screen where the men stand (right-click a building)", nil,
-                function() stressTest(x, y, z, false, { walkIn = true }) end)
-            tm:addOption("0.76 big fight: two platoons a side (~170 men), the cap on bodies at 80 (right-click a building)", nil,
-                function() stressTest(x, y, z, false, { big = true }) end)
-        end
-        local old = sub(tm, "0.73 tests (passed)")
-        old:addOption("1. MG pins a squad in the open (right-click open ground, open to the far side)", nil,
-            function() startTest("open", x, y, z, playerNum) end)
-        old:addOption("2. The same squad behind a wall only gets suppressed (right-click inside a building)", nil,
-            function() startTest("wall", x, y, z, playerNum) end)
-        old:addOption("3. A broken squad falls back together and rallies (right-click open ground)", nil,
-            function() startTest("broke", x, y, z, playerNum) end)
-        tm:addOption("(Before each: Tools > Delete ALL NPCs. Verdicts: TEST lines in the log)")
+        tm:addOption("(First: Tools > Delete ALL NPCs)")
     end)
 
     -- Tools.
@@ -1281,18 +1315,6 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.say("God mode, ignored by soldiers: " .. (LF.Debug.playerSafe() and "ON" or "OFF"))
         end)
     end
-    if LF.Ground then
-        local OV = LF.Ground.overlay
-        local words = { off = "off", cover = "cover", sight = "how far you can see" }
-        tools:addOption("Ground overlay: " .. words[OV.mode] .. " (click to change)", nil, function()
-            LF.say("Ground overlay: " .. words[LF.Ground.cycleMode()])
-        end)
-        if OV.mode ~= "off" then
-            tools:addOption("Ground overlay direction: " .. LF.Ground.DIR_NAMES[OV.dir + 1] .. " (click to turn)", nil, function()
-                LF.say("Overlay direction: " .. LF.Ground.DIR_NAMES[LF.Ground.cycleDir() + 1])
-            end)
-        end
-    end
     do
         local CAPS = { 0, 40, 60, 80, 100 }
         local cur = LF.Config.maxBodies or 0
@@ -1301,13 +1323,6 @@ local function onMenu(playerNum, context, worldObjects, test)
             for k, v in ipairs(CAPS) do if v == cur then i = k end end
             LF.Config.maxBodies = CAPS[i % #CAPS + 1]
             LF.say("Cap on bodies: " .. (LF.Config.maxBodies > 0 and tostring(LF.Config.maxBodies) or "none"))
-        end)
-    end
-    if LF.SquadBrain then
-        local on = LF.SquadBrain.enabled
-        tools:addOption("Squad brain - squads look and place their men (0.74): " .. (on and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()
-            LF.SquadBrain.enabled = not LF.SquadBrain.enabled
-            LF.say("Squad brain: " .. (LF.SquadBrain.enabled and "ON" or "OFF - every man looks and finds cover for himself, as up to 0.73"))
         end)
     end
     if LF.Captain then
@@ -1341,17 +1356,6 @@ local function onMenu(playerNum, context, worldObjects, test)
                 local nxt = ORDER[i % #ORDER + 1]
                 C.warView = nxt
                 LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
-            end)
-        end
-    end
-    if LF.Influence then
-        local im = sub(tools, "Influence map round you (0.77) - to the log")
-        for _, f in ipairs({ { "GER", "German" }, { "SOV", "Soviet" } }) do
-            local side = f[1]
-            im:addOption(f[2] .. " map (own strength / the enemy it believes in)", nil, function()
-                local p = getSpecificPlayer(playerNum)
-                if p then LF.Influence.dump(side, p:getX(), p:getY(), 80) end
-                LF.say(f[2] .. " influence map written to the log")
             end)
         end
     end
