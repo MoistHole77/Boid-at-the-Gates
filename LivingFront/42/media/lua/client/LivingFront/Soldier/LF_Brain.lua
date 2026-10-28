@@ -1144,6 +1144,9 @@ local function decide(id, body, rec, m)
             end
             m.order, m.point = role, point
             local pinned = LF.Suppress.isPinned(body)
+            -- (0.73.6: a squad falling back goes back pinned or not - a broken squad gets out from
+            -- under the fire; up to 0.73.5 its pinned men stayed put and were shot to pieces.)
+            if pinned and rec.squad and LF.Tactics and LF.Tactics.intent and LF.Tactics.intent(rec.squad) == "FALLBACK" then pinned = false end
             if role == "move" and not pinned then
                 setState(id, body, rec, m, "bound", "running to " .. math.floor(sx) .. "," .. math.floor(sy))
                 if LF.Posture.crouched(body) then LF.Posture.set(body, false) end

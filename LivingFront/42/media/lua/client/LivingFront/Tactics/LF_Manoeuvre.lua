@@ -23,7 +23,7 @@ local function boundArrived(team, t, squad)
         if r and r.team == team.id and r.element == t.moving and fit(r) then
             local b = LF.Bodies.get(rid)
             if b then
-                if LF.Suppress.isPinned(b) then
+                if LF.Suppress.isPinned(b) and t.order ~= "FALLBACK" then     -- (falling back: pinned or not, 0.73.6)
                     pinned = pinned + 1
                 else
                     movers = movers + 1
