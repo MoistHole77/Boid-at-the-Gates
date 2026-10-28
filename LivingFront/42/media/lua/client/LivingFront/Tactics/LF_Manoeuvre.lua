@@ -7,6 +7,7 @@ require "LivingFront/Tactics/LF_Tactics"
 local I = LF.Tactics.I
 local CFG, ELEMENT_NAME, OTHER, elementCentre, facing, fit = I.CFG, I.ELEMENT_NAME, I.OTHER, I.elementCentre, I.facing, I.fit
 local squads, teams = I.squads, I.teams
+local PLANS, bark = I.PLANS, I.bark
 
 -- ---- corporal: drills -----------------------------------------------------------------------
 
@@ -23,7 +24,7 @@ local function boundArrived(team, t, squad)
         if r and r.team == team.id and r.element == t.moving and fit(r) then
             local b = LF.Bodies.get(rid)
             if b then
-                if LF.Suppress.isPinned(b) and t.order ~= "FALLBACK" then     -- (falling back: pinned or not, 0.73.6)
+                if LF.Suppress.isPinned(b) and not (PLANS[t.order] and PLANS[t.order].pinnedMove) then     -- (falling back: pinned or not, 0.73.6)
                     pinned = pinned + 1
                 else
                     movers = movers + 1
@@ -54,7 +55,7 @@ end
 
 -- Start a bound: element `el` moves (dx, dy) * bound past the covering pair, or onto
 -- (tx, ty) if that is nearer.
-local function startBound(team, t, el, dx, dy, tx, ty, contact)
+local function startBound(team, t, el, dx, dy, tx, ty, contact, P)
     local other = t.pos[OTHER[el]]
     local mine = t.pos[el]
     if not (other and mine) then return end
@@ -80,7 +81,7 @@ local function startBound(team, t, el, dx, dy, tx, ty, contact)
         if r and r.team == team.id and r.element == el and fit(r) and LF.Bodies.get(rid) then anyone = true end
     end
     if team.leader and anyone then
-        LF.Tactics.shout(team.leader, ELEMENT_NAME[el] .. ", move! " .. ELEMENT_NAME[OTHER[el]] .. ", cover!")
+        LF.Tactics.shout(team.leader, bark((P or PLANS.ADVANCE).moveBark, { mover = ELEMENT_NAME[el], cover = ELEMENT_NAME[OTHER[el]] }))
     end
 end
 
@@ -175,7 +176,7 @@ local function planShift(team, t, squad, sq)
                 LF.log("REPOSITION " .. team.name .. " of " .. squad.name .. ": no open shot, moving "
                     .. math.floor(LF.dist(0, 0, dx, dy)) .. " tiles out and round to the "
                     .. (side > 0 and "right" or "left") .. " (" .. math.floor(nx) .. "," .. math.floor(ny) .. ")")
-                if team.leader then LF.Tactics.shout(team.leader, "Can't see them - move! Find a shot!") end
+                if team.leader then LF.Tactics.shout(team.leader, PLANS.HOLD.shiftBark) end
                 return true
             end
         end
@@ -240,21 +241,24 @@ local function chooseShift(squad, sq)
     sq.shiftsSinceFlank = (sq.shiftsSinceFlank or 0) + 1
 end
 
-local function driveTeam(team, t, squad, sq)
-    local order = t.heard
+-- ---- the drills: what a fire team does under each plan (LF.Tactics.PLANS, 0.75) ------------------
+local DRILLS = {}
+
+-- bound: the pairs leapfrog along the squad's front (P.dir), one moving while the other covers.
+DRILLS.bound = function(team, t, squad, sq, order, P)
     local fx, fy = facing(squad)
-    -- An order from the sergeant (anything but HOLD) overrides the corporal's own reposition.
-    if order ~= "HOLD" then t.shifting = nil end
-    if order == "ADVANCE" or order == "FALLBACK" then
-        local dir = order == "ADVANCE" and 1 or -1
-        local contact = (dir > 0) and ((t.alone and t.contact) or sq.contact) or nil
-        if t.order ~= order then
-            t.order = order
-            startBound(team, t, "A", fx * dir, fy * dir, nil, nil, contact)
-        elseif t.moving and boundDone(team, t, squad) then
-            startBound(team, t, OTHER[t.moving], fx * dir, fy * dir, nil, nil, contact)
-        end
-    elseif order == "MANEUVER" then
+    local dir = P.dir or 1
+    local contact = P.toContact and ((t.alone and t.contact) or sq.contact) or nil
+    if t.order ~= order then
+        t.order = order
+        startBound(team, t, "A", fx * dir, fy * dir, nil, nil, contact, P)
+    elseif t.moving and boundDone(team, t, squad) then
+        startBound(team, t, OTHER[t.moving], fx * dir, fy * dir, nil, nil, contact, P)
+    end
+end
+
+-- route: the same leapfrog along the flank route the sergeant gave the team.
+DRILLS.route = function(team, t, squad, sq, order, P)
         if t.maneuverDone then
             t.order, t.moving = "HOLD", nil      -- already in position; wait for new orders
             return
@@ -299,13 +303,13 @@ local function driveTeam(team, t, squad, sq)
                     t.route[#t.route + 1] = { x = lead.x + mx / ml * step, y = lead.y + my / ml * step }
                     wp = t.route[t.routeIdx]
                     LF.log("FLANK " .. team.name .. " can't see the enemy from its position; pushing on (" .. t.pushes .. ")")
-                    if team.leader then LF.Tactics.shout(team.leader, "No good here - keep moving!") end
+                    if team.leader then LF.Tactics.shout(team.leader, P.pushBark) end
                 end
             end
         end
         if not wp then
             t.order, t.moving, t.maneuverDone = "HOLD", nil, true
-            if team.leader then LF.Tactics.shout(team.leader, "In position!") end
+            if team.leader then LF.Tactics.shout(team.leader, P.doneBark) end
             return
         end
         local dx, dy, tx, ty = routeHeading(t)
@@ -314,8 +318,11 @@ local function driveTeam(team, t, squad, sq)
         if not el then
             el = LF.dist(t.pos.A.x, t.pos.A.y, wp.x, wp.y) > LF.dist(t.pos.B.x, t.pos.B.y, wp.x, wp.y) and "A" or "B"
         end
-        startBound(team, t, el, dx, dy, tx, ty)
-    elseif order == "HOLD" then
+        startBound(team, t, el, dx, dy, tx, ty, nil, P)
+end
+
+-- hold: both pairs where they are, in cover, firing (a team with no shot repositions - chooseShift).
+DRILLS.hold = function(team, t, squad, sq, order, P)
         if t.order ~= "HOLD" then
             -- Hold where the men are: a pair caught mid-bound stops where it is rather than
             -- finishing the run alone.
@@ -326,7 +333,43 @@ local function driveTeam(team, t, squad, sq)
             t.order, t.moving = "HOLD", nil
         end
         corporalCheck(team, t, squad, sq)
+end
+
+-- gather (0.75): each pair runs to its place round the sergeant - a squad that has fallen back
+-- comes together again before it fights on.
+DRILLS.gather = function(team, t, squad, sq, order, P)
+    if t.order ~= order then
+        t.order, t.moving, t.gathered = order, nil, nil
+        local fx, fy = facing(squad)
+        for _, el in ipairs({ "A", "B" }) do
+            local sx, sy, n = 0, 0, 0
+            for _, rid in ipairs(team.members) do
+                local r = LF.Records.get(rid)
+                if r and r.alive and r.team == team.id and r.element == el then
+                    local x, y = LF.Squad.slot(r)
+                    if x then
+                        local lat = LF.Units.slotLat(r)
+                        sx, sy, n = sx + x + fy * lat, sy + y - fx * lat, n + 1     -- (the pair's middle: his slot less his place in it)
+                    end
+                end
+            end
+            if n > 0 and t.pos[el] then t.pos[el].x, t.pos[el].y = sx / n, sy / n end
+        end
+        t.shifting, t.phaseStart = true, LF.tick
+        return
     end
+    if t.shifting and shiftDone(team, t, squad) then
+        t.shifting, t.gathered = nil, true
+    end
+end
+
+local function driveTeam(team, t, squad, sq)
+    local order = t.heard
+    -- An order from the sergeant (anything but HOLD) overrides the corporal's own reposition.
+    if order ~= "HOLD" and order ~= "REGROUP" then t.shifting = nil end
+    local P = PLANS[order]
+    local drill = P and P.drill and DRILLS[P.drill]
+    if drill then drill(team, t, squad, sq, order, P) end
 end
 
 -- How much cover there is around (x, y) against a threat at (cx, cy): squares with any cover
@@ -575,7 +618,6 @@ end
 -- advance into rifle range, hold there, fall back when the team is shot up - the same rules his
 -- sergeant uses, applied to his team. A maneuver already under way is finished first.
 
-local ALONE_WORDS = { ADVANCE = "On me - advance!", HOLD = "Hold here! Fire!", FALLBACK = "Fall back! Back!" }
 
 local function corporalAlone(team, t, squad, sq)
     local cpl = LF.Bodies.get(team.leader)
@@ -614,7 +656,7 @@ local function corporalAlone(team, t, squad, sq)
     if want ~= cur then
         LF.log("CORPORAL " .. team.name .. " of " .. squad.name .. " on his own: " .. tostring(cur) .. " -> " .. want
             .. " (enemy at " .. math.floor(front) .. " tiles, " .. fitN .. "/" .. total .. " fit)")
-        LF.Tactics.shout(team.leader, ALONE_WORDS[want] or "Hold here!")
+        LF.Tactics.shout(team.leader, (PLANS[want] and PLANS[want].aloneBark) or PLANS.HOLD.aloneBark)
         t.heard = want
     end
 end

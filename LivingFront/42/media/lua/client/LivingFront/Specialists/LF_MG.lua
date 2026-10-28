@@ -813,7 +813,7 @@ end
 function LF.MG.driveTeam(team, t, squad, sq)
     local I = LF.Tactics.I
     local order = t.heard
-    if order == "MANEUVER" then order = "HOLD" end
+    if order == "MANEUVER" or order == "REGROUP" then order = "HOLD" end      -- (a gun team holds its gun where it is)
     if t.order ~= order then
         if order == "HOLD" and t.shifting then
             for _, el in ipairs({ "A", "B" }) do

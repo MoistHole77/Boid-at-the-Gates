@@ -116,6 +116,10 @@ local CFG = {
     shiftInterval = 1800,   -- one team per unit repositions at most once per ~30 s
     shiftsBeforeStalemate = 2, -- repositions tried before a stalemate flank (or 2x stalemateTicks)        -- a flanking team that can't see the enemy at the end pushes on this many times
     flankTimeout = 5400,    -- give up on a flank after ~90 s
+    -- Regrouping (0.75): a squad that has fallen back out of range with its men spread out
+    regroupSpread = 8,      -- ... a fit man further than this from the sergeant: regroup on him
+    regroupTimeout = 1200,  -- ... called done after ~20 s, whoever has come in
+    regroupCooldown = 3600, -- ... at most once a minute
 }
 LF.Tactics.CFG = CFG
 
@@ -325,9 +329,54 @@ function LF.Tactics.bearings(squadId)
     return sq ~= nil and sq.fightStart ~= nil and not sq.intent and LF.tick - sq.fightStart < CFG.bearingsTicks
 end
 
--- ---- commander: intent ----------------------------------------------------------------------
+-- ---- squad plans (combat overhaul, 0.75) ------------------------------------------------------
+--
+-- Every order a commander can give his squad, and every order a corporal can give his team, as
+-- data: the drill each fire team runs under it (LF_Manoeuvre) and what is shouted. Adding a plan is
+-- adding a row here (and a drill, if it needs a new kind of movement).
+--   drill:   bound  - the two pairs leapfrog (dir: 1 forward, -1 back along the squad's front), one
+--                     moving while the other covers, then they swap
+--            route  - the same leapfrog along a route (a flank)
+--            hold   - both pairs take cover where they are and fire; a team with no shot repositions
+--            gather - each pair runs to its place round the sergeant (a regroup)
+--   toContact:  an advance never takes a pair inside the stopping distance of the enemy
+--   pinnedMove: the men go whether pinned or not (getting out from under the fire)
+--   barks: squadBark (the sergeant, as he gives it), moveBark (a corporal, as a pair moves),
+--          aloneBark (a corporal on his own), and the drill's own - {mover} {cover} {side} filled in.
+-- The squad-level plans (FLANK, DEFEND) hand their teams other plans: FLANK sends the alpha teams
+-- on a MANEUVER and holds the bravo teams; DEFEND is the perimeter or the building (LF_Defence).
+local PLANS = {
+    ADVANCE  = { drill = "bound", dir = 1, toContact = true,
+                 squadBark = "Advance!", moveBark = "{mover}, move! {cover}, cover!", aloneBark = "On me - advance!" },
+    FALLBACK = { drill = "bound", dir = -1, pinnedMove = true,
+                 squadBark = "Fall back!", moveBark = "{mover}, back! {cover}, cover them!", aloneBark = "Fall back! Back!" },
+    HOLD     = { drill = "hold",
+                 squadBark = "Hold! Open fire!", shiftBark = "Can't see them - move! Find a shot!", aloneBark = "Hold here! Fire!" },
+    MANEUVER = { drill = "route",
+                 moveBark = "{mover}, move! {cover}, cover!", pushBark = "No good here - keep moving!", doneBark = "In position!" },
+    FLANK    = { squadBark = "Alpha, flank {side}! Bravo, cover!", gunBark = "Alpha, flank that gun - {side}! Bravo, cover!" },
+    REGROUP  = { drill = "gather", pinnedMove = true,
+                 squadBark = "On me! Regroup!", doneBark = "All here!" },
+    DEFEND   = { squadBark = "All-round defence! Get in cover!" },
+}
+LF.Tactics.PLANS = PLANS
 
-local INTENT_WORDS = { DEFEND = "All-round defence! Get in cover!", ADVANCE = "Advance!", HOLD = "Hold! Open fire!", FALLBACK = "Fall back!" }
+-- A plan's words with its blanks filled in.
+local function bark(text, vars)
+    if not text then return nil end
+    for k, v in pairs(vars or {}) do text = text:gsub("{" .. k .. "}", v) end
+    return text
+end
+LF.Tactics.bark = bark
+
+-- Do this squad's men move under its plan whether pinned or not?
+function LF.Tactics.movesPinned(squadId)
+    local sq = squads[squadId]
+    local P = sq and sq.intent and PLANS[sq.intent]
+    return P ~= nil and P.pinnedMove == true
+end
+
+-- ---- commander: intent ----------------------------------------------------------------------
 
 local function setIntent(squad, sq, cid, intent, why)
     if sq.intent == intent then return end
@@ -336,16 +385,15 @@ local function setIntent(squad, sq, cid, intent, why)
     sq.intent = intent
     if intent == "HOLD" then sq.holdSince = LF.tick end
     if intent and cid then
-        local words = INTENT_WORDS[intent]
+        local P = PLANS[intent]
+        local words = P and P.squadBark
         if intent == "FLANK" and sq.flank then
-            local side = sq.flank.side < 0 and "left" or "right"
-            words = sq.flank.gun and ("Alpha, flank that gun - " .. side .. "! Bravo, cover!")
-                or ("Alpha, flank " .. side .. "! Bravo, cover!")
+            words = bark(sq.flank.gun and P.gunBark or P.squadBark, { side = sq.flank.side < 0 and "left" or "right" })
         end
-        LF.Tactics.shout(cid, words)
+        if words then LF.Tactics.shout(cid, words) end
     end
 end
 
 -- ---- shared with the other tactics files ----------------------------------------------------
 I.CFG = CFG I.ELEMENT_NAME = ELEMENT_NAME I.OTHER = OTHER I.elementCentre = elementCentre I.facing = facing
-I.fit = fit I.setIntent = setIntent I.shouts = shouts I.squads = squads I.teams = teams
+I.fit = fit I.setIntent = setIntent I.shouts = shouts I.squads = squads I.teams = teams I.PLANS = PLANS I.bark = bark

@@ -13,6 +13,7 @@ local CFG, chooseShift, clearing, enemySuppression, facing, fit = I.CFG, I.choos
 local initTeams, openDoor, otherSideFlanking, passOrders, planFlank, sergeantClear = I.initTeams, I.openDoor, I.otherSideFlanking, I.passOrders, I.planFlank, I.sergeantClear
 local setIntent, shouts, squads, stalemate, teams, updateClear = I.setIntent, I.shouts, I.squads, I.stalemate, I.teams, I.updateClear
 local updateDefensive = I.updateDefensive
+local PLANS = I.PLANS
 
 -- ---- the sergeant chooses the stance --------------------------------------------------------
 --
@@ -178,6 +179,26 @@ local function standDown(squad, sq, cid, cmd)
     return true
 end
 
+-- How far the squad's furthest fit man (with a body) is from its commander.
+local function spreadFrom(squad, cmd)
+    local far = 0
+    for _, rid in ipairs(LF.Units.members(squad.id)) do
+        local r = LF.Records.get(rid)
+        local b = r and fit(r) and LF.Bodies.get(rid)
+        if b and rid ~= cmd:getModData().LF_id then far = math.max(far, LF.dist(b:getX(), b:getY(), cmd:getX(), cmd:getY())) end
+    end
+    return far
+end
+
+-- Have the squad's teams all come in to the sergeant (the REGROUP plan's gather drill)?
+local function regrouped(squad)
+    for _, tid in ipairs(squad.teams) do
+        local t = teams[tid]
+        if t and t.order == "REGROUP" and t.shifting then return false end
+    end
+    return true
+end
+
 local function updateSquad(squad)
     local cid = LF.Units.commander(squad)
     local cmd = cid and LF.Bodies.get(cid)
@@ -320,10 +341,21 @@ local function updateSquad(squad)
         sq.broken = true
         -- Once out of range, he only falls back again if the enemy comes on (6 tiles closer) -
         -- not back and forth every second on the edge of range.
-        local clearDist = CFG.fallbackClear - (intent == "HOLD" and 6 or 0)
+        local clearDist = CFG.fallbackClear - ((intent == "HOLD" or intent == "REGROUP") and 6 or 0)
         if front < clearDist then
             intent, why = "FALLBACK", brokenUnderFire and ("pinned down, nerve gone (morale " .. math.floor(LF.Morale.average(squad.id)) .. ")")
                 or (fitN .. "/" .. total .. " fit")
+        elseif intent == "REGROUP" then
+            -- (0.75) Gathering on the sergeant: done when the teams are in, or after ~20 s.
+            if regrouped(squad) or LF.tick - (sq.regroupAt or LF.tick) > CFG.regroupTimeout then
+                intent, why = "HOLD", "regrouped"
+                sq.regroupedAt = LF.tick
+                LF.Tactics.shout(cid, PLANS.REGROUP.doneBark)
+            end
+        elseif intent == "FALLBACK" and LF.tick - (sq.regroupedAt or -100000) > CFG.regroupCooldown
+            and spreadFrom(squad, cmd) > CFG.regroupSpread then
+            intent, why = "REGROUP", "fallen back out of range, the men spread out - regroup on the sergeant"
+            sq.regroupAt = LF.tick
         else intent, why = "HOLD", "fallen back out of range" end
     elseif intent ~= "HOLD" and intent ~= "FLANK" and fitN > 0 and pinnedN / fitN >= CFG.pinnedHold then
         -- Too many men pinned to keep advancing. (A squad already holding still goes on to the
