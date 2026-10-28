@@ -1465,6 +1465,10 @@ local function unstick(id, body, m, why)
     m.stuckSince, m.lastPath = nil, -10000
 end
 
+local function bumpFallOf(b) return b:getVariableBoolean("BumpFall") end
+
+-- One step for a man: every CFG.actTicks ticks (0.75 - up to 0.74 every tick), his think on
+-- its own timer inside it.
 local function stepNpc(id, body, rec)
     -- Down and being looked after, or dragging a man (LF_Medic): that runs him, not the brain.
     if LF.Medic and LF.Medic.busy(id) then return end
@@ -1493,13 +1497,13 @@ local function stepNpc(id, body, rec)
     -- the stagger alone left the man in that state with no animation to finish, frozen for good
     -- (0.52: Cpl. Kozlov, Pvt. Smirnov). He's watched by the state itself, not just the flag, and
     -- let out of it by telling the state machine the animation has finished.
-    -- (Stagger and down-too-long: checked every 5 ticks - their limits are 70 ticks and more.)
-    if LF.due(5, -id) then
+    -- (Stagger and down-too-long: checked every 6 ticks - their limits are 70 ticks and more.)
+    if every(m, "bumpAt", 6) then
     local okB, bumped = pcall(bumpedUp, body)
     local inBump = st == "BumpedState"
     if ((okB and bumped) or inBump) and not (LF.Medic and LF.Medic.busy(id)) then
         m.bumpSince = m.bumpSince or LF.tick
-        local okF, falling = pcall(function() return body:getVariableBoolean("BumpFall") end)
+        local okF, falling = pcall(bumpFallOf, body)
         if LF.tick - m.bumpSince > ((okF and falling) and 150 or 70) then
             LF.log("BRAIN #" .. id .. " stagger over - back on his feet (state " .. tostring(st) .. ")")
             pcall(function()
@@ -1531,7 +1535,7 @@ local function stepNpc(id, body, rec)
     -- (Idle, or watching a quiet quarter, with his squad seeing nobody: he thinks once a second.)
     local quiet = (m.state == "idle" or m.state == "guard") and rec.squad and LF.SquadBrain.enabled
         and not LF.SquadBrain.seesAny(rec.squad)
-    if LF.due(quiet and CFG.quietThinkTicks or CFG.thinkTicks, -id) then
+    if every(m, "thinkAt", quiet and CFG.quietThinkTicks or CFG.thinkTicks) then
         if LF.Combat.health(body) <= 0 then
             m.zeroSince = m.zeroSince or LF.tick
             if LF.tick - m.zeroSince > 120 then
@@ -1554,7 +1558,6 @@ local function stepNpc(id, body, rec)
         LF.Suppress.setMoving(id, moving)
     end
     if LF.Combat.knockedDown(body) then return end
-    if not LF.due(CFG.actTicks, -id) then return end
     local tA = getTimestampMs()
     LF.Brain.act(id, body, rec, m)
     LF.Perf.stop("brain act", tA)
@@ -1565,7 +1568,7 @@ local function onTick()
     local t0 = LF.Perf.start()
     for id, body in pairs(LF.Bodies.all()) do
         local rec = LF.Records.get(id)
-        if rec and not body:isDead() then
+        if rec and LF.due(CFG.actTicks, -id) and not body:isDead() then
             LF.guard("brain step", stepNpc, id, body, rec)
         end
     end
