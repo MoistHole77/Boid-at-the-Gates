@@ -519,6 +519,25 @@ local function gateSample()
     local G = stress.gate
     if not G then G = { open = {}, cross = {}, openMen = {}, crossMen = {}, looks = 0 }; stress.gate = G end
     G.looks = G.looks + 1
+    G.idle = G.idle or {}
+    G.idleMen = G.idleMen or {}
+    -- (0.75) The attackers' assault: a squad flanking while another holds as a base of fire (or
+    -- one squad's own teams doing both: its FLANK intent sends alpha round, bravo firing).
+    local flanking, basing = nil, false
+    for _, rid in ipairs(stress.sov or {}) do
+        local r = LF.Records.get(rid)
+        local u = r and r.squad and LF.Units.get(r.squad)
+        if u and u.kind == "squad" then
+            local it = LF.Tactics.intent(u.id)
+            if it == "FLANK" then flanking = flanking or u.id end
+            if it == "HOLD" and u.id ~= flanking then basing = true end
+        end
+    end
+    if flanking and not G.flankAt then
+        G.flankAt = LF.simTime - (stress.sim or LF.simTime)
+        G.flankWith = basing and "another squad holding as a base of fire" or "its own bravo team as the base of fire"
+        LF.log(string.format("STRESS gate: assault - %s flanks at %.0f s, %s", (LF.Units.get(flanking) or {}).name or "?", G.flankAt, G.flankWith))
+    end
     -- The middles of every squad of the two platoons.
     local mids = {}
     local ids = {}
@@ -579,6 +598,19 @@ local function gateSample()
                 end
             end
         end
+        -- (0.75) Idle in the open: standing about with nothing to do, outdoors, with the enemy his
+        -- squad knows of inside 40 tiles.
+        local idleOpen = false
+        if fit and LF.Brain.stateOf(rid) == "idle" then
+            local sq2 = getCell():getGridSquare(math.floor(b:getX()), math.floor(b:getY()), math.floor(b:getZ()))
+            if sq2 and not sq2:getBuilding() and LF.Squad.bestContact(r.squad, b:getX(), b:getY(), 600, 40) then idleOpen = true end
+        end
+        G.idle[rid] = idleOpen and ((G.idle[rid] or 0) + 1) or nil
+        if G.idle[rid] == 2 then
+            G.idleMen[rid] = true
+            LF.log(string.format("STRESS gate: %s idle in the open 10 s at %d,%d, the enemy near (squad %s)", LF.Units.title(r),
+                math.floor(b:getX()), math.floor(b:getY()), tostring(LF.Tactics.intent(r.squad))))
+        end
         G.open[rid] = inOpen and ((G.open[rid] or 0) + 1) or nil
         G.cross[rid] = crossing and ((G.cross[rid] or 0) + 1) or nil
         if G.open[rid] == 2 then
@@ -614,6 +646,13 @@ local function gateSummary(modMs, bodies)
         ok and "PASS" or "FAIL", nOpen, nCross, G.looks, modMs, bodies, at72, LF.SquadBrain.enabled and "ON" or "OFF"))
     LF.say(string.format("0.74 gate %s: %d in the open, %d among another squad, %.2f ms at 72 bodies", ok and "PASS" or "FAIL",
         nOpen, nCross, at72))
+    -- (0.75) The assault and nobody idle in the open, and the 3 ms carried from 0.74.
+    local nIdle = 0
+    for _ in pairs(G.idleMen or {}) do nIdle = nIdle + 1 end
+    local ok75 = G.flankAt ~= nil and nIdle == 0 and nOpen == 0 and at72 <= 3
+    LF.log(string.format("TEST 0.75 %s: assault %s; %d men idle in the open with the enemy near; %d left in the open; %.2f ms at 72 bodies (the gate 3)",
+        ok75 and "PASS" or "FAIL", G.flankAt and string.format("flanked at %.0f s with %s", G.flankAt, G.flankWith) or "never flanked",
+        nIdle, nOpen, at72))
 end
 
 local function stressSummary()
@@ -1067,7 +1106,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Stress test running - summary and verdicts in the log when done")
         else
-            tm:addOption(string.format("0.74 gate: stress test on screen (right-click a building) - nobody left in the open, no squads mixing, the mod's cost - %d run(s) so far", pooled.nOn), nil,
+            tm:addOption(string.format("0.75 gate: stress test on screen (right-click a building) - a flank with a base of fire, nobody idle or left in the open, the mod's cost - %d run(s) so far", pooled.nOn), nil,
                 function() stressTest(x, y, z) end)
             tm:addOption(string.format("Stress test off screen (same building; with the on-screen runs: 0.73 test 4) - %d run(s) so far", pooled.nOff), nil,
                 function() stressTest(x, y, z, true) end)

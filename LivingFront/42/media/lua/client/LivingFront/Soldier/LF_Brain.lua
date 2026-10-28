@@ -43,6 +43,8 @@ LF.Brain.enabled = true
 
 local CFG = {
     thinkTicks = 20,        -- each NPC re-decides about three times a second
+    quietThinkTicks = 60,   -- (0.75) ... once a second when idle or watching a quiet quarter, his squad seeing nobody
+    actTicks = 3,           -- (0.75) his per-tick steps (aim, fire, crouch) every 3rd tick - 20 a second, plenty for a rifle
     sightRange = 30,        -- tiles
     fireRange = 20,         -- fighters close in to this range before shooting
     fleeHealth = 35,        -- fighters flee below this overall health when threatened
@@ -368,13 +370,15 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         end
     end
     -- Already standing behind usable cover?
+    -- (Only on the search beat: up to 0.74 the sight check here ran every think for every man
+    -- without cover - 0.75.)
+    if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
+    m.lastCoverSearch = LF.tick
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     if withinLeash(bx, by, ax, ay, 0, leash) and LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
         takeSpot(id, body, m, "cover", bx, by, bz, "cover")
         return
     end
-    if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
-    m.lastCoverSearch = LF.tick
     local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
     if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
     -- No firing position: at least get out of the open (any cover, a little further out).
@@ -1301,6 +1305,13 @@ local function fireArea(body, rec, m, p)
     return LF.Combat.engageArea(body, p, m.combat)
 end
 
+-- Once every n ticks for this man (his act runs every few ticks, so a shared "LF.due" beat
+-- would land for only some men - 0.75).
+local function every(m, key, n)
+    if LF.tick - (m[key] or -100000) >= n or (m[key] or 0) > LF.tick then m[key] = LF.tick; return true end
+    return false
+end
+
 -- Per-tick behaviour for states that need it.
 local function act(id, body, rec, m)
     local st = m.state
@@ -1353,12 +1364,12 @@ local function act(id, body, rec, m)
         -- Watching his quarter: down in cover, facing out.
         if m.cover and isAt(body, m.cover) and not standing then hunkerDown(body) end
         local p = m.point
-        if p and LF.due(40, 0) and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
+        if p and every(m, "faceAt", 40) and not body:isPerformingAnAction() then body:faceLocation(p.x, p.y) end
         if m.fighter then topUp(body, m, false, rec) end
     elseif m.state == "assist" then
         -- Down beside the gun, watching what it fires at.
         if m.cover and isAt(body, m.cover) then hunkerDown(body) end
-        if LF.due(30, 0) and not body:isPerformingAnAction() and LF.MG then
+        if every(m, "faceAt", 30) and not body:isPerformingAnAction() and LF.MG then
             local ax, ay = LF.MG.aimOf(rec)
             if ax then body:faceLocation(ax, ay) end
         end
@@ -1367,7 +1378,7 @@ local function act(id, body, rec, m)
         if m.fileThere and not body:isPerformingAnAction() then
             if m.fileGait ~= "aim" and m.fileGait ~= "march" and m.fileGait ~= "wait" then hunkerDown(body) end
             local f = m.fileFace
-            if f and LF.due(20, 0) then body:faceLocation(f.x, f.y) end
+            if f and every(m, "faceAt", 20) then body:faceLocation(f.x, f.y) end
         end
     elseif m.state == "down" then
         -- Wounded in a defence: stays down where he is, bandages himself, fires at what he sees.
@@ -1517,7 +1528,10 @@ local function stepNpc(id, body, rec)
         m.downSince = nil
     end
     end
-    if LF.due(CFG.thinkTicks, -id) then
+    -- (Idle, or watching a quiet quarter, with his squad seeing nobody: he thinks once a second.)
+    local quiet = (m.state == "idle" or m.state == "guard") and rec.squad and LF.SquadBrain.enabled
+        and not LF.SquadBrain.seesAny(rec.squad)
+    if LF.due(quiet and CFG.quietThinkTicks or CFG.thinkTicks, -id) then
         if LF.Combat.health(body) <= 0 then
             m.zeroSince = m.zeroSince or LF.tick
             if LF.tick - m.zeroSince > 120 then
@@ -1540,6 +1554,7 @@ local function stepNpc(id, body, rec)
         LF.Suppress.setMoving(id, moving)
     end
     if LF.Combat.knockedDown(body) then return end
+    if not LF.due(CFG.actTicks, -id) then return end
     local tA = getTimestampMs()
     LF.Brain.act(id, body, rec, m)
     LF.Perf.stop("brain act", tA)

@@ -232,6 +232,13 @@ function LF.SquadBrain.look(id, body, rec, range)
     return res
 end
 
+-- Has the squad seen any enemy at its last look (or was its last look long ago - then assume so)?
+function LF.SquadBrain.seesAny(sid)
+    local s = S[sid]
+    if not s or LF.tick - s.seenAt > CFG.lookTicks * 4 or s.seenAt > LF.tick then return true end
+    return #s.seen > 0
+end
+
 -- ---- placement -----------------------------------------------------------------------------------
 
 -- The candidate squares round the squad against a threat point: every square round its men with
