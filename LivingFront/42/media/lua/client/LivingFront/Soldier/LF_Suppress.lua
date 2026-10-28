@@ -38,7 +38,7 @@ local CFG = {
     -- (0.73.4) and cover takes the edge off the fire coming in: rounds smacking into a wall shake
     -- men less than rounds cracking past them in the open (test 2: a squad holding a building was
     -- pinned in 16 s)
-    coverIntake = { [0] = 1, [1] = 0.75, [2] = 0.5, [3] = 0.5 },
+    coverIntake = { [0] = 1, [1] = 0.75, [2] = 0.4, [3] = 0.4 },     -- (0.73.5: each round by the cover of the man it was fired at)
     quietAfter = 7,         -- simulated seconds with no round in: ...
     quietMul = 4,           -- ... it drains this much faster
     rifleCap = 55,          -- (0.73.2) rifle and pistol fire alone can suppress a squad, not pin it: only
@@ -122,7 +122,8 @@ end
 
 -- Add to a squad's meter. (sx, sy): where the fire comes from (for its cover while it recovers).
 -- cap (optional): this fire can't take the meter past it.
-function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
+-- cls (optional): the cover (0-3) of the man the round was at - otherwise the squad's.
+function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap, cls)
     local S = squadNow(sid)
     if not S then
         S = { v = 0, t = LF.simTime, cover = 0 }
@@ -133,7 +134,10 @@ function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
     end
     local share = math.max(CFG.shareMin, math.min(1, CFG.share / S.fit))
     local top = math.min(CFG.max, cap or CFG.max)
-    local intake = CFG.coverIntake[S.cover or 0] or 1
+    local c = cls or S.cover or 0
+    local intake = CFG.coverIntake[c] or 1
+    S.byCover = S.byCover or { [0] = 0, [1] = 0, [2] = 0, [3] = 0 }
+    S.byCover[c] = (S.byCover[c] or 0) + 1
     if S.v < top then S.v = math.min(top, S.v + amount * share * (mul or 1) * intake) end
     S.lastRound = LF.simTime
     if sx then S.sx, S.sy = sx, sy end
@@ -143,7 +147,8 @@ function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
         S.state = st
         if worse then
             local u = LF.Units.get(sid)
-            LF.log(string.format("SUPPRESS %s is %s (%.0f)", u and u.name or tostring(sid), STATE_WORDS[st] or st, S.v))
+            LF.log(string.format("SUPPRESS %s is %s (%.0f; rounds in by cover: open %d, light %d, heavy %d, building %d)",
+                u and u.name or tostring(sid), STATE_WORDS[st] or st, S.v, S.byCover[0], S.byCover[1], S.byCover[2], S.byCover[3]))
             local cid = u and LF.Units.commander(u)
             if cid and LF.Bodies and LF.Bodies.get(cid) and LF.Tactics and LF.Tactics.shout and SHOUT[st] then
                 LF.Tactics.shout(cid, SHOUT[st])
@@ -217,9 +222,12 @@ function LF.Suppress.add(body, amount, from, cap)
     if LF.Morale then mul = mul * LF.Morale.suppressMul(id) end
     local sid = squadOfId(id)
     if sid then
-        local sx, sy = nil, nil
-        if from then sx, sy = from:getX(), from:getY() end
-        LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap)
+        local sx, sy, cls = nil, nil, nil
+        if from then
+            sx, sy = from:getX(), from:getY()
+            if LF.Ground then cls = LF.Ground.cover(body:getX(), body:getY(), math.floor(body:getZ()), sx, sy) end
+        end
+        LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap, cls)
         return
     end
     local was = valueOf(id)

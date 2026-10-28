@@ -73,7 +73,8 @@ local function computeCover(x, y, z)
         local q = LF.Cover.quality(x, y, z, x + 0.5 + DX[d + 1] * 20, y + 0.5 + DY[d + 1] * 20)
         local c = NONE
         if q == LF.Cover.HIGH then c = inside and GARRISON or HEAVY
-        elseif q == LF.Cover.LOW then c = inside and GARRISON or LIGHT end
+        elseif q == LF.Cover.LOW then c = inside and GARRISON or LIGHT
+        elseif inside then c = GARRISON end         -- (0.73.5: in the middle of a room he still has the building's walls round him - up to 0.73.4 he counted as in the open)
         v = v + c * pow4(d)
     end
     return v

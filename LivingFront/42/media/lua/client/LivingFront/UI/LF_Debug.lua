@@ -628,7 +628,8 @@ end
 --   (26: inside the 30 tiles a man can see - at 35, 0.73.1, the two never saw each other)
 --   3  break: offensive in the open with its nerve already gone (morale 25), gun 18 tiles off (a
 --             squad only falls back from inside 26 tiles): pinned, falls back at least 5 tiles
---             together (spread no more than 4 tiles wider than it was before it broke), then
+--             together (no man more than 15 tiles from the middle - a squad in a fight here is
+--             9-14 tiles across; 0.73.4 judged it against its first few seconds, 7), then
 --             rallies - stops falling back and holds
 
 local TESTS = {
@@ -711,8 +712,8 @@ local function verdict()
     else
         local fell, rally = t.at.fell, t.at.rallied
         local back = t.backBy or 0
-        local base = t.baseFar or 12
-        ok = t.at.pinned ~= nil and fell ~= nil and back >= 5 and t.far <= base + 4 and rally ~= nil
+        local base = t.baseFar or 0
+        ok = t.at.pinned ~= nil and fell ~= nil and back >= 5 and t.far <= 15 and rally ~= nil
         local parts = {}
         parts[#parts + 1] = t.at.pinned and string.format("pinned at %.0f s", t.at.pinned - fire) or string.format("never pinned (peak %.0f)", t.peak)
         parts[#parts + 1] = fell and string.format("fell back at %.0f s, %.0f tiles, widest spread %.0f tiles (%.0f before)", fell - fire, back, t.far, base)
