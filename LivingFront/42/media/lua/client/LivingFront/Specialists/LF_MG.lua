@@ -591,6 +591,22 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
             LF.log("MG " .. tostring(g.teamName) .. ": no shot from here - moving the gun")
         end
     end
+    -- (0.74.2) A gun set up in the open with the enemy known: every 5 s, is there a covered square
+    -- with a view close by? Then it moves there.
+    if not need and not watching and threat and g.spot and now - (g.pickedAt or 0) > 300 and now - (g.openCheck or -100000) > 300
+        and not (g.spot.z and getCell():getGridSquare(g.spot.x, g.spot.y, g.spot.z) and getCell():getGridSquare(g.spot.x, g.spot.y, g.spot.z):getBuilding())
+        and LF.Cover.quality(g.spot.x, g.spot.y, g.spot.z or 0, threat:getX(), threat:getY()) == LF.Cover.NONE then
+        g.openCheck = now
+        local body = LF.Bodies.get(rec.id)
+        if body and rec.squad and LF.SquadBrain and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
+            local sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3)
+            if sx and not (sx == g.spot.x and sy == g.spot.y) then
+                LF.log("MG " .. tostring(g.teamName) .. ": in the open - moving the gun to cover at " .. sx .. "," .. sy)
+                g.spot = { x = sx, y = sy, z = sz }
+                g.aspot, g.pickedAt, g.set, g.unsetBy = nil, now, false, "the gun moving to cover"
+            end
+        end
+    end
     if need then
         g.repick, g.pickedAt = nil, now
         g.anchor = g.anchor or {}
@@ -598,7 +614,14 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
         local body = LF.Bodies.get(rec.id)
         local sx, sy, sz = nil, nil, nil
         if body and threat then
-            sx, sy, sz = LF.Cover.findFiringPosition(rec.id, body, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
+            -- (A squad's gun: from its squad's placement - LF_SquadBrain - 5 tiles from where the
+            -- team was sent, else 8 (0.74.2: guns set up in the open with cover 1-5 tiles off).)
+            if rec.squad and LF.SquadBrain and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
+                sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
+                if not sx then sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3) end
+            else
+                sx, sy, sz = LF.Cover.findFiringPosition(rec.id, body, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
+            end
         end
         -- No proper firing position: a square near the anchor that can at least see the enemy -
         -- else stay where the gun is rather than set it up blind (0.68.3: a gun in the middle of

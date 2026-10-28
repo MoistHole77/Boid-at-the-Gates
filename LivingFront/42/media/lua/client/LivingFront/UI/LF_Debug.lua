@@ -558,6 +558,11 @@ local function gateSample()
                     for sid, m in pairs(mids) do
                         if sid ~= r.squad and m.faction == r.faction and m.n >= 3 and LF.dist(x, y, m.x, m.y) <= d0 - 3 then
                             crossing = true
+                            G.crossWhy = G.crossWhy or {}
+                            local ou = LF.Units.get(sid)
+                            G.crossWhy[rid] = string.format("%s %.0f tiles off, %s's %.0f; his squad %s, theirs %s",
+                                (LF.Units.get(r.squad) or {}).name or "?", d0, ou and ou.name or "?", LF.dist(x, y, m.x, m.y),
+                                tostring(LF.Tactics.intent(r.squad)), tostring(LF.Tactics.intent(sid)))
                             break
                         end
                     end
@@ -579,8 +584,9 @@ local function gateSample()
         end
         if G.cross[rid] == 2 then
             G.crossMen[rid] = true
-            LF.log(string.format("STRESS gate: %s among another squad for 10 s at %d,%d", LF.Units.title(r),
-                math.floor(b:getX()), math.floor(b:getY())))
+            LF.log(string.format("STRESS gate: %s among another squad for 10 s at %d,%d (%s, %s; middle of %s)", LF.Units.title(r),
+                math.floor(b:getX()), math.floor(b:getY()), tostring(LF.Brain.stateOf(rid)), moving(b) and "moving" or "still",
+                G.crossWhy and G.crossWhy[rid] or "?"))
         end
     end
 end

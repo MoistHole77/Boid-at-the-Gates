@@ -252,9 +252,9 @@ local function buildCands(sid, s, men, n, cx, cy, cz, tx, ty)
     local r = CFG.placeRadius
     x0, x1 = math.floor(x0 - r), math.floor(x1 + r)
     y0, y1 = math.floor(y0 - r), math.floor(y1 + r)
-    -- (At most 25 x 25 squares round its middle.)
-    x0, x1 = math.max(x0, math.floor(cx - 12)), math.min(x1, math.floor(cx + 12))
-    y0, y1 = math.max(y0, math.floor(cy - 12)), math.min(y1, math.floor(cy + 12))
+    -- (At most 33 x 33 squares round its middle.)
+    x0, x1 = math.max(x0, math.floor(cx - 16)), math.min(x1, math.floor(cx + 16))
+    y0, y1 = math.max(y0, math.floor(cy - 16)), math.min(y1, math.floor(cy + 16))
     for x = x0, x1 do
         for y = y0, y1 do
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
@@ -324,6 +324,8 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
     for pass = 1, 2 do
         local lim = pass == 1 and (leash or 7) or CFG.farLeash
         local limSq = lim * lim
+        -- (The second look, for shelter: round where he is, not where he was sent - 0.74.2.)
+        if pass == 2 then ox, oy = bx, by end
         local m = 0
         for i = 1, #s.cands do
             local c = s.cands[i]

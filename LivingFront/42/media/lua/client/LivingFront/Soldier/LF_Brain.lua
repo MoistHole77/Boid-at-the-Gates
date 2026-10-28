@@ -336,7 +336,13 @@ end
 -- last-known position). Squad soldiers pass their slot (ax, ay): positions stay on the leash.
 -- sticky (defensive stance): keep a cover spot as long as it gives any cover at all, don't keep
 -- hunting for a better one, and look for shelter only close to the spot.
+local planCoverOf
 local function planCover(id, body, m, threat, ax, ay, leash, sticky)
+    local t0 = getTimestampMs()
+    planCoverOf(id, body, m, threat, ax, ay, leash, sticky)
+    LF.Perf.stop("brain plancover", t0)
+end
+planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
     if m.cover then
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
@@ -916,9 +922,11 @@ local function decide(id, body, rec, m)
     if inSquad and LF.SquadBrain.enabled then visible = LF.SquadBrain.look(id, body, rec, CFG.sightRange)
     else visible = LF.Sense.look(id, body, rec, CFG.sightRange) end
     LF.Perf.stop("brain look", tLook)
+    local tT = getTimestampMs()
     if inSquad and #visible > 0 then shareSightings(id, rec, visible) end
     local pick = nil
     if #visible > 0 then pick = fighter and chooseTarget(id, body, rec, m, visible) or visible[1] end
+    LF.Perf.stop("brain target", tT)
     local threat, threatId, dist = nil, nil, nil
     if pick then threat, threatId, dist = pick.body, pick.id, pick.dist end
     if pick and fighter and dist <= fireRange then m.lastSight = LF.tick end
@@ -1096,7 +1104,9 @@ local function decide(id, body, rec, m)
     end
     if fighter and inSquad then
         -- The unit has orders (LF_Tactics): go where the corporal or sergeant puts you.
+        local tP = getTimestampMs()
         local role, sx, sy, sz, point, watching, coverPoint, stand, win, shove = LF.Tactics.place(rec)
+        LF.Perf.stop("brain place", tP)
         local scanDir = role == "file" and coverPoint or nil     -- (patrol: his outboard side)
         local leash = CFG.holdLeash
         if role == "file" then

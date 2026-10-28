@@ -199,12 +199,18 @@ end)
 
 -- ---- what each man feels (the API the rest of the mod uses) ---------------------------------------
 
+-- (Asked many times a tick for every man - is he pinned, suppressed, how fast does he fire: the
+-- answer is kept for the tick, 0.74.2.)
+local memoV, memoT = {}, {}
 function LF.Suppress.value(body)
     local id = idOf(body)
     if not id or immune[id] then return 0 end
+    if memoT[id] == LF.tick then return memoV[id] end
+    local v
     local sid = squadOfId(id)
-    if sid then return LF.Suppress.squadValue(sid) end
-    return valueOf(id)
+    if sid then v = LF.Suppress.squadValue(sid) else v = valueOf(id) end
+    memoV[id], memoT[id] = v, LF.tick
+    return v
 end
 
 -- Moving under orders: no suppression picked up or felt until in position.
@@ -221,6 +227,7 @@ function LF.Suppress.add(body, amount, from, cap)
     if LF.Service then mul = mul * LF.Service.suppressMul(id) end
     if LF.Morale then mul = mul * LF.Morale.suppressMul(id) end
     local sid = squadOfId(id)
+    memoT[id] = nil
     if sid then
         local sx, sy, cls = nil, nil, nil
         if from then
@@ -264,6 +271,6 @@ function LF.Suppress.accuracy(body)
     return 1
 end
 
-function LF.Suppress.forget(id) levels[id] = nil; immune[id] = nil end
+function LF.Suppress.forget(id) levels[id] = nil; immune[id] = nil; memoT[id] = nil end
 function LF.Suppress.forgetAll() levels = {}; immune = {}; squads = {} end
 Events.OnInitGlobalModData.Add(function() levels, immune, squads = {}, {}, {} end)
