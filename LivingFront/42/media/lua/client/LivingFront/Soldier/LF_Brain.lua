@@ -71,6 +71,7 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
+    coverBadTicks = 180,    -- (0.81.4) cover facing neither his enemy nor his squad's is given up after this
     shelterRetryTicks = 360,-- (0.80) sheltering without a shot: look for a firing position this often (was 120)
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
@@ -280,6 +281,12 @@ local function takeSpot(id, body, m, field, x, y, z, label, gait, awayX, awayY)
         walkTo(body, x, y, z, m[field].gait, awayX, awayY)
         m.lastPath = LF.tick
         LF.Brain.coverRuns = (LF.Brain.coverRuns or 0) + 1        -- (0.81.2, the test: runs to a spot)
+        local rr = LF.Records.get(id)
+        local RF = LF.Brain.runsBy
+        if RF and rr then
+            local k = rr.faction .. " " .. label
+            RF[k] = (RF[k] or 0) + 1
+        end
         if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y) end
     end
 end
@@ -368,6 +375,23 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
         local usable = q == LF.Cover.LOW or ((m.cover.loose or sticky) and q ~= LF.Cover.NONE)
+        -- (0.81.4) Cover that no longer faces the man he's watching still does if it faces the enemy
+        -- his squad sees as a whole - and he gives it up only after 3 s without either (0.81.3: men
+        -- left cover 411 times in one fight as their own target changed, and ran to the next).
+        if not usable then
+            local rec = LF.Records.get(id)
+            local stx, sty = nil, nil
+            if rec and rec.squad and LF.SquadBrain.threatOf then stx, sty = LF.SquadBrain.threatOf(rec.squad) end
+            if stx then
+                local q2 = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, stx, sty)
+                usable = q2 == LF.Cover.LOW or ((m.cover.loose or sticky) and q2 ~= LF.Cover.NONE)
+            end
+        end
+        if usable then m.cover.badSince = nil
+        else
+            m.cover.badSince = m.cover.badSince or LF.tick
+            if LF.tick - m.cover.badSince < CFG.coverBadTicks then usable = true end
+        end
         if m.cover.loose and not sticky and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.shelterRetryTicks then
             -- Sheltering without a shot: keep looking for a real firing position.
             m.lastCoverSearch = LF.tick

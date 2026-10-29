@@ -513,9 +513,18 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
     if not AM then AM = {}; s.answers[id] = AM end
     local A = AM[kind]
     if A and A.placedAt == s.placedAt and A.kind == kind and LF.distSq(A.ox, A.oy, ox, oy) <= 4 then
-        stats.kept = (stats.kept or 0) + 1
-        if A.x then return A.x, A.y, A.z, A.q end
-        return nil
+        -- (0.81.4: a kept spot is checked against the enemy he asks about now - one map read; the
+        -- squad placed against its enemy as a whole, his own may stand elsewhere.)
+        local good = not A.x
+        if A.x then
+            local q = coverQ(A.x, A.y, A.z, tx, ty)
+            good = q == LF.Cover.LOW or ((loose or gun) and q ~= LF.Cover.NONE)
+        end
+        if good then
+            stats.kept = (stats.kept or 0) + 1
+            if A.x then return A.x, A.y, A.z, A.q end
+            return nil
+        end
     end
     -- (0.81.2) A new placement, but the spot he was given last time still does: same place asked
     -- about, still on his leash, still covered against his enemy, free, and (a firing position or a
@@ -633,6 +642,13 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
     local x, y, z, q = spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun)
     LF.Perf.stop("squad spot", t0)
     return x, y, z, q
+end
+
+-- (0.81.4) The point the squad last placed against (the middle of the enemy it sees), or nil.
+function LF.SquadBrain.threatOf(sid)
+    local s = S[sid]
+    if s and s.cands and s.tx then return s.tx, s.ty end
+    return nil
 end
 
 -- (0.80) When the squad last placed (rebuilt its candidates): a man whose search found nothing

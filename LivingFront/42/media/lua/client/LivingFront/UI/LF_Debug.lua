@@ -517,7 +517,7 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
-        LF.Brain.coverRuns, LF.Brain.leftCover = 0, {}
+        LF.Brain.coverRuns, LF.Brain.leftCover, LF.Brain.runsBy = 0, {}, {}
         LF.log("TEST 0.81 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
@@ -890,6 +890,10 @@ reactionSummary = function(modMs, bodies)
     LF.log(string.format("TEST 0.81 running about: %d runs to a spot (%.1f a man), %d spots kept through a new placement; left cover: %s",
         LF.Brain.coverRuns or 0, nMen > 0 and (LF.Brain.coverRuns or 0) / nMen or 0, SS.held or 0,
         #lw > 0 and table.concat(lw, ", ") or "never"))
+    local rb = {}
+    for k, v in pairs(LF.Brain.runsBy or {}) do rb[#rb + 1] = k .. " " .. v end
+    table.sort(rb)
+    LF.log("TEST 0.81 runs by side and kind: " .. table.concat(rb, ", "))
     LF.log("TEST 0.81 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
 end
 
