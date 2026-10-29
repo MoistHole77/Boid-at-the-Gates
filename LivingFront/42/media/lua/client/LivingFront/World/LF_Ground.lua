@@ -113,6 +113,19 @@ function LF.Ground.peekCover(x, y, z, sx, sy)
     return math.floor(e.v / pow4(LF.Ground.dir(x + 0.5, y + 0.5, sx, sy))) % 4
 end
 
+-- (0.82.1) Has the square cover against fire from any direction - light anywhere, or heavy? From the
+-- map if it has the square fresh: hasLight, hasHeavy; nil if not known.
+function LF.Ground.peekAny(x, y, z)
+    local e = cover[key(math.floor(x), math.floor(y), z)]
+    if not e or LF.simTime - e.at > CFG.maxAge or e.at > LF.simTime then return nil end
+    local light, heavy = false, false
+    for d = 0, 7 do
+        local c = math.floor(e.v / pow4(d)) % 4
+        if c == LIGHT then light = true elseif c == HEAVY then heavy = true end
+    end
+    return light, heavy
+end
+
 -- (0.81) Forget what the map knows round (x, y, z) - cover placed or taken away (the arena tools).
 function LF.Ground.forget(x, y, z, r)
     for dx = -r, r do

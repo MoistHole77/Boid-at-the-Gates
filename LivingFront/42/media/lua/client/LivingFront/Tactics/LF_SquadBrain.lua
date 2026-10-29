@@ -405,9 +405,19 @@ local function buildCands(sid, s, men, n, cx, cy, cz, tx, ty)
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
             local sq = tdsq > 16 and cell:getGridSquare(x, y, cz)
             if sq and sq:isFree(false) and not sq:getBuilding() then
-                local q = coverQ(x, y, cz, tx, ty)
-                if q ~= LF.Cover.NONE then
-                    list[#list + 1] = { x = x, y = y, cls = q == LF.Cover.HIGH and LF.Ground.HEAVY or LF.Ground.LIGHT, td = math.sqrt(tdsq) }
+                -- (0.82.1) Any square with cover against fire from any side - each man is given the
+                -- one covered against his own enemy; 0.82 listed only those covered against the
+                -- squad's, and dug-in men sat in the open a tile from cover facing their own man.
+                local light, heavy = LF.Ground.peekAny(x, y, cz)
+                if light == nil then
+                    stats.liveQ = (stats.liveQ or 0) + 1
+                    local q = LF.Cover.quality(x, y, cz, tx, ty)
+                    light, heavy = q == LF.Cover.LOW, q == LF.Cover.HIGH
+                else
+                    stats.tableQ = (stats.tableQ or 0) + 1
+                end
+                if light or heavy then
+                    list[#list + 1] = { x = x, y = y, cls = light and LF.Ground.LIGHT or LF.Ground.HEAVY, td = math.sqrt(tdsq) }
                 end
             end
         end
@@ -494,6 +504,11 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
             if vb then sx, sy, k = sx + vb:getX(), sy + vb:getY(), k + 1 end
         end
         if k > 0 then stx, sty = sx / k, sy / k end
+    elseif s.tx then
+        -- (0.82.1) Seeing nobody: the enemy stays where the squad last placed against - 0.82 took
+        -- each asking man's own quarter, and a dug-in squad placed again for every man in turn (442
+        -- placements in 2 minutes).
+        stx, sty = s.tx, s.ty
     end
     -- Trigger: the threat has swung, the squad has moved, or it's been a while.
     local stale = not s.cands or LF.tick - s.placedAt > CFG.placeEvery or s.placedAt > LF.tick
@@ -505,9 +520,9 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
         if l0 > 0.1 and l1 > 0.1 and (ax0 * ax1 + ay0 * ay1) / (l0 * l1) < CFG.placeTurn then stale = true end
     end
     if stale then buildCands(sid, s, men, n, cx, cy, cz, stx, sty) end
-    -- (0.82) Spots are judged against the enemy the squad sees, not the man's own target: he holds
-    -- his spot and fires on what he can from it. (His own target still decides the line of fire.)
-    tx, ty = s.tx or tx, s.ty or ty
+    -- (0.82.1) A man is given a spot covered against his own enemy - he then holds it (LF_Brain);
+    -- what he is given is kept through a placement if it still faces his enemy or the squad's.
+    local qx, qy = s.tx or tx, s.ty or ty
     -- His answer this placement, if he has one for the same ask.
     local bx, by = body:getX(), body:getY()
     local ox, oy = ax or bx, ay or by
@@ -539,6 +554,10 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
     if A and A.x and A.kind == kind and LF.distSq(A.ox, A.oy, ox, oy) <= 4 then
         local q = coverQ(A.x, A.y, A.z, tx, ty)
         local okQ = q == LF.Cover.LOW or ((loose or gun) and q ~= LF.Cover.NONE)
+        if not okQ then
+            local q2 = coverQ(A.x, A.y, A.z, qx, qy)
+            okQ = q2 == LF.Cover.LOW or ((loose or gun) and q2 ~= LF.Cover.NONE)
+        end
         if okQ and not LF.Brain.hardClaimed(A.x, A.y, A.z, id) and not LF.Cover.takenExactly(A.x, A.y, A.z, id)
             and (loose or viewOf(A.x, A.y, A.z, threat)) then
             A.placedAt = s.placedAt
