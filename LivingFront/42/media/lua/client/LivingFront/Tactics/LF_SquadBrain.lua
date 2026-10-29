@@ -65,6 +65,7 @@ stats.why = noWhy()
 function LF.SquadBrain.resetStats()
     stats.why, stats.nearFound, stats.testSpots, stats.testNone = noWhy(), 0, 0, 0
     stats.kept, stats.tableQ, stats.liveQ, stats.tableV, stats.liveV, stats.testPlaces = 0, 0, 0, 0, 0, 0
+    stats.held = 0
 end
 LF.SquadBrain.stats = stats
 
@@ -516,6 +517,23 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
         if A.x then return A.x, A.y, A.z, A.q end
         return nil
     end
+    -- (0.81.2) A new placement, but the spot he was given last time still does: same place asked
+    -- about, still on his leash, still covered against his enemy, free, and (a firing position or a
+    -- gun) still with a view - he keeps it. 0.81.1 handed out fresh spots at every placement (117 in
+    -- 2 minutes) and men ran from one to the next.
+    if A and A.x and A.kind == kind and LF.distSq(A.ox, A.oy, ox, oy) <= 4 then
+        local q = coverQ(A.x, A.y, A.z, tx, ty)
+        local okQ = q == LF.Cover.LOW or ((loose or gun) and q ~= LF.Cover.NONE)
+        if okQ and not LF.Brain.hardClaimed(A.x, A.y, A.z, id) and not LF.Cover.takenExactly(A.x, A.y, A.z, id)
+            and (loose or viewOf(A.x, A.y, A.z, threat)) then
+            A.placedAt = s.placedAt
+            local sp = s.spots[id] or {}
+            sp.x, sp.y = A.x, A.y
+            s.spots[id] = sp
+            stats.held = (stats.held or 0) + 1
+            return A.x, A.y, A.z, A.q
+        end
+    end
     stats.spots = stats.spots + 1
     stats.testSpots = (stats.testSpots or 0) + 1
     local cell = getCell()
@@ -586,9 +604,11 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
         end
         if best then return answer(best.x, best.y, bz, bestQ) end
     end
-    -- (Shelter or a gun) the nearest covered square to where he was sent, within 14 tiles.
+    -- (Shelter or a gun) the nearest covered square to where he was sent, within 5 tiles beyond his
+    -- leash. (0.81: 14 tiles whatever his leash - a dug-in man's own check let him hold cover only
+    -- a few tiles past his place, so he left it, walked back, was sent there again: back and forth.)
     if loose or gun then
-        local lim = CFG.farLeash + 4
+        local lim = (leash or 7) + 5
         local bestD, best, bestQ = lim * lim, nil, nil
         for i = 1, #s.cands do
             local c = s.cands[i]

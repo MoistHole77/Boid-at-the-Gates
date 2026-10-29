@@ -517,6 +517,7 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
+        LF.Brain.coverRuns, LF.Brain.leftCover = 0, {}
         LF.log("TEST 0.81 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
@@ -882,6 +883,13 @@ reactionSummary = function(modMs, bodies)
         parts[#parts + 1] = string.format("%s %d (%.0f ms, %.2f each)", e.k, e.n, e.ms, e.n > 0 and e.ms / e.n or 0)
     end
     LF.log("TEST 0.81 thinks by kind: " .. table.concat(parts, "; "))
+    -- (0.81.2) Running about: runs to a spot, per man in the fight, and why men left cover.
+    local nMen = #(stress.ger or {}) + #(stress.sov or {})
+    local lw = {}
+    for why, k in pairs(LF.Brain.leftCover or {}) do lw[#lw + 1] = why .. " " .. k end
+    LF.log(string.format("TEST 0.81 running about: %d runs to a spot (%.1f a man), %d spots kept through a new placement; left cover: %s",
+        LF.Brain.coverRuns or 0, nMen > 0 and (LF.Brain.coverRuns or 0) / nMen or 0, SS.held or 0,
+        #lw > 0 and table.concat(lw, ", ") or "never"))
     LF.log("TEST 0.81 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
 end
 

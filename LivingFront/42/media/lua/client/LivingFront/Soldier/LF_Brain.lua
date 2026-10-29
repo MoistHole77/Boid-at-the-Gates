@@ -279,6 +279,7 @@ local function takeSpot(id, body, m, field, x, y, z, label, gait, awayX, awayY)
     else
         walkTo(body, x, y, z, m[field].gait, awayX, awayY)
         m.lastPath = LF.tick
+        LF.Brain.coverRuns = (LF.Brain.coverRuns or 0) + 1        -- (0.81.2, the test: runs to a spot)
         if LF.Config.logVerbose then LF.log("BRAIN #" .. id .. " " .. m[field].gait .. " to " .. label .. " at " .. x .. "," .. y) end
     end
 end
@@ -377,9 +378,15 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
                 return
             end
         end
-        if not usable or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
-            or (not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5))
-            or not withinLeash(m.cover.x, m.cover.y, ax, ay, m.cover.loose and 8 or (reached and 3 or 6), leash) then
+        local why = nil
+        if not usable then why = "its cover no longer faces the enemy"
+        elseif not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks then why = "not reached in time"
+        elseif not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5) then why = "no way there"
+        elseif not withinLeash(m.cover.x, m.cover.y, ax, ay, m.cover.loose and 8 or (reached and 3 or 6), leash) then why = "too far from his place" end
+        if why then
+            -- (0.81.2, the test: why men left their cover)
+            local L = LF.Brain.leftCover
+            if L then L[why] = (L[why] or 0) + 1 end
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
             LF.Cover.reserve(m.cover.x, m.cover.y, m.cover.z, id)   -- keep the claim while holding it
