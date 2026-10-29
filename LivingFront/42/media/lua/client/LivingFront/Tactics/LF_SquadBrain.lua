@@ -187,6 +187,23 @@ local function squadLook(sid, s)
         end
     end
     shareTargets(s, men, n, cx, cy)
+    -- (0.78.1, the reaction test) Since when each man has had an enemy his squad sees within his own
+    -- range (a rifle's 20 tiles, a gun's 30): his reaction is timed from then, not from the squad's
+    -- first sighting at 30 tiles and more.
+    s.eng = s.eng or {}
+    local rifle = (LF.Brain and LF.Brain.CFG and LF.Brain.CFG.fireRange) or 20
+    local gun = (LF.MG and LF.MG.CFG and LF.MG.CFG.range) or 30
+    for i = 1, n do
+        local man = men[i]
+        local r = man.rec.mgRole == "gunner" and gun or rifle
+        local rsq, any = r * r, false
+        local bx, by = man.body:getX(), man.body:getY()
+        for j = 1, #seen do
+            local v = seen[j]
+            if LF.distSq(bx, by, v.body:getX(), v.body:getY()) <= rsq then any = true; break end
+        end
+        if any then s.eng[man.id] = s.eng[man.id] or LF.tick else s.eng[man.id] = nil end
+    end
     -- Forget lines to men no longer about (kept small).
     s.looks = (s.looks or 0) + 1
     if s.looks % 40 == 0 then
@@ -256,6 +273,12 @@ function LF.SquadBrain.targetOf(sid, id)
     local s = S[sid]
     if not s or not s.assign or LF.tick - (s.seenAt or -100000) > CFG.lookTicks * 3 then return nil end
     return s.assign[id]
+end
+
+-- Since when this man has had an enemy his squad sees within his range (the reaction test), or nil.
+function LF.SquadBrain.engageableSince(sid, id)
+    local s = S[sid]
+    return s and s.eng and s.eng[id]
 end
 
 -- When the squad's present contact began (the first look that saw an enemy after 10 s of none), or nil.

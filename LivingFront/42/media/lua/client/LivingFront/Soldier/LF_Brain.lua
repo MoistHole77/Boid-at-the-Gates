@@ -1444,7 +1444,8 @@ local function act(id, body, rec, m)
 end
 
 -- ---- reaction times (0.78 test) ----------------------------------------------------------------------
--- How long a man takes to fire his first shot once his squad's contact begins (LF_SquadBrain), and
+-- How long a man takes to fire his first shot once an enemy his squad sees is within his range
+-- (LF_SquadBrain.engageableSince, 0.78.1 - 0.78 timed it from the squad's first sighting), and
 -- how long a squad takes to start moving once it is given a movement order (LF_Tactics.setIntent).
 -- Kept as plain lists of seconds for the test to read.
 LF.Brain.reactions = { shot = {}, move = {} }
@@ -1452,8 +1453,8 @@ function LF.Brain.onShot(body)
     local id = body:getModData().LF_id
     local m = id and minds[id]
     local rec = id and LF.Records.get(id)
-    if not (m and rec and rec.squad and LF.SquadBrain.contactSince) then return end
-    local cs = LF.SquadBrain.contactSince(rec.squad)
+    if not (m and rec and rec.squad and LF.SquadBrain.engageableSince) then return end
+    local cs = LF.SquadBrain.engageableSince(rec.squad, id)
     if not cs or m.reactFor == cs then return end
     m.reactFor = cs
     local secs = (LF.tick - cs) / 60

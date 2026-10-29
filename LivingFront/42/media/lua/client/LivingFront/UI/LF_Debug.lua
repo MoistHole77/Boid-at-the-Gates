@@ -833,7 +833,7 @@ reactionSummary = function(modMs, bodies)
     local spread = (G.firing or 0) > 0 and (G.targets or 0) / G.firing or 0
     local at72 = bodies > 0 and modMs / bodies * 72 or 0
     local ok = shot ~= nil and move ~= nil and shot <= 1.5 and move <= 1.0
-    LF.log(string.format("TEST 0.78 reaction %s: first shot after contact - median %s over %d men (1.5 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
+    LF.log(string.format("TEST 0.78 reaction %s: first shot once an enemy is in his range - median %s over %d men (1.5 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
         ok and "PASS" or "FAIL", shot and string.format("%.1f s", shot) or "none", #R.shot,
         move and string.format("%.1f s", move) or "none", #R.move, spread, at72))
     LF.say(string.format("Reaction test %s: first shot %s, moving %s", ok and "PASS" or "FAIL",
@@ -1299,7 +1299,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption("0.78 reaction test: the stress fight (right-click a building) - first shot within 1.5 s of contact, moving within 1 s of an order", nil,
+            tm:addOption("0.78 reaction test: the stress fight (right-click a building) - first shot within 1.5 s of an enemy coming into range, moving within 1 s of an order", nil,
                 function() stressTest(x, y, z, false, { reaction = true }) end)
         end
         tm:addOption("(First: Tools > Delete ALL NPCs)")
