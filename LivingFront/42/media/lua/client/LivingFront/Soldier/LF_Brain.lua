@@ -364,6 +364,33 @@ end
 -- last-known position). Squad soldiers pass their slot (ax, ay): positions stay on the leash.
 -- sticky (defensive stance): keep a cover spot as long as it gives any cover at all, don't keep
 -- hunting for a better one, and look for shelter only close to the spot.
+-- (0.81.5) A free, unclaimed square within 3 tiles of his cover with cover against his own enemy
+-- (low cover, or any for shelter or a dug-in man): x, y, z or nil. Nearest first; map reads.
+local function stepToCover(id, body, m, threat, sticky)
+    local c = m.cover
+    local cell = getCell()
+    local tx, ty = threat:getX(), threat:getY()
+    local qOf = LF.SquadBrain.coverQ or LF.Cover.quality
+    for d = 1, 3 do
+        for dx = -d, d do
+            for dy = -d, d do
+                if math.max(math.abs(dx), math.abs(dy)) == d then
+                    local x, y = c.x + dx, c.y + dy
+                    local q = qOf(x, y, c.z, tx, ty)
+                    if q == LF.Cover.LOW or ((c.loose or sticky) and q ~= LF.Cover.NONE) then
+                        local sq = cell:getGridSquare(x, y, c.z)
+                        if sq and sq:isFree(false) and not sq:getBuilding() and not LF.Brain.hardClaimed(x, y, c.z, id)
+                            and not LF.Cover.takenExactly(x, y, c.z, id) and not stuckNear(m, x + 0.5, y + 0.5) then
+                            return x, y, c.z
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local planCoverOf
 local function planCover(id, body, m, threat, ax, ay, leash, sticky)
     local t0 = getTimestampMs()
@@ -375,6 +402,21 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
         local usable = q == LF.Cover.LOW or ((m.cover.loose or sticky) and q ~= LF.Cover.NONE)
+        -- (0.81.5) Covered against his squad's enemy but not against his own: a short step - within
+        -- 3 tiles - to a square covered against the man he watches, looked for every 2 s, from the
+        -- cover map. (0.81.4 kept such men where they were: 12 left in the open 1-2 tiles from cover;
+        -- 0.81.3 sent them off on a full search: 4.7 runs a man.)
+        if not usable and reached and LF.tick - (m.cover.stepAt or -10000) >= CFG.coverSearchTicks then
+            m.cover.stepAt = LF.tick
+            local sx, sy, sz = stepToCover(id, body, m, threat, sticky)
+            if sx then
+                local loose = m.cover.loose
+                leavePosition(id, body, m)
+                takeSpot(id, body, m, "cover", sx, sy, sz, "a step to cover against him")
+                m.cover.loose = loose
+                return
+            end
+        end
         -- (0.81.4) Cover that no longer faces the man he's watching still does if it faces the enemy
         -- his squad sees as a whole - and he gives it up only after 3 s without either (0.81.3: men
         -- left cover 411 times in one fight as their own target changed, and ran to the next).
