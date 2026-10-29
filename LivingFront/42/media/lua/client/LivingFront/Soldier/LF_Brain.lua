@@ -75,7 +75,7 @@ local CFG = {
     -- unless his squad has placed again since (the threat swung, the squad moved).
     coverMissMax = 4,       -- (times coverSearchTicks, at most)
     shelterRetryTicks = 360,-- sheltering without a shot: look for a firing position this often (was 120)
-    nearCoverRadius = 5,    -- nothing on the placement: the nearest covered square this close, any kind
+    nearCoverRadius = 8,    -- nothing on the placement: the nearest covered square this close, any kind (0.80: 5 - men were left 6-8 tiles from cover)
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot

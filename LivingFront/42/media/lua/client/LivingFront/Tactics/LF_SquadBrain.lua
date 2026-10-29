@@ -388,10 +388,14 @@ local function buildCands(sid, s, men, n, cx, cy, cz, tx, ty)
     -- (At most 33 x 33 squares round its middle.)
     x0, x1 = math.max(x0, math.floor(cx - 16)), math.min(x1, math.floor(cx + 16))
     y0, y1 = math.max(y0, math.floor(cy - 16)), math.min(y1, math.floor(cy + 16))
+    -- (0.80.1) Only squares a man can stand on, outside buildings: 0.80's spot searches turned
+    -- down 2811 blocked candidates and 1773 inside buildings, for every man, every search.
+    local cell = getCell()
     for x = x0, x1 do
         for y = y0, y1 do
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
-            if tdsq > 16 then
+            local sq = tdsq > 16 and cell:getGridSquare(x, y, cz)
+            if sq and sq:isFree(false) and not sq:getBuilding() then
                 local q = LF.Cover.quality(x, y, cz, tx, ty)
                 if q ~= LF.Cover.NONE then
                     list[#list + 1] = { x = x, y = y, cls = q == LF.Cover.HIGH and LF.Ground.HEAVY or LF.Ground.LIGHT, td = math.sqrt(tdsq) }

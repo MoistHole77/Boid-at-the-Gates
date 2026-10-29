@@ -605,7 +605,12 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
             if not sx and LF.SquadBrain.nearestCover then
                 sx, sy, sz = LF.SquadBrain.nearestCover(rec.id, g.spot.x + 0.5, g.spot.y + 0.5, g.spot.z or 0, threat, CFG.spotLeash + 3, true)
             end
+            if not sx and not g.openLogged then
+                g.openLogged = true
+                LF.log("MG " .. tostring(g.teamName) .. ": in the open at " .. g.spot.x .. "," .. g.spot.y .. " - no covered square with a view of the enemy within " .. (CFG.spotLeash + 3) .. " tiles")
+            end
             if sx and not (sx == g.spot.x and sy == g.spot.y) then
+                g.openLogged = nil
                 LF.log("MG " .. tostring(g.teamName) .. ": in the open - moving the gun to cover at " .. sx .. "," .. sy)
                 g.spot = { x = sx, y = sy, z = sz }
                 g.aspot, g.pickedAt, g.set, g.unsetBy = nil, now, false, "the gun moving to cover"
