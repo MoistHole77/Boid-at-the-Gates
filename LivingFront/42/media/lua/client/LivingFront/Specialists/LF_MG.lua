@@ -600,14 +600,12 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
         g.openCheck = now
         local body = LF.Bodies.get(rec.id)
         if body and rec.squad and LF.SquadBrain and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
-            local sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3)
-            -- (0.80) Nothing on the placement: the nearest covered square that sees the enemy.
-            if not sx and LF.SquadBrain.nearestCover then
-                sx, sy, sz = LF.SquadBrain.nearestCover(rec.id, g.spot.x + 0.5, g.spot.y + 0.5, g.spot.z or 0, threat, CFG.spotLeash + 3, true)
-            end
+            -- (0.81: a gun's spot - any cover it can see the enemy from, else the nearest such square
+            -- to where the team was sent, within 14 tiles.)
+            local sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3, false, true)
             if not sx and not g.openLogged then
                 g.openLogged = true
-                LF.log("MG " .. tostring(g.teamName) .. ": in the open at " .. g.spot.x .. "," .. g.spot.y .. " - no covered square with a view of the enemy within " .. (CFG.spotLeash + 3) .. " tiles")
+                LF.log("MG " .. tostring(g.teamName) .. ": in the open at " .. g.spot.x .. "," .. g.spot.y .. " - no covered square with a view of the enemy within 14 tiles of where it was sent")
             end
             if sx and not (sx == g.spot.x and sy == g.spot.y) then
                 g.openLogged = nil
@@ -628,10 +626,7 @@ local function gunSpot(g, rec, ax, ay, z, threat, watching)
             -- team was sent, else 8 (0.74.2: guns set up in the open with cover 1-5 tiles off).)
             if rec.squad and LF.SquadBrain and LF.SquadBrain.enabled and LF.Units.get(rec.squad) then
                 sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
-                if not sx then sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3) end
-                if not sx and LF.SquadBrain.nearestCover then
-                    sx, sy, sz = LF.SquadBrain.nearestCover(rec.id, ax, ay, math.floor(z or 0), threat, CFG.spotLeash + 3, true)
-                end
+                if not sx then sx, sy, sz = LF.SquadBrain.spotFor(rec.id, body, rec, threat, CFG.areaRange, ax, ay, CFG.spotLeash + 3, false, true) end
             else
                 sx, sy, sz = LF.Cover.findFiringPosition(rec.id, body, threat, CFG.areaRange, ax, ay, CFG.spotLeash)
             end

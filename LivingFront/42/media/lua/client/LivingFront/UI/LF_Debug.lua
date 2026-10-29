@@ -466,6 +466,13 @@ end
 local function stressTest(x, y, z, offscreen, opts)
     opts = opts or {}
     local obj = objectiveAt(x, y, z)
+    -- (0.81) In the open, for an arena you built (Tools > Arena): a field fight - the Germans dig
+    -- in where you clicked, the Soviets advance on them from 70 tiles east.
+    local field = false
+    if not obj and opts.fieldOk then
+        field = true
+        obj = { name = "the arena", x = math.floor(x) + 0.5, y = math.floor(y) + 0.5, z = math.floor(z or 0) }
+    end
     if not obj then LF.say("Right-click on a building for the stress test"); return end
     if not (LF.Config.logPerf) then LF.Perf.toggle() end
     local ger = LF.Platoon.create("GER", obj.x + 0.5, obj.y + 0.5, obj.z or 0, 1, 0, true)
@@ -484,8 +491,17 @@ local function stressTest(x, y, z, offscreen, opts)
         for _, rid in ipairs(gerMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
         for _, rid in ipairs(sovMen) do local r = LF.Records.get(rid); if r then r.noBody = true end end
     end
-    local okH, whyH = LF.Platoon.hold(ger, obj)
-    local okT, whyT = LF.Platoon.take(sov, obj)
+    local okH, whyH, okT, whyT
+    if field then
+        okH = true
+        for _, u in pairs(LF.Units.all()) do
+            if u.kind == "squad" and u.platoon == ger.id then LF.Tactics.setStance(u, "defensive", nil) end
+        end
+        okT, whyT = LF.Platoon.patrol(sov, obj.x, obj.y, obj.z)
+    else
+        okH, whyH = LF.Platoon.hold(ger, obj)
+        okT, whyT = LF.Platoon.take(sov, obj)
+    end
     if ger2 then LF.Platoon.hold(ger2, obj); LF.Platoon.take(sov2, obj) end
     stress = { started = getTimestampMs(), sim = LF.simTime, windows = {}, seen = LF.Perf.last(), obj = obj.name,
                ger = gerMen, sov = sovMen, offscreen = offscreen, big = opts.big, setCap = opts.setCap, reaction = opts.reaction,
@@ -498,7 +514,7 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
-        LF.log("TEST 0.80 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
+        LF.log("TEST 0.81 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
         LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
@@ -839,21 +855,21 @@ reactionSummary = function(modMs, bodies)
     local nOpen = 0
     for _ in pairs(G.openMen or {}) do nOpen = nOpen + 1 end
     local ok = nOpen < 2
-    LF.log(string.format("TEST 0.80 open ground %s: %d men left in the open with cover inside 10 tiles (fewer than 2 allowed); %.2f ms at 72 bodies",
+    LF.log(string.format("TEST 0.81 open ground %s: %d men left in the open with cover inside 10 tiles (fewer than 2 allowed); %.2f ms at 72 bodies",
         ok and "PASS" or "FAIL", nOpen, at72))
-    LF.log(string.format("TEST 0.80 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
+    LF.log(string.format("TEST 0.81 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
         shot and string.format("%.1f s", shot) or "none", #R.shot,
         move and string.format("%.1f s", move) or "none", #R.move, spread))
     local secs = (LF.tick - (stress.thinkTick or LF.tick)) / 60
     local thinks = LF.Brain.thinkCount or 0
-    LF.log(string.format("TEST 0.80 thinking: %d thinks in %.0f s (%.1f a second for every body on average)",
+    LF.log(string.format("TEST 0.81 thinking: %d thinks in %.0f s (%.1f a second for every body on average)",
         thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0))
     local SS = LF.SquadBrain.stats
     local W = SS.why or {}
-    LF.log(string.format("TEST 0.80 spot searches: %d asked for, %d found nothing; candidates turned down - none on his leash %d, wrong cover against his threat %d, claimed %d, blocked %d, inside a building %d, no view %d; nearest-cover fallback %d asked, %d found",
-        SS.testSpots or 0, SS.testNone or 0, W.empty or 0, W.quality or 0, W.claimed or 0, W.blocked or 0, W.building or 0,
-        W.noView or 0, SS.near or 0, SS.nearFound or 0))
-    LF.say(string.format("Open-ground test %s: %d left in the open, %.2f ms at 72 bodies", ok and "PASS" or "FAIL", nOpen, at72))
+    LF.log(string.format("TEST 0.81 spot searches: %d worked out (%d answered from what the squad already had), %d found nothing, %d found the cover nearest where he was sent; turned down - nothing on his leash %d, wrong cover against his own enemy %d, claimed %d, no view %d; %d placements; cover read from the map %d times, tested live %d; view from the map %d, live %d",
+        SS.testSpots or 0, SS.kept or 0, SS.testNone or 0, SS.nearFound or 0, W.empty or 0, W.quality or 0, W.claimed or 0,
+        W.noView or 0, SS.testPlaces or 0, SS.tableQ or 0, SS.liveQ or 0, SS.tableV or 0, SS.liveV or 0))
+    LF.say(string.format("0.81 open-ground test %s: %d left in the open, %.2f ms at 72 bodies", ok and "PASS" or "FAIL", nOpen, at72))
     -- (0.79.1) What the old rule would have made, and the thinks by kind with their cost.
     local kinds = {}
     for k, v in pairs(LF.Brain.thinkStats or {}) do kinds[#kinds + 1] = { k = k, n = v.n, ms = v.ms } end
@@ -862,8 +878,8 @@ reactionSummary = function(modMs, bodies)
     for _, e in ipairs(kinds) do
         parts[#parts + 1] = string.format("%s %d (%.0f ms, %.2f each)", e.k, e.n, e.ms, e.n > 0 and e.ms / e.n or 0)
     end
-    LF.log("TEST 0.80 thinks by kind: " .. table.concat(parts, "; "))
-    LF.log("TEST 0.80 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
+    LF.log("TEST 0.81 thinks by kind: " .. table.concat(parts, "; "))
+    LF.log("TEST 0.81 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
 end
 
 local function stressSummary()
@@ -1186,6 +1202,92 @@ local function testLine()
         LF.simTime - t.t0, t.T.secs, LF.Suppress.squadValue(t.target), LF.Suppress.squadState(t.target))
 end
 
+-- ---- the arena (0.81) ---------------------------------------------------------------------------
+-- Low cover you place by hand on open ground, to build a test ground instead of hunting for one: a
+-- crate or a counter (the first of these the game has that stands as low cover - something a man
+-- can crouch behind and fire over). Kept in the save's records, so "remove" finds them later.
+local ARENA_SPRITES = { "carpentry_01_16", "fixtures_counters_01_0", "location_shop_generic_01_40",
+                        "furniture_storage_01_8", "carpentry_01_19" }
+local function arenaList()
+    local d = LF.Records.data()
+    d.arena = d.arena or {}
+    return d.arena
+end
+local function spriteOK(name)
+    local ok, sp = pcall(function() return getSprite(name) end)
+    return ok and sp ~= nil
+end
+local function placeCover(x, y, z)
+    local cell = getCell()
+    local sq = cell:getGridSquare(x, y, z)
+    if not sq then return false, "that square isn't loaded" end
+    if not sq:isFree(false) or sq:getBuilding() then return false, "something is already there" end
+    for _, name in ipairs(ARENA_SPRITES) do
+        if spriteOK(name) then
+            local okNew, obj = pcall(function() return IsoObject.new(cell, sq, name) end)
+            if okNew and obj then
+                sq:AddTileObject(obj)
+                pcall(function() sq:RecalcAllWithNeighbours(true) end)
+                if sq:isSolidTrans() then
+                    local L = arenaList()
+                    L[#L + 1] = { x = x, y = y, z = z, sprite = name }
+                    LF.Ground.forget(x, y, z, 2)
+                    return true, name
+                end
+                sq:RemoveTileObject(obj)           -- (not low cover after all: the next one)
+                pcall(function() sq:RecalcAllWithNeighbours(true) end)
+            end
+        end
+    end
+    return false, "no crate or counter sprite worked as low cover"
+end
+local function removeArena()
+    local cell = getCell()
+    local L = arenaList()
+    local n, kept = 0, {}
+    for _, e in ipairs(L) do
+        local sq = cell:getGridSquare(e.x, e.y, e.z)
+        if sq then
+            local objs = sq:getObjects()
+            for i = objs:size() - 1, 0, -1 do
+                local o = objs:get(i)
+                local sp = o and o:getSprite()
+                if sp and sp:getName() == e.sprite then sq:RemoveTileObject(o); n = n + 1; break end
+            end
+            pcall(function() sq:RecalcAllWithNeighbours(true) end)
+            LF.Ground.forget(e.x, e.y, e.z, 2)
+        else
+            kept[#kept + 1] = e                    -- (not loaded here: left on the list for later)
+        end
+    end
+    LF.Records.data().arena = kept
+    LF.say("Removed " .. n .. " pieces of cover" .. (#kept > 0 and (" (" .. #kept .. " far off, not loaded)") or ""))
+end
+-- A run of pieces from (x, y): dx, dy the step.
+local function placeRun(x, y, z, dx, dy, count)
+    local n, last = 0, nil
+    for i = 0, count - 1 do
+        local ok, why = placeCover(x + dx * i, y + dy * i, z)
+        if ok then n = n + 1 else last = why end
+    end
+    LF.say("Placed " .. n .. " of " .. count .. " pieces of low cover" .. (last and (" (" .. last .. ")") or ""))
+    LF.log("ARENA placed " .. n .. " of " .. count .. " pieces at " .. x .. "," .. y .. (last and (" - " .. last) or ""))
+end
+-- Scattered pieces round (x, y): short runs of 2-3 facing east, the way the stress fight's
+-- attackers come, within r tiles - an open field with something to fight from.
+local function scatterCover(x, y, z, r, runs)
+    local n = 0
+    for _ = 1, runs do
+        local px, py = x + ZombRand(-r, r + 1), y + ZombRand(-r, r + 1)
+        local len = 2 + ZombRand(2)
+        for i = 0, len - 1 do
+            if placeCover(px, py + i, z) then n = n + 1 end
+        end
+    end
+    LF.say("Scattered " .. n .. " pieces of low cover round here")
+    LF.log("ARENA scattered " .. n .. " pieces round " .. x .. "," .. y)
+end
+
 local function sub(menu, label)
     local o = menu:addOption(label)
     local m = ISContextMenu:getNew(menu)
@@ -1325,8 +1427,8 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption("0.80 open-ground test: the stress fight (right-click a building) - fewer than 2 men left in the open with cover near", nil,
-                function() stressTest(x, y, z, false, { reaction = true }) end)
+            tm:addOption("0.81 open-ground test: the stress fight - fewer than 2 men left in the open with cover near (on a building: it holds the building; in the open: a field fight, the Germans dug in where you clicked)", nil,
+                function() stressTest(x, y, z, false, { reaction = true, fieldOk = true }) end)
         end
         tm:addOption("(First: Tools > Delete ALL NPCs)")
     end)
@@ -1384,6 +1486,18 @@ local function onMenu(playerNum, context, worldObjects, test)
                 LF.say("Front on the map: " .. ((LF.Map.VIEW_WORDS and LF.Map.VIEW_WORDS[nxt]) or "off"))
             end)
         end
+    end
+    do
+        local am = sub(tools, "Arena (low cover on open ground)")
+        local fx, fy, fz = math.floor(x), math.floor(y), math.floor(z or 0)
+        am:addOption("Place one piece of low cover here", nil, function()
+            local ok, why = placeCover(fx, fy, fz)
+            LF.say(ok and ("Low cover placed (" .. why .. ")") or ("No cover placed: " .. why))
+        end)
+        am:addOption("Place a line of 5 here, north to south (facing east and west)", nil, function() placeRun(fx, fy - 2, fz, 0, 1, 5) end)
+        am:addOption("Place a line of 5 here, west to east (facing north and south)", nil, function() placeRun(fx - 2, fy, fz, 1, 0, 5) end)
+        am:addOption("Scatter low cover round here (12 short runs within 12 tiles)", nil, function() scatterCover(fx, fy, fz, 12, 12) end)
+        am:addOption("Remove all the cover placed (" .. #arenaList() .. " pieces)", nil, removeArena)
     end
     tools:addOption("Clear all objectives", nil, clearObjectives)
     tools:addOption("Delete ALL NPCs", nil, function() test = nil; deleteAll() end)

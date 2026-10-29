@@ -71,11 +71,7 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
-    -- (0.80) Cover held: a search that found nothing waits 2, then 4, then 8 s before the next -
-    -- unless his squad has placed again since (the threat swung, the squad moved).
-    coverMissMax = 4,       -- (times coverSearchTicks, at most)
-    shelterRetryTicks = 360,-- sheltering without a shot: look for a firing position this often (was 120)
-    nearCoverRadius = 8,    -- nothing on the placement: the nearest covered square this close, any kind (0.80: 5 - men were left 6-8 tiles from cover)
+    shelterRetryTicks = 360,-- (0.80) sheltering without a shot: look for a firing position this often (was 120)
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
@@ -383,7 +379,7 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         end
         if not usable or (not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks)
             or (not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5))
-            or not withinLeash(m.cover.x, m.cover.y, ax, ay, reached and 3 or 6, leash) then
+            or not withinLeash(m.cover.x, m.cover.y, ax, ay, m.cover.loose and 8 or (reached and 3 or 6), leash) then
             leavePosition(id, body, m)   -- threat moved around it, can't get there, or the squad moved on
         else
             LF.Cover.reserve(m.cover.x, m.cover.y, m.cover.z, id)   -- keep the claim while holding it
@@ -394,38 +390,27 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
     -- Already standing behind usable cover?
     -- (Only on the search beat: up to 0.74 the sight check here ran every think for every man
     -- without cover - 0.75.)
-    -- (0.80) After a search that found nothing he waits longer each time (2, 4, 8 s) - unless his
-    -- squad has placed again since (the threat swung, the squad moved): then he looks at once.
-    -- (0.79.1: 9 searches in 10 found nothing, and the same men asked again every 2 s.)
+    -- (0.81) A squad soldier is answered by his squad once a placement (LF_SquadBrain keeps the
+    -- answer), so asking is cheap; when the squad places again he asks at once.
     local rec = LF.Records.get(id)
     local placed = rec and rec.squad and LF.SquadBrain.placedAt and LF.SquadBrain.placedAt(rec.squad)
-    local miss = m.coverMiss or 0
-    local wait = CFG.coverSearchTicks * (miss == 0 and 1 or miss == 1 and 2 or CFG.coverMissMax)
-    if m.coverMiss and placed and placed ~= m.missPlaced then wait = 0 end
-    if LF.tick - (m.lastCoverSearch or -10000) < wait then return end
-    m.lastCoverSearch = LF.tick
+    local fresh = placed and placed ~= m.askedPlaced
+    if not fresh and LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
+    m.lastCoverSearch, m.askedPlaced = LF.tick, placed
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     if withinLeash(bx, by, ax, ay, 0, leash) and LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
-        m.coverMiss = nil
         takeSpot(id, body, m, "cover", bx, by, bz, "cover")
         return
     end
     local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
-    if x then m.coverMiss = nil; takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
-    -- No firing position: at least get out of the open (any cover, a little further out).
+    if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
+    -- No firing position: at least get out of the open (any cover, a little further out - and
+    -- for a squad soldier, failing that, the covered square nearest where he was sent).
     x, y, z = firingSpot(id, body, threat, CFG.sightRange + 10, ax, ay,
         ax and ((leash or CFG.leash) + (sticky and 1 or 3)), true)
-    -- (0.80) Nothing on the placement: the nearest covered square round him, of any kind (a wall,
-    -- a doorway, inside a building) - 0.79.1 left men standing in the open 1-3 tiles from cover.
-    if not x and rec and rec.squad and LF.SquadBrain.nearestCover then
-        x, y, z = LF.SquadBrain.nearestCover(id, body:getX(), body:getY(), bz, threat, CFG.nearCoverRadius, false)
-    end
     if x then
-        m.coverMiss = nil
         takeSpot(id, body, m, "cover", x, y, z, "shelter")
         m.cover.loose = true
-    else
-        m.coverMiss, m.missPlaced = (m.coverMiss or 0) + 1, placed
     end
 end
 

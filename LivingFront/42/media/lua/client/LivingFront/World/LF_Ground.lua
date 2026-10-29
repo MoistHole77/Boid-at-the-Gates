@@ -104,6 +104,27 @@ function LF.Ground.cover(x, y, z, sx, sy)
     return LF.Ground.coverDir(x, y, z, LF.Ground.dir(x + 0.5, y + 0.5, sx, sy))
 end
 
+-- (0.81) The cover of a square against a shooter at (sx, sy) if the map already has it fresh, else
+-- nil - for the squad's placement, which then runs the live test instead of filling 8 directions.
+function LF.Ground.peekCover(x, y, z, sx, sy)
+    x, y = math.floor(x), math.floor(y)
+    local e = cover[key(x, y, z)]
+    if not e or LF.simTime - e.at > CFG.maxAge or e.at > LF.simTime then return nil end
+    return math.floor(e.v / pow4(LF.Ground.dir(x + 0.5, y + 0.5, sx, sy))) % 4
+end
+
+-- (0.81) Forget what the map knows round (x, y, z) - cover placed or taken away (the arena tools).
+function LF.Ground.forget(x, y, z, r)
+    for dx = -r, r do
+        for dy = -r, r do
+            local k = key(math.floor(x) + dx, math.floor(y) + dy, z)
+            if cover[k] then cover[k] = nil; nCover = nCover - 1 end
+            if sight[k] then sight[k] = nil; nSight = nSight - 1 end
+        end
+    end
+    if LF.Ground.overlay then LF.Ground.overlay.dirty = true end
+end
+
 -- ---- sight ----------------------------------------------------------------------------------------
 
 local function clear(x, y, z, tx, ty)
@@ -154,6 +175,12 @@ end
 function LF.Ground.hasSight(x, y, z)
     local e = sight[key(math.floor(x), math.floor(y), math.floor(z))]
     return e ~= nil and LF.simTime - e.at <= CFG.maxAge
+end
+
+-- (0.81) seenFrom if the sight cache already has that square fresh, else nil.
+function LF.Ground.peekSeen(x, y, z, ex, ey)
+    if not LF.Ground.hasSight(x, y, z) then return nil end
+    return LF.Ground.seenFrom(x, y, z, ex, ey)
 end
 
 -- Could someone at (ex, ey) see (and fire at) square (x, y, z)? From the sight cache.

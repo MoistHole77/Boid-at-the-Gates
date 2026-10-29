@@ -26,6 +26,7 @@
 
 require "LivingFront/Core/LF_Core"
 require "LivingFront/Core/LF_Records"
+require "LivingFront/Core/LF_Perf"
 require "LivingFront/World/LF_Bodies"
 require "LivingFront/World/LF_Sense"
 require "LivingFront/World/LF_Cover"
@@ -62,7 +63,8 @@ local stats = { los = 0, looks = 0, places = 0, spots = 0, at = 0 }
 local function noWhy() return { empty = 0, quality = 0, claimed = 0, blocked = 0, building = 0, noView = 0 } end
 stats.why = noWhy()
 function LF.SquadBrain.resetStats()
-    stats.why, stats.near, stats.nearFound, stats.testSpots, stats.testNone = noWhy(), 0, 0, 0, 0
+    stats.why, stats.nearFound, stats.testSpots, stats.testNone = noWhy(), 0, 0, 0
+    stats.kept, stats.tableQ, stats.liveQ, stats.tableV, stats.liveV, stats.testPlaces = 0, 0, 0, 0, 0, 0
 end
 LF.SquadBrain.stats = stats
 
@@ -365,6 +367,8 @@ function LF.SquadBrain.seesAny(sid)
     return #s.seen > 0
 end
 
+local coverQ      -- (below)
+
 -- ---- placement -----------------------------------------------------------------------------------
 
 -- The candidate squares round the squad against a threat point: every square round its men with
@@ -376,6 +380,7 @@ local function buildCands(sid, s, men, n, cx, cy, cz, tx, ty)
     s.tx, s.ty, s.cx, s.cy, s.placedAt = tx, ty, cx, cy, LF.tick
     for k in pairs(s.spots) do s.spots[k] = nil end
     stats.places = stats.places + 1
+    stats.testPlaces = (stats.testPlaces or 0) + 1
     local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
     for i = 1, n do
         local b = men[i].body
@@ -396,7 +401,7 @@ local function buildCands(sid, s, men, n, cx, cy, cz, tx, ty)
             local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
             local sq = tdsq > 16 and cell:getGridSquare(x, y, cz)
             if sq and sq:isFree(false) and not sq:getBuilding() then
-                local q = LF.Cover.quality(x, y, cz, tx, ty)
+                local q = coverQ(x, y, cz, tx, ty)
                 if q ~= LF.Cover.NONE then
                     list[#list + 1] = { x = x, y = y, cls = q == LF.Cover.HIGH and LF.Ground.HEAVY or LF.Ground.LIGHT, td = math.sqrt(tdsq) }
                 end
@@ -435,46 +440,116 @@ end
 local scored = {}
 local function byScore(a, b) return a.score > b.score end
 
+-- (0.81) Cover and view of a square, from the cover overlay (LF_Ground) where it is filled - a
+-- table read - else the live edge test / line test. 0.74-0.80 always ran the live tests: about
+-- 1,100 edge tests a placement and a line test per candidate per man.
+coverQ = function(x, y, z, tx, ty)
+    local g = LF.Ground.peekCover(x, y, z, tx, ty)
+    if g then
+        stats.tableQ = (stats.tableQ or 0) + 1
+        if g == LF.Ground.LIGHT then return LF.Cover.LOW end
+        if g == LF.Ground.NONE then return LF.Cover.NONE end
+        return LF.Cover.HIGH
+    end
+    stats.liveQ = (stats.liveQ or 0) + 1
+    return LF.Cover.quality(x, y, z, tx, ty)
+end
+local function viewOf(x, y, z, threat)
+    local v = LF.Ground.peekSeen(x, y, z, threat:getX(), threat:getY())
+    if v ~= nil then stats.tableV = (stats.tableV or 0) + 1; return v end
+    stats.liveV = (stats.liveV or 0) + 1
+    return LF.Cover.canSeeFrom(x, y, z, threat)
+end
+LF.SquadBrain.coverQ = coverQ
+
 -- A squad soldier's cover (in place of LF.Cover.findFiringPosition): x, y, z, quality or nil.
--- The arguments are findFiringPosition's (threat, maxRange, anchor, leash, loose).
-function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, loose)
+-- The arguments are findFiringPosition's (threat, maxRange, anchor, leash, loose); gun: a gun's
+-- spot (it must see the enemy from there; any cover).
+-- (0.81) The squad answers each man once a placement: the answer (a spot, or none) is kept until
+-- the squad places again (the threat swings, the squad moves, 10 s) or he is sent elsewhere - up
+-- to 0.80 he asked again every 2 s, and 9 times in 10 got nothing.
+-- Three looks, best first: a firing position round where he was sent; (shelter) any cover round
+-- where he is; then the nearest covered square to where he was sent within 14 tiles - so a man
+-- sent to open ground goes to the cover nearest it instead of standing there (0.80: the most
+-- common miss, nothing covered on his leash).
+local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun)
     local sid = rec.squad
     local s = stateOf(sid)
     local tx, ty = threat:getX(), threat:getY()
     local men, n, cx, cy, cz = menOf(sid)
     if n == 0 then return nil end
     local bz = math.floor(body:getZ())
+    -- (0.81) The squad places against the enemy it sees as a whole (the middle of its last look),
+    -- not each man's own target: men firing at enemies 45 degrees apart re-placed the squad by turns.
+    local stx, sty = tx, ty
+    local seen = s.seen
+    if seen and #seen > 0 and LF.tick - s.seenAt < CFG.lookTicks * 4 then
+        local sx, sy, k = 0, 0, 0
+        for i = 1, #seen do
+            local vb = seen[i].body
+            if vb then sx, sy, k = sx + vb:getX(), sy + vb:getY(), k + 1 end
+        end
+        if k > 0 then stx, sty = sx / k, sy / k end
+    end
     -- Trigger: the threat has swung, the squad has moved, or it's been a while.
     local stale = not s.cands or LF.tick - s.placedAt > CFG.placeEvery or s.placedAt > LF.tick
         or LF.dist(cx, cy, s.cx, s.cy) > CFG.placeMove
     if not stale then
         local ax0, ay0 = s.tx - s.cx, s.ty - s.cy
-        local ax1, ay1 = tx - cx, ty - cy
+        local ax1, ay1 = stx - cx, sty - cy
         local l0, l1 = math.sqrt(ax0 * ax0 + ay0 * ay0), math.sqrt(ax1 * ax1 + ay1 * ay1)
         if l0 > 0.1 and l1 > 0.1 and (ax0 * ax1 + ay0 * ay1) / (l0 * l1) < CFG.placeTurn then stale = true end
     end
-    if stale then buildCands(sid, s, men, n, cx, cy, cz, tx, ty) end
-    stats.spots = stats.spots + 1
-    stats.testSpots = (stats.testSpots or 0) + 1
+    if stale then buildCands(sid, s, men, n, cx, cy, cz, stx, sty) end
+    -- His answer this placement, if he has one for the same ask.
     local bx, by = body:getX(), body:getY()
     local ox, oy = ax or bx, ay or by
+    s.answers = s.answers or {}
+    local kind = gun and "gun" or (loose and "shelter" or "fire")
+    local A = s.answers[id]
+    if A and A.placedAt == s.placedAt and A.kind == kind and LF.distSq(A.ox, A.oy, ox, oy) <= 4 then
+        stats.kept = (stats.kept or 0) + 1
+        if A.x then return A.x, A.y, A.z, A.q end
+        return nil
+    end
+    stats.spots = stats.spots + 1
+    stats.testSpots = (stats.testSpots or 0) + 1
     local cell = getCell()
+    local W = stats.why
+    local function answer(x, y, z, q)
+        A = A or {}
+        A.placedAt, A.kind, A.ox, A.oy, A.x, A.y, A.z, A.q = s.placedAt, kind, ox, oy, x, y, z, q
+        s.answers[id] = A
+        if x then
+            local sp = s.spots[id] or {}
+            sp.x, sp.y = x, y
+            s.spots[id] = sp
+        else
+            s.spots[id] = nil
+            stats.none = (stats.none or 0) + 1
+            stats.testNone = (stats.testNone or 0) + 1
+            if #s.cands == 0 then stats.noCands = (stats.noCands or 0) + 1 end
+        end
+        return x, y, z, q
+    end
     for pass = 1, 2 do
+        if pass == 2 and not loose then break end   -- (a firing position stays on the leash; shelter may go further)
         local lim = pass == 1 and (leash or 7) or CFG.farLeash
         local limSq = lim * lim
         -- (The second look, for shelter: round where he is, not where he was sent - 0.74.2.)
-        if pass == 2 then ox, oy = bx, by end
+        local px, py = ox, oy
+        if pass == 2 then px, py = bx, by end
         local m = 0
         for i = 1, #s.cands do
             local c = s.cands[i]
-            local dsq = LF.distSq(c.x + 0.5, c.y + 0.5, ox, oy)
+            local dsq = LF.distSq(c.x + 0.5, c.y + 0.5, px, py)
             if dsq <= limSq and c.td <= maxRange then
                 m = m + 1
                 local e = scored[m]
                 if not e then e = {}; scored[m] = e end
                 e.c = c
                 -- (A firing position is low cover - over it he can shoot; a wall is shelter only.)
-                e.score = CFG.W_COVER * ((c.cls == LF.Ground.LIGHT or loose) and 1 or 0)
+                e.score = CFG.W_COVER * ((c.cls == LF.Ground.LIGHT or loose or gun) and 1 or 0)
                     + CFG.W_SPACE * spacing(s, id, c.x, c.y)
                     + CFG.W_DIST * (1 - math.sqrt(dsq) / lim)
                     - math.max(0, LF.dist(bx, by, tx, ty) - c.td) * 0.5       -- (not walking at the enemy)
@@ -484,46 +559,56 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
         end
         for i = #scored, m + 1, -1 do scored[i] = nil end
         if m > 1 then table.sort(scored, byScore) end
+        if m == 0 then W.empty = W.empty + 1 end
         -- The exact checks, best first: cover against his actual line, free, line of fire.
         local checks = 0
         local best, bestScore, bestQ = nil, nil, nil
-        local W = stats.why
-        if m == 0 then W.empty = W.empty + 1 end
         for i = 1, m do
             if checks >= CFG.exactChecks then break end
             local e = scored[i]
             if best and e.score + CFG.W_FIRE <= bestScore then break end    -- (can't beat it)
             local c = e.c
-            local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
-            if not (q == LF.Cover.LOW or (loose and q == LF.Cover.HIGH)) then W.quality = W.quality + 1
+            local q = coverQ(c.x, c.y, bz, tx, ty)
+            if not (q == LF.Cover.LOW or ((loose or gun) and q == LF.Cover.HIGH)) then W.quality = W.quality + 1
             elseif LF.Brain.hardClaimed(c.x, c.y, bz, id) or LF.Cover.takenExactly(c.x, c.y, bz, id) then W.claimed = W.claimed + 1
             else
-                local sq = cell:getGridSquare(c.x, c.y, bz)
-                if not (sq and sq:isFree(false)) then W.blocked = W.blocked + 1
-                elseif sq:getBuilding() then W.building = W.building + 1
-                else
-                    checks = checks + 1
-                    local fire = loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)
-                    if loose or fire then
-                        local sc = e.score + (fire and CFG.W_FIRE or 0)
-                        if not best or sc > bestScore then best, bestScore, bestQ = c, sc, q end
-                    else W.noView = W.noView + 1 end
+                checks = checks + 1
+                local fire = loose or viewOf(c.x, c.y, bz, threat)
+                if fire then
+                    local sc = e.score + (fire and CFG.W_FIRE or 0)
+                    if not best or sc > bestScore then best, bestScore, bestQ = c, sc, q end
+                else W.noView = W.noView + 1 end
+            end
+        end
+        if best then return answer(best.x, best.y, bz, bestQ) end
+    end
+    -- (Shelter or a gun) the nearest covered square to where he was sent, within 14 tiles.
+    if loose or gun then
+        local lim = CFG.farLeash + 4
+        local bestD, best, bestQ = lim * lim, nil, nil
+        for i = 1, #s.cands do
+            local c = s.cands[i]
+            local dsq = LF.distSq(c.x + 0.5, c.y + 0.5, ox, oy)
+            if dsq < bestD and c.td <= maxRange + 10 then
+                local q = coverQ(c.x, c.y, bz, tx, ty)
+                if q ~= LF.Cover.NONE and not LF.Brain.hardClaimed(c.x, c.y, bz, id)
+                    and not LF.Cover.takenExactly(c.x, c.y, bz, id) and (not gun or viewOf(c.x, c.y, bz, threat)) then
+                    bestD, best, bestQ = dsq, c, q
                 end
             end
         end
         if best then
-            local sp = s.spots[id] or {}
-            sp.x, sp.y = best.x, best.y
-            s.spots[id] = sp
-            return best.x, best.y, bz, bestQ
+            stats.nearFound = (stats.nearFound or 0) + 1
+            return answer(best.x, best.y, bz, bestQ)
         end
-        if not loose then break end          -- (a firing position stays on the leash; shelter may go further)
     end
-    s.spots[id] = nil
-    stats.none = (stats.none or 0) + 1
-    stats.testNone = (stats.testNone or 0) + 1
-    if #s.cands == 0 then stats.noCands = (stats.noCands or 0) + 1 end
-    return nil
+    return answer(nil)
+end
+function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun)
+    local t0 = getTimestampMs()
+    local x, y, z, q = spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun)
+    LF.Perf.stop("squad spot", t0)
+    return x, y, z, q
 end
 
 -- (0.80) When the squad last placed (rebuilt its candidates): a man whose search found nothing
@@ -531,34 +616,6 @@ end
 function LF.SquadBrain.placedAt(sid)
     local s = S[sid]
     return s and s.placedAt
-end
-
--- (0.80) The nearest free square with any cover against the threat within r tiles of (x, y), not
--- claimed by another man - for a man the placement has nothing for (and a gun set up in the open:
--- view = it must see the threat from there). x, y, z or nil.
-function LF.SquadBrain.nearestCover(id, x, y, z, threat, r, view)
-    local bx, by = math.floor(x), math.floor(y)
-    local tx, ty = threat:getX(), threat:getY()
-    local cell = getCell()
-    stats.near = (stats.near or 0) + 1
-    for d = 1, r do
-        for dx = -d, d do
-            for dy = -d, d do
-                if math.max(math.abs(dx), math.abs(dy)) == d then
-                    local sx, sy = bx + dx, by + dy
-                    local sq = cell:getGridSquare(sx, sy, z)
-                    if sq and sq:isFree(false) and LF.distSq(sx + 0.5, sy + 0.5, tx, ty) > 16
-                        and LF.Cover.quality(sx, sy, z, tx, ty) ~= LF.Cover.NONE
-                        and not LF.Brain.hardClaimed(sx, sy, z, id) and not LF.Cover.takenExactly(sx, sy, z, id)
-                        and (not view or LF.Cover.canSeeFrom(sx, sy, z, threat)) then
-                        stats.nearFound = (stats.nearFound or 0) + 1
-                        return sx, sy, z
-                    end
-                end
-            end
-        end
-    end
-    return nil
 end
 
 -- ---- upkeep --------------------------------------------------------------------------------------
