@@ -71,7 +71,9 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
-    coverBadTicks = 180,    -- (0.81.4) cover facing neither his enemy nor his squad's is given up after this
+    coverBadTicks = 180,
+    coverStepTicks = 600,   -- (0.81.6) a short step to cover against his own enemy at most every 10 s (0.81.5: 2 s - 199 steps by the Germans)
+    exposedPenalty = 10,    -- (0.81.6) a target his cover doesn't protect him from counts as this many tiles further    -- (0.81.4) cover facing neither his enemy nor his squad's is given up after this
     shelterRetryTicks = 360,-- (0.80) sheltering without a shot: look for a firing position this often (was 120)
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
@@ -366,7 +368,7 @@ end
 -- hunting for a better one, and look for shelter only close to the spot.
 -- (0.81.5) A free, unclaimed square within 3 tiles of his cover with cover against his own enemy
 -- (low cover, or any for shelter or a dug-in man): x, y, z or nil. Nearest first; map reads.
-local function stepToCover(id, body, m, threat, sticky)
+local function stepToCover(id, body, m, threat, sticky, ax, ay, leash)
     local c = m.cover
     local cell = getCell()
     local tx, ty = threat:getX(), threat:getY()
@@ -380,6 +382,7 @@ local function stepToCover(id, body, m, threat, sticky)
                     if q == LF.Cover.LOW or ((c.loose or sticky) and q ~= LF.Cover.NONE) then
                         local sq = cell:getGridSquare(x, y, c.z)
                         if sq and sq:isFree(false) and not sq:getBuilding() and not LF.Brain.hardClaimed(x, y, c.z, id)
+                            and withinLeash(x, y, ax, ay, 10, leash)     -- (0.81.6: steps don't carry him off - 0.81.5 drifted men 14 past their leash 118 times)
                             and not LF.Cover.takenExactly(x, y, c.z, id) and not stuckNear(m, x + 0.5, y + 0.5) then
                             return x, y, c.z
                         end
@@ -406,14 +409,15 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         -- 3 tiles - to a square covered against the man he watches, looked for every 2 s, from the
         -- cover map. (0.81.4 kept such men where they were: 12 left in the open 1-2 tiles from cover;
         -- 0.81.3 sent them off on a full search: 4.7 runs a man.)
-        if not usable and reached and LF.tick - (m.cover.stepAt or -10000) >= CFG.coverSearchTicks then
+        if not usable and reached and LF.tick - (m.cover.stepAt or -10000) >= CFG.coverStepTicks then
             m.cover.stepAt = LF.tick
-            local sx, sy, sz = stepToCover(id, body, m, threat, sticky)
+            local sx, sy, sz = stepToCover(id, body, m, threat, sticky, ax, ay, leash)
             if sx then
                 local loose = m.cover.loose
                 leavePosition(id, body, m)
                 takeSpot(id, body, m, "cover", sx, sy, sz, "a step to cover against him")
                 m.cover.loose = loose
+                m.cover.stepAt = LF.tick
                 return
             end
         end
@@ -595,12 +599,19 @@ end
 -- rather than behind cover, recognised leaders first. Lowest score wins.
 local function chooseTarget(id, body, rec, m, visible)
     -- (0.78) The target his sergeant gave him, if he can see it and it isn't behind a wall from here.
+    -- (0.81.6) In his cover, he fires first on those it protects him from: a man in a hole fights
+    -- what he can from it rather than moving with every target (0.81.3-0.81.5: men re-placed
+    -- themselves round whichever enemy they had picked - running about, or left exposed to him).
+    local held = m.cover and isAt(body, m.cover) and LF.SquadBrain.coverQ
+    local function exposed(s)
+        return held and LF.SquadBrain.coverQ(m.cover.x, m.cover.y, m.cover.z, s.body:getX(), s.body:getY()) == LF.Cover.NONE
+    end
     local given = rec.squad and LF.SquadBrain.enabled and LF.SquadBrain.targetOf(rec.squad, id)
     if given then
         for i = 1, #visible do
             local s = visible[i]
             if s.id == given then
-                if not (LF.Cover.of(s.body, body) == LF.Cover.HIGH and s.dist > 2) then return s end
+                if not (LF.Cover.of(s.body, body) == LF.Cover.HIGH and s.dist > 2) and not exposed(s) then return s end
                 break
             end
         end
@@ -617,6 +628,7 @@ local function chooseTarget(id, body, rec, m, visible)
         if q == LF.Cover.HIGH then score = score + CFG.highCoverPenalty
         elseif q == LF.Cover.LOW then score = score + CFG.lowCoverPenalty end
         if s.id == m.targetId then score = score - CFG.stickyBonus end
+        if exposed(s) then score = score + CFG.exposedPenalty end
         -- (Behind a wall from here - the sight line only grazes a corner: not a target. Up to
         -- 0.46 a man could spend half a minute firing into the wall in front of one.)
         if q == LF.Cover.HIGH and s.dist > 2 then score = math.huge end
