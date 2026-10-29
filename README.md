@@ -184,7 +184,7 @@ built on each other: a file only depends on files in its own folder or the ones 
 | | `LF_Defence` | All-round defence, holding a building |
 | | `LF_Clearing` | Clearing a building room by room; a man knocked down inside dragged out |
 | | `LF_Command` | Stance choice, standing by, the squad update loop |
-| | `LF_SquadBrain` | The squad brain: the squad's sight, and where its men take cover (the placement query) |
+| | `LF_SquadBrain` | The squad brain: the squad's sight, and where its men take cover (the placement query, read from the cover map, one answer per man per placement) |
 | | `LF_Platoon` | Platoons: headquarters, the lieutenant's missions and orders, the runner, succession |
 | | `LF_Radio` | The radio net: platoon reports from the event log |
 | **Specialists** - special roles | `LF_Grenade` | Grenades |
@@ -194,7 +194,7 @@ built on each other: a file only depends on files in its own folder or the ones 
 | **UI** | `LF_Inspect` | The inspect window |
 | | `LF_Map` | Objectives drawn on the world map and minimap |
 | | `LF_Talk` | Talking to a soldier (right-click) |
-| | `LF_Debug` | Right-click debug menu (tests) |
+| | `LF_Debug` | Right-click debug menu: the release test, tools, the arena (low cover placed by hand) |
 
 Conventions:
 
