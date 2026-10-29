@@ -495,7 +495,10 @@ local function stressTest(x, y, z, offscreen, opts)
     if field then
         okH = true
         for _, u in pairs(LF.Units.all()) do
-            if u.kind == "squad" and u.platoon == ger.id then LF.Tactics.setStance(u, "defensive", nil) end
+            if u.kind == "squad" and u.platoon == ger.id then
+                u.stanceLock = true            -- (0.81.1: they hold - in 0.81 their sergeants went offensive on the numbers)
+                LF.Tactics.setStance(u, "defensive", nil)
+            end
         end
         okT, whyT = LF.Platoon.patrol(sov, obj.x, obj.y, obj.z)
     else

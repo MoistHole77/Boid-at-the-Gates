@@ -506,7 +506,11 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
     local ox, oy = ax or bx, ay or by
     s.answers = s.answers or {}
     local kind = gun and "gun" or (loose and "shelter" or "fire")
-    local A = s.answers[id]
+    -- (0.81.1: one answer per kind - a man asks for a firing position and then for shelter in the
+    -- same think, and 0.81 kept only the last, so 72 of 2,343 asks were answered from it.)
+    local AM = s.answers[id]
+    if not AM then AM = {}; s.answers[id] = AM end
+    local A = AM[kind]
     if A and A.placedAt == s.placedAt and A.kind == kind and LF.distSq(A.ox, A.oy, ox, oy) <= 4 then
         stats.kept = (stats.kept or 0) + 1
         if A.x then return A.x, A.y, A.z, A.q end
@@ -519,7 +523,7 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
     local function answer(x, y, z, q)
         A = A or {}
         A.placedAt, A.kind, A.ox, A.oy, A.x, A.y, A.z, A.q = s.placedAt, kind, ox, oy, x, y, z, q
-        s.answers[id] = A
+        AM[kind] = A
         if x then
             local sp = s.spots[id] or {}
             sp.x, sp.y = x, y

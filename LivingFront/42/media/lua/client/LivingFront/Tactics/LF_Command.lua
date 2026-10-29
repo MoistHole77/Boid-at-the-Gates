@@ -59,6 +59,7 @@ end
 
 local function considerStance(squad, sq, cid, cmd)
     if not LF.Tactics.autoStance then return false end
+    if squad.stanceLock then return false end        -- (0.81.1: the arena test's defenders stay dug in)
     if LF.Objective and LF.Objective.busy(squad) then return false end   -- the task decides
     local mem = stanceMem[squad.id]
     if not mem then mem = { since = -100000 }; stanceMem[squad.id] = mem end
