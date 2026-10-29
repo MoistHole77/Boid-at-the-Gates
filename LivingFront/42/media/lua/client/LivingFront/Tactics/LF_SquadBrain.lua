@@ -183,7 +183,7 @@ local function squadLook(sid, s)
     for i = 1, #seen do if not s.prevSeen[seen[i].id] then fresh = true end end
     for k in pairs(s.prevSeen) do s.prevSeen[k] = nil end
     for i = 1, #seen do s.prevSeen[seen[i].id] = true end
-    if fresh and LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(sid) end
+    if fresh and LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(sid, "new enemy") end
     for i = 1, #seen do
         local v = seen[i]
         LF.Squad.report(sid, v.id, v.body)
@@ -209,7 +209,12 @@ local function squadLook(sid, s)
             local v = seen[j]
             if LF.distSq(bx, by, v.body:getX(), v.body:getY()) <= rsq then any = true; break end
         end
-        if any then s.eng[man.id] = s.eng[man.id] or LF.tick else s.eng[man.id] = nil end
+        if any then
+            -- (0.79.1) An enemy has just come within his range: he re-decides at once (0.79 waited
+            -- for his heartbeat - the first shot slowed from 2.6 s to 3.3 s).
+            if not s.eng[man.id] and LF.Brain and LF.Brain.wake then LF.Brain.wake(man.id, "in range") end
+            s.eng[man.id] = s.eng[man.id] or LF.tick
+        else s.eng[man.id] = nil end
     end
     -- Forget lines to men no longer about (kept small).
     s.looks = (s.looks or 0) + 1

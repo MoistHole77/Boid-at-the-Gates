@@ -496,6 +496,7 @@ local function stressTest(x, y, z, offscreen, opts)
     if opts.reaction and LF.Brain.reactions then
         LF.Brain.reactions.shot, LF.Brain.reactions.move = {}, {}
         LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
+        LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         LF.log("TEST 0.79 reaction: the stress fight - first shots after contact, first moves after orders")
     end
     if opts.big then
@@ -842,6 +843,17 @@ reactionSummary = function(modMs, bodies)
     local thinks, woken = LF.Brain.thinkCount or 0, LF.Brain.wokenCount or 0
     LF.log(string.format("TEST 0.79 thinking: %d thinks in %.0f s (%.1f a second for every body on average; 3 at the old rate), %d of them wake-ups (%.0f%%)",
         thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0, woken, thinks > 0 and woken / thinks * 100 or 0))
+    -- (0.79.1) What the old rule would have made, and the thinks by kind with their cost.
+    local kinds = {}
+    for k, v in pairs(LF.Brain.thinkStats or {}) do kinds[#kinds + 1] = { k = k, n = v.n, ms = v.ms } end
+    table.sort(kinds, function(a, b) return a.ms > b.ms end)
+    local parts = {}
+    for _, e in ipairs(kinds) do
+        parts[#parts + 1] = string.format("%s %d (%.0f ms, %.2f each)", e.k, e.n, e.ms, e.n > 0 and e.ms / e.n or 0)
+    end
+    LF.log(string.format("TEST 0.79 thinks by kind (the 0.78 rule would have made %d): %s", LF.Brain.oldThinks or 0,
+        table.concat(parts, "; ")))
+    LF.log("TEST 0.79 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
     LF.say(string.format("Reaction test %s: first shot %s, moving %s", ok and "PASS" or "FAIL",
         shot and string.format("%.1f s", shot) or "-", move and string.format("%.1f s", move) or "-"))
 end

@@ -301,7 +301,7 @@ function LF.Move.onFailed(body, x, y)
         LF.log("BRAIN #" .. id .. " can't reach " .. math.floor(x) .. "," .. math.floor(y) .. "; taking the nearest cover instead")
     end
     m.stuck = { x = x, y = y, tick = LF.tick, fromX = body:getX(), fromY = body:getY() }
-    m.wake = true
+    m.wake = "stuck"
     -- Nobody picks that square as cover for a while, and this soldier looks for cover now.
     LF.Cover.reserve(math.floor(x), math.floor(y), math.floor(body:getZ()), -1)
     m.lastCoverSearch = nil
@@ -1382,7 +1382,7 @@ local function act(id, body, rec, m)
             and LF.distSq(body:getX(), body:getY(), target:getX(), target:getY()) <= fireRange * fireRange then
             fireAt(body, rec, m, target)
         elseif m.wokeFor ~= m.targetId then
-            m.wake, m.wokeFor = true, m.targetId     -- (0.79: his target is down or out of range - he chooses again)
+            m.wake, m.wokeFor = "target gone", m.targetId     -- (0.79: his target is down or out of range - he chooses again)
         end
     elseif m.state == "alert" and m.cover and isAt(body, m.cover) then
         hunkerDown(body)
@@ -1457,7 +1457,7 @@ end
 -- (LF_SquadBrain.engageableSince, 0.78.1 - 0.78 timed it from the squad's first sighting), and
 -- how long a squad takes to start moving once it is given a movement order (LF_Tactics.setIntent).
 -- Kept as plain lists of seconds for the test to read.
-LF.Brain.reactions = { shot = {}, move = {} }
+LF.Brain.reactions = { shot = {}, move = {}, moveWhy = {} }
 function LF.Brain.onShot(body)
     local id = body:getModData().LF_id
     local m = id and minds[id]
@@ -1476,7 +1476,11 @@ function LF.Brain.onMoveStart(sid)
     sq.moveOrderMet = true
     local secs = (LF.tick - sq.moveOrderAt) / 60
     local list = LF.Brain.reactions.move
-    if secs >= 0 and secs <= 15 and #list < 2000 then list[#list + 1] = secs end
+    if secs >= 0 and secs <= 15 and #list < 2000 then
+        list[#list + 1] = secs
+        local why = LF.Brain.reactions.moveWhy
+        why[#why + 1] = string.format("%s %s %.1f s", tostring(sq.intent), LF.Units.get(sid) and LF.Units.get(sid).name or "?", secs)
+    end
 end
 
 -- Extension points: later features hook in here without touching the loop.
@@ -1525,24 +1529,29 @@ end
 -- Something that matters to him has happened: he re-decides on his next step instead of waiting for
 -- his heartbeat. Called by the squad (a new enemy seen, its fire state, its plan, its stance), his
 -- team's drill (a bound, a shift, a gather), being hit, his target gone, a way he can't walk.
-function LF.Brain.wake(id)
+-- (why: a short word for the test's count of what woke men - 0.79.1)
+function LF.Brain.wake(id, why)
     local m = id and minds[id]
-    if m then m.wake = true end
+    if m then m.wake = why or "other" end
 end
-function LF.Brain.wakeSquad(sid)
+function LF.Brain.wakeSquad(sid, why)
     for _, rid in ipairs(LF.Units.members(sid)) do
         local m = minds[rid]
-        if m then m.wake = true end
+        if m then m.wake = why or "other" end
     end
 end
-function LF.Brain.wakeTeam(tid)
+function LF.Brain.wakeTeam(tid, why)
     local team = tid and LF.Units.get(tid)
     if not team then return end
     for _, rid in ipairs(team.members or {}) do
         local m = minds[rid]
-        if m then m.wake = true end
+        if m then m.wake = why or "other" end
     end
 end
+-- (0.79.1, for the test) thinks and their cost by kind - "busy", "beat", "woken: <why>" - and how
+-- many thinks the 0.78 rule would have made.
+LF.Brain.thinkStats = {}
+LF.Brain.oldThinks = 0
 
 -- On the move or in the middle of something: he keeps thinking at the usual rate.
 local FAST = { bound = true, file = true, flee = true, wounded = true }
@@ -1634,9 +1643,19 @@ local function stepNpc(id, body, rec, lod)
     if not rec.squad or busyMind(m, body, rec) then interval = CFG.thinkTicks
     elseif m.state == "idle" then interval = CFG.idleBeatTicks
     else interval = CFG.heartbeatTicks end
+    local kind = interval == CFG.thinkTicks and "busy" or "beat"
     interval = interval * (lod or 1)
+    -- (what the 0.78 rule would have done, for the test's count)
+    local quiet = (m.state == "idle" or m.state == "guard") and rec.squad and LF.SquadBrain.enabled
+        and not LF.SquadBrain.seesAny(rec.squad)
+    if every(m, "oldAt", (quiet and CFG.quietThinkTicks or CFG.thinkTicks) * (lod or 1)) then
+        LF.Brain.oldThinks = LF.Brain.oldThinks + 1
+    end
     local woken = m.wake and LF.tick - (m.thinkAt or -100000) >= CFG.wakeGap
-    if woken then m.thinkAt = LF.tick; LF.Brain.wokenCount = (LF.Brain.wokenCount or 0) + 1 end
+    if woken then
+        m.thinkAt = LF.tick; LF.Brain.wokenCount = (LF.Brain.wokenCount or 0) + 1
+        kind = "woken: " .. tostring(m.wake)
+    end
     if woken or every(m, "thinkAt", interval) then
         m.wake = nil
         LF.Brain.thinkCount = (LF.Brain.thinkCount or 0) + 1
@@ -1656,6 +1675,9 @@ local function stepNpc(id, body, rec, lod)
         local tD = getTimestampMs()
         LF.Brain.decide(id, body, rec, m)
         LF.Perf.stop("brain decide", tD)
+        local ks = LF.Brain.thinkStats[kind]
+        if not ks then ks = { n = 0, ms = 0 }; LF.Brain.thinkStats[kind] = ks end
+        ks.n, ks.ms = ks.n + 1, ks.ms + (getTimestampMs() - tD)
         -- Moving under orders (a bound, a flank, the run to his cover): can't be pinned until
         -- he is in position.
         local moving = m.state == "bound" or m.state == "file" or (m.order ~= nil and m.order ~= "bearings" and m.cover ~= nil and not isAt(body, m.cover))

@@ -69,7 +69,7 @@ local function startBound(team, t, el, dx, dy, tx, ty, contact, P)
     t.moving = el
     t.phaseStart = LF.tick
     t.settleAt, t.boundMin = nil, nil
-    if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end     -- (0.79: a bound - the team re-decides)
+    if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end     -- (0.79: a bound - the team re-decides)
     local nx, ny = other.x + dx * len, other.y + dy * len
     if tx and LF.dist(other.x, other.y, tx, ty) <= len then nx, ny = tx, ty end
     -- Already (nearly) there: no rush - the pair just gets down, and the other goes next.
@@ -174,7 +174,7 @@ local function planShift(team, t, squad, sq)
                 t.pos.A.x, t.pos.A.y = t.pos.A.x + dx, t.pos.A.y + dy
                 t.pos.B.x, t.pos.B.y = t.pos.B.x + dx, t.pos.B.y + dy
                 t.shifting, t.moving, t.phaseStart = true, nil, LF.tick
-                if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end
+                if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end
                 LF.log("REPOSITION " .. team.name .. " of " .. squad.name .. ": no open shot, moving "
                     .. math.floor(LF.dist(0, 0, dx, dy)) .. " tiles out and round to the "
                     .. (side > 0 and "right" or "left") .. " (" .. math.floor(nx) .. "," .. math.floor(ny) .. ")")
@@ -190,7 +190,7 @@ end
 local function corporalCheck(team, t, squad, sq)
     if t.shifting and shiftDone(team, t, squad) then
         t.shifting = nil
-        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end
+        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end
     end
 end
 
@@ -329,7 +329,7 @@ end
 -- hold: both pairs where they are, in cover, firing (a team with no shot repositions - chooseShift).
 DRILLS.hold = function(team, t, squad, sq, order, P)
         if t.order ~= "HOLD" then
-            if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end
+            if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end
             -- Hold where the men are: a pair caught mid-bound stops where it is rather than
             -- finishing the run alone.
             if t.moving then
@@ -362,12 +362,12 @@ DRILLS.gather = function(team, t, squad, sq, order, P)
             if n > 0 and t.pos[el] then t.pos[el].x, t.pos[el].y = sx / n, sy / n end
         end
         t.shifting, t.phaseStart = true, LF.tick
-        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end
+        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end
         return
     end
     if t.shifting and shiftDone(team, t, squad) then
         t.shifting, t.gathered = nil, true
-        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id) end
+        if LF.Brain and LF.Brain.wakeTeam then LF.Brain.wakeTeam(team.id, "drill") end
     end
 end
 

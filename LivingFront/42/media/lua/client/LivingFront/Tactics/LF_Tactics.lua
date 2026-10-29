@@ -388,7 +388,7 @@ local function setIntent(squad, sq, cid, intent, why)
     if intent == "ADVANCE" or intent == "FALLBACK" or intent == "FLANK" or intent == "REGROUP" then
         sq.moveOrderAt, sq.moveOrderMet = LF.tick, nil
     end
-    if LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(squad.id) end     -- (0.79: a new order - every man re-decides)
+    if LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(squad.id, "order") end     -- (0.79: a new order - every man re-decides)
     if intent and cid then
         local P = PLANS[intent]
         local words = P and P.squadBark
