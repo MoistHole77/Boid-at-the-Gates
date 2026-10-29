@@ -177,6 +177,13 @@ local function squadLook(sid, s)
         if not s.contactSince or LF.tick - (s.lastSeen or -100000) > 600 then s.contactSince = LF.tick end
         s.lastSeen = LF.tick
     end
+    -- (0.79) An enemy the squad hadn't seen at its last look: every man re-decides.
+    s.prevSeen = s.prevSeen or {}
+    local fresh = false
+    for i = 1, #seen do if not s.prevSeen[seen[i].id] then fresh = true end end
+    for k in pairs(s.prevSeen) do s.prevSeen[k] = nil end
+    for i = 1, #seen do s.prevSeen[seen[i].id] = true end
+    if fresh and LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(sid) end
     for i = 1, #seen do
         local v = seen[i]
         LF.Squad.report(sid, v.id, v.body)

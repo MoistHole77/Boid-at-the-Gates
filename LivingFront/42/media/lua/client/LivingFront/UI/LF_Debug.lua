@@ -495,7 +495,8 @@ local function stressTest(x, y, z, offscreen, opts)
     end
     if opts.reaction and LF.Brain.reactions then
         LF.Brain.reactions.shot, LF.Brain.reactions.move = {}, {}
-        LF.log("TEST 0.78 reaction: the stress fight - first shots after contact, first moves after orders")
+        LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
+        LF.log("TEST 0.79 reaction: the stress fight - first shots after contact, first moves after orders")
     end
     if opts.big then
         LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
@@ -813,10 +814,11 @@ summary076 = function()
     end
 end
 
--- ---- the 0.78 reaction test -------------------------------------------------------------------------
--- From the stress fight: every man's first shot after his squad's contact began, and every squad's
--- first man moving after a movement order (LF_Brain.reactions). The medians are the verdict: a first
--- shot within 1.5 s, a move within 1 s. Also: how spread the fire was (different enemies under fire
+-- ---- the 0.79 reaction test -------------------------------------------------------------------------
+-- From the stress fight: every man's first shot once an enemy his squad sees is in his range, and
+-- every squad's first man moving after a movement order (LF_Brain.reactions). The medians are the
+-- verdict, against the 0.78.1 baseline (2.6 s, 0.2 s) now that men think on events: a first shot
+-- within 3.1 s, a move within 1 s. Also: how often a man thinks, and how many of those were wake-ups. Also: how spread the fire was (different enemies under fire
 -- for each man firing), from the gate looks, and the mod's cost.
 local function median(list)
     if #list == 0 then return nil end
@@ -832,10 +834,14 @@ reactionSummary = function(modMs, bodies)
     local G = stress.gate or {}
     local spread = (G.firing or 0) > 0 and (G.targets or 0) / G.firing or 0
     local at72 = bodies > 0 and modMs / bodies * 72 or 0
-    local ok = shot ~= nil and move ~= nil and shot <= 1.5 and move <= 1.0
-    LF.log(string.format("TEST 0.78 reaction %s: first shot once an enemy is in his range - median %s over %d men (1.5 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
+    local ok = shot ~= nil and move ~= nil and shot <= 3.1 and move <= 1.0
+    LF.log(string.format("TEST 0.79 reaction %s: first shot once an enemy is in his range - median %s over %d men (3.1 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
         ok and "PASS" or "FAIL", shot and string.format("%.1f s", shot) or "none", #R.shot,
         move and string.format("%.1f s", move) or "none", #R.move, spread, at72))
+    local secs = (LF.tick - (stress.thinkTick or LF.tick)) / 60
+    local thinks, woken = LF.Brain.thinkCount or 0, LF.Brain.wokenCount or 0
+    LF.log(string.format("TEST 0.79 thinking: %d thinks in %.0f s (%.1f a second for every body on average; 3 at the old rate), %d of them wake-ups (%.0f%%)",
+        thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0, woken, thinks > 0 and woken / thinks * 100 or 0))
     LF.say(string.format("Reaction test %s: first shot %s, moving %s", ok and "PASS" or "FAIL",
         shot and string.format("%.1f s", shot) or "-", move and string.format("%.1f s", move) or "-"))
 end
@@ -1299,7 +1305,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption("0.78 reaction test: the stress fight (right-click a building) - first shot within 1.5 s of an enemy coming into range, moving within 1 s of an order", nil,
+            tm:addOption("0.79 reaction test: the stress fight (right-click a building) - first shot within 3.1 s of an enemy coming into range, moving within 1 s of an order", nil,
                 function() stressTest(x, y, z, false, { reaction = true }) end)
         end
         tm:addOption("(First: Tools > Delete ALL NPCs)")

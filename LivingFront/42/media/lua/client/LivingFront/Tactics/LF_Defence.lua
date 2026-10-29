@@ -846,6 +846,7 @@ function LF.Tactics.setStance(squad, stance, holdAt)
     squads[squad.id] = nil
     for _, tid in ipairs(squad.teams) do teams[tid] = nil end
     LF.log("STANCE " .. squad.name .. " -> " .. stance)
+    if LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(squad.id) end     -- (0.79)
     -- (0.76.1) Digging in in the open with nobody of it in sight of you (a reserve arriving, a unit
     -- at its rally point): its men go straight to their places in the all-round defence, facing the
     -- enemy it knows of (else its front) - so when their bodies appear they are already there.

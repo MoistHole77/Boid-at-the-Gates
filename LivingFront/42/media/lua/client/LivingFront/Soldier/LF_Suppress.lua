@@ -145,6 +145,7 @@ function LF.Suppress.addSquad(sid, amount, sx, sy, mul, cap, cls)
     if st ~= (S.state or "steady") then
         local worse = st == "pinned" or (st == "suppressed" and (S.state or "steady") == "steady")
         S.state = st
+        if LF.Brain and LF.Brain.wakeSquad then LF.Brain.wakeSquad(sid) end      -- (0.79: the fire on them has changed)
         if worse then
             local u = LF.Units.get(sid)
             LF.log(string.format("SUPPRESS %s is %s (%.0f; rounds in by cover: open %d, light %d, heavy %d, building %d)",

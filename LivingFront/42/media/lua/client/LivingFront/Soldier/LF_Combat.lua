@@ -540,6 +540,7 @@ local GRADE_HEALTH = { light = 75, serious = 45, critical = 22 }
 local function inflict(target, partName, profile)
     if untouchable(target) then return "untouchable" end
     local id = target:getModData().LF_id
+    if LF.Brain and LF.Brain.wake then LF.Brain.wake(id) end      -- (0.79: hit - he re-decides at once)
     local rec = id and LF.Records.get(id)
     if not (rec and LF.Wounds and rec.faction ~= "CIV") then
         wound(target, partName, profile)
