@@ -71,6 +71,7 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
+    heldAskTicks = 60,      -- (0.82) a squad soldier with no spot asks his squad again this often
     coverBadTicks = 180,
     coverStepTicks = 600,   -- (0.81.6) a short step to cover against his own enemy at most every 10 s (0.81.5: 2 s - 199 steps by the Germans)
     exposedPenalty = 10,    -- (0.81.6) a target his cover doesn't protect him from counts as this many tiles further    -- (0.81.4) cover facing neither his enemy nor his squad's is given up after this
@@ -400,7 +401,76 @@ local function planCover(id, body, m, threat, ax, ay, leash, sticky)
     planCoverOf(id, body, m, threat, ax, ay, leash, sticky)
     LF.Perf.stop("brain plancover", t0)
 end
+-- ---- held positions (0.82) ----------------------------------------------------------------------
+-- A squad soldier's cover is his sergeant's to give: the squad's placement assigns each man a spot
+-- against the enemy the squad sees, and he holds it, firing on what he can from there, until the
+-- sergeant places again (a new order or stance, the enemy coming round 60 degrees, the squad
+-- moving on) - then he takes the spot he is given, which is the one he has if it still does.
+-- He gives a spot up himself only when he can't get to it. 0.81-0.81.6 had each man re-judge his
+-- cover against whichever enemy he was aiming at: men ran about (4-5 runs a man in the arena) or
+-- held cover that didn't face the man shooting at them.
+local function askSquad(id, body, m, threat, ax, ay, leash, sticky)
+    local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
+    if x then return x, y, z, false end
+    x, y, z = firingSpot(id, body, threat, CFG.sightRange + 10, ax, ay,
+        ax and ((leash or CFG.leash) + (sticky and 1 or 3)), true)
+    if x then return x, y, z, true end
+    return nil
+end
+local function leftFor(why)
+    local L = LF.Brain.leftCover
+    if L then L[why] = (L[why] or 0) + 1 end
+end
+local function heldCover(id, body, m, threat, ax, ay, leash, sticky, rec)
+    local sid = rec.squad
+    if m.cover then
+        local reached = isAt(body, m.cover)
+        local why = nil
+        if not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks then why = "not reached in time"
+        elseif not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5) then why = "no way there" end
+        if why then
+            leftFor(why)
+            LF.SquadBrain.forgetAnswer(sid, id)
+            leavePosition(id, body, m)
+        else
+            local placed = LF.SquadBrain.placedAt(sid)
+            -- (A spot he took on his own under orders - a better shot in his quarter, a post: his,
+            -- until the next placement.)
+            if m.cover.placed == nil then m.cover.placed = placed end
+            if m.cover.placed ~= placed then
+                local x, y, z, loose = askSquad(id, body, m, threat, ax, ay, leash, sticky)
+                if x and (x ~= m.cover.x or y ~= m.cover.y) then
+                    leftFor("the sergeant moved him")
+                    leavePosition(id, body, m)
+                    takeSpot(id, body, m, "cover", x, y, z, loose and "shelter" or "cover")
+                    m.cover.loose, m.cover.placed = loose, LF.SquadBrain.placedAt(sid)
+                    return
+                end
+                m.cover.placed = LF.SquadBrain.placedAt(sid)
+            end
+            LF.Cover.reserve(m.cover.x, m.cover.y, m.cover.z, id)   -- keep the claim while holding it
+            resumeWalk(body, m, m.cover)
+            return
+        end
+    end
+    -- No spot: ask (the squad keeps its answer, so asking is cheap) - at once after a placement.
+    local placed = LF.SquadBrain.placedAt(sid)
+    local fresh = placed ~= m.askedPlaced
+    if not fresh and LF.tick - (m.lastCoverSearch or -10000) < CFG.heldAskTicks then return end
+    m.lastCoverSearch = LF.tick
+    local x, y, z, loose = askSquad(id, body, m, threat, ax, ay, leash, sticky)
+    m.askedPlaced = LF.SquadBrain.placedAt(sid)
+    if x then
+        takeSpot(id, body, m, "cover", x, y, z, loose and "shelter" or "cover")
+        m.cover.loose, m.cover.placed = loose, m.askedPlaced
+    end
+end
+
 planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
+    local srec = LF.Records.get(id)
+    if srec and srec.squad and LF.SquadBrain.enabled and LF.Units.get(srec.squad) then
+        return heldCover(id, body, m, threat, ax, ay, leash, sticky, srec)
+    end
     if m.cover then
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)

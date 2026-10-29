@@ -46,9 +46,12 @@ local CFG = {
     pairTicks = 60,         -- a man's line to an enemy is known this long
     maxSeen = 5,            -- enemies a man is given per think (nearest first)
     spotChance = 25,        -- (0.78) percent a look to recognise a sergeant or corporal the squad sees
-    placeEvery = 600,       -- placement is redone at least this often while in use
-    placeTurn = 0.7,        -- ... or when the threat swings more than ~45 degrees (cos)
-    placeMove = 4,          -- ... or the squad's middle has moved this far
+    -- (0.82: held positions - the squad places on a new order or stance (LF.SquadBrain.replace),
+    -- when the enemy comes round 60 degrees, when it moves on; 0.74-0.81 also every 10 s, at 45
+    -- degrees and 4 tiles, and each placement could move every man.)
+    placeEvery = 3600,      -- placement is redone at least this often while in use
+    placeTurn = 0.5,        -- ... or when the threat swings more than 60 degrees (cos)
+    placeMove = 6,          -- ... or the squad's middle has moved this far
     placeRadius = 9,        -- squares this far round the squad's men are candidates
     farLeash = 10,          -- no cover on his leash: this far for shelter
     exactChecks = 6,        -- candidates given the exact cover and sight checks per man, at most
@@ -502,6 +505,9 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
         if l0 > 0.1 and l1 > 0.1 and (ax0 * ax1 + ay0 * ay1) / (l0 * l1) < CFG.placeTurn then stale = true end
     end
     if stale then buildCands(sid, s, men, n, cx, cy, cz, stx, sty) end
+    -- (0.82) Spots are judged against the enemy the squad sees, not the man's own target: he holds
+    -- his spot and fires on what he can from it. (His own target still decides the line of fire.)
+    tx, ty = s.tx or tx, s.ty or ty
     -- His answer this placement, if he has one for the same ask.
     local bx, by = body:getX(), body:getY()
     local ox, oy = ax or bx, ay or by
@@ -642,6 +648,18 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
     local x, y, z, q = spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun)
     LF.Perf.stop("squad spot", t0)
     return x, y, z, q
+end
+
+-- (0.82) The sergeant places again (a new order or stance): every man is given his spot afresh -
+-- the one he has, if it still does.
+function LF.SquadBrain.replace(sid)
+    local s = S[sid]
+    if s then s.cands = nil end
+end
+-- (0.82) A man can't get to the spot he was given: the squad works his out again.
+function LF.SquadBrain.forgetAnswer(sid, id)
+    local s = S[sid]
+    if s and s.answers then s.answers[id] = nil end
 end
 
 -- (0.81.4) The point the squad last placed against (the middle of the enemy it sees), or nil.

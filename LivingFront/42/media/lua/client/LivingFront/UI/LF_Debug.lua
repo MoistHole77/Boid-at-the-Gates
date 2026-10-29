@@ -518,7 +518,7 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
         LF.Brain.coverRuns, LF.Brain.leftCover, LF.Brain.runsBy = 0, {}, {}
-        LF.log("TEST 0.81 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
+        LF.log("TEST 0.82 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
         LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
@@ -859,21 +859,21 @@ reactionSummary = function(modMs, bodies)
     local nOpen = 0
     for _ in pairs(G.openMen or {}) do nOpen = nOpen + 1 end
     local ok = nOpen < 2
-    LF.log(string.format("TEST 0.81 open ground %s: %d men left in the open with cover inside 10 tiles (fewer than 2 allowed); %.2f ms at 72 bodies",
+    LF.log(string.format("TEST 0.82 open ground %s: %d men left in the open with cover inside 10 tiles (fewer than 2 allowed); %.2f ms at 72 bodies",
         ok and "PASS" or "FAIL", nOpen, at72))
-    LF.log(string.format("TEST 0.81 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
+    LF.log(string.format("TEST 0.82 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
         shot and string.format("%.1f s", shot) or "none", #R.shot,
         move and string.format("%.1f s", move) or "none", #R.move, spread))
     local secs = (LF.tick - (stress.thinkTick or LF.tick)) / 60
     local thinks = LF.Brain.thinkCount or 0
-    LF.log(string.format("TEST 0.81 thinking: %d thinks in %.0f s (%.1f a second for every body on average)",
+    LF.log(string.format("TEST 0.82 thinking: %d thinks in %.0f s (%.1f a second for every body on average)",
         thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0))
     local SS = LF.SquadBrain.stats
     local W = SS.why or {}
-    LF.log(string.format("TEST 0.81 spot searches: %d worked out (%d answered from what the squad already had), %d found nothing, %d found the cover nearest where he was sent; turned down - nothing on his leash %d, wrong cover against his own enemy %d, claimed %d, no view %d; %d placements; cover read from the map %d times, tested live %d; view from the map %d, live %d",
+    LF.log(string.format("TEST 0.82 spot searches: %d worked out (%d answered from what the squad already had), %d found nothing, %d found the cover nearest where he was sent; turned down - nothing on his leash %d, wrong cover against his own enemy %d, claimed %d, no view %d; %d placements; cover read from the map %d times, tested live %d; view from the map %d, live %d",
         SS.testSpots or 0, SS.kept or 0, SS.testNone or 0, SS.nearFound or 0, W.empty or 0, W.quality or 0, W.claimed or 0,
         W.noView or 0, SS.testPlaces or 0, SS.tableQ or 0, SS.liveQ or 0, SS.tableV or 0, SS.liveV or 0))
-    LF.say(string.format("0.81 open-ground test %s: %d left in the open, %.2f ms at 72 bodies", ok and "PASS" or "FAIL", nOpen, at72))
+    LF.say(string.format("0.82 open-ground test %s: %d left in the open, %.2f ms at 72 bodies", ok and "PASS" or "FAIL", nOpen, at72))
     -- (0.79.1) What the old rule would have made, and the thinks by kind with their cost.
     local kinds = {}
     for k, v in pairs(LF.Brain.thinkStats or {}) do kinds[#kinds + 1] = { k = k, n = v.n, ms = v.ms } end
@@ -882,19 +882,19 @@ reactionSummary = function(modMs, bodies)
     for _, e in ipairs(kinds) do
         parts[#parts + 1] = string.format("%s %d (%.0f ms, %.2f each)", e.k, e.n, e.ms, e.n > 0 and e.ms / e.n or 0)
     end
-    LF.log("TEST 0.81 thinks by kind: " .. table.concat(parts, "; "))
+    LF.log("TEST 0.82 thinks by kind: " .. table.concat(parts, "; "))
     -- (0.81.2) Running about: runs to a spot, per man in the fight, and why men left cover.
     local nMen = #(stress.ger or {}) + #(stress.sov or {})
     local lw = {}
     for why, k in pairs(LF.Brain.leftCover or {}) do lw[#lw + 1] = why .. " " .. k end
-    LF.log(string.format("TEST 0.81 running about: %d runs to a spot (%.1f a man), %d spots kept through a new placement; left cover: %s",
+    LF.log(string.format("TEST 0.82 running about: %d runs to a spot (%.1f a man), %d spots kept through a new placement; left cover: %s",
         LF.Brain.coverRuns or 0, nMen > 0 and (LF.Brain.coverRuns or 0) / nMen or 0, SS.held or 0,
         #lw > 0 and table.concat(lw, ", ") or "never"))
     local rb = {}
     for k, v in pairs(LF.Brain.runsBy or {}) do rb[#rb + 1] = k .. " " .. v end
     table.sort(rb)
-    LF.log("TEST 0.81 runs by side and kind: " .. table.concat(rb, ", "))
-    LF.log("TEST 0.81 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
+    LF.log("TEST 0.82 runs by side and kind: " .. table.concat(rb, ", "))
+    LF.log("TEST 0.82 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
 end
 
 local function stressSummary()
@@ -1442,7 +1442,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption("0.81 open-ground test: the stress fight - fewer than 2 men left in the open with cover near (on a building: it holds the building; in the open: a field fight, the Germans dug in where you clicked)", nil,
+            tm:addOption("0.82 open-ground test: the stress fight - fewer than 2 men left in the open with cover near (on a building: it holds the building; in the open: a field fight, the Germans dug in where you clicked)", nil,
                 function() stressTest(x, y, z, false, { reaction = true, fieldOk = true }) end)
         end
         tm:addOption("(First: Tools > Delete ALL NPCs)")
