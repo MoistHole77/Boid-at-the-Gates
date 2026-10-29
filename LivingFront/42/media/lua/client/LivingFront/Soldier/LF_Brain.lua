@@ -47,6 +47,9 @@ local CFG = {
     -- (0.79) Thinking on events: a man settled in his place (firing, covering, watching, resting)
     -- re-decides only when something that matters to him happens (LF.Brain.wake), or on this
     -- heartbeat; on the move, bounding, clearing, in a file or falling back he keeps thinkTicks.
+    -- (0.80: off - it cut thinks by a quarter and saved nothing: the cheap thinks went, the cover
+    -- searches stayed. Thinking is back on the 0.78 rule; the wake-ups are only counted.)
+    events = false,
     heartbeatTicks = 120,
     idleBeatTicks = 60,     -- ... an idle man (keeping his place round the leader) once a second
     wakeGap = 10,           -- ... and never twice within this many ticks
@@ -68,6 +71,11 @@ local CFG = {
     cleanupTicks = 60,      -- forget minds of vanished bodies this often
     coverSearchTicks = 120, -- look for a new firing position / hiding spot at most this often
     coverGiveUpTicks = 420, -- abandon a position not reached within this long (about 7 s)
+    -- (0.80) Cover held: a search that found nothing waits 2, then 4, then 8 s before the next -
+    -- unless his squad has placed again since (the threat swung, the squad moved).
+    coverMissMax = 4,       -- (times coverSearchTicks, at most)
+    shelterRetryTicks = 360,-- sheltering without a shot: look for a firing position this often (was 120)
+    nearCoverRadius = 5,    -- nothing on the placement: the nearest covered square this close, any kind
     runApproachExtra = 8,   -- fighters run (not walk) toward a target further than fireRange + this
     -- Squads
     leash = 7,              -- squad soldiers take positions within this many tiles of their slot
@@ -363,7 +371,7 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         local q = LF.Cover.quality(m.cover.x, m.cover.y, m.cover.z, threat:getX(), threat:getY())
         local reached = isAt(body, m.cover)
         local usable = q == LF.Cover.LOW or ((m.cover.loose or sticky) and q ~= LF.Cover.NONE)
-        if m.cover.loose and not sticky and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.coverSearchTicks then
+        if m.cover.loose and not sticky and reached and LF.tick - (m.lastCoverSearch or -10000) >= CFG.shelterRetryTicks then
             -- Sheltering without a shot: keep looking for a real firing position.
             m.lastCoverSearch = LF.tick
             local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
@@ -386,21 +394,38 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
     -- Already standing behind usable cover?
     -- (Only on the search beat: up to 0.74 the sight check here ran every think for every man
     -- without cover - 0.75.)
-    if LF.tick - (m.lastCoverSearch or -10000) < CFG.coverSearchTicks then return end
+    -- (0.80) After a search that found nothing he waits longer each time (2, 4, 8 s) - unless his
+    -- squad has placed again since (the threat swung, the squad moved): then he looks at once.
+    -- (0.79.1: 9 searches in 10 found nothing, and the same men asked again every 2 s.)
+    local rec = LF.Records.get(id)
+    local placed = rec and rec.squad and LF.SquadBrain.placedAt and LF.SquadBrain.placedAt(rec.squad)
+    local miss = m.coverMiss or 0
+    local wait = CFG.coverSearchTicks * (miss == 0 and 1 or miss == 1 and 2 or CFG.coverMissMax)
+    if m.coverMiss and placed and placed ~= m.missPlaced then wait = 0 end
+    if LF.tick - (m.lastCoverSearch or -10000) < wait then return end
     m.lastCoverSearch = LF.tick
     local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
     if withinLeash(bx, by, ax, ay, 0, leash) and LF.Cover.of(body, threat) == LF.Cover.LOW and LF.Brain.canSee(body, threat) then
+        m.coverMiss = nil
         takeSpot(id, body, m, "cover", bx, by, bz, "cover")
         return
     end
     local x, y, z = firingSpot(id, body, threat, CFG.fireRange, ax, ay, ax and (leash or CFG.leash))
-    if x then takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
+    if x then m.coverMiss = nil; takeSpot(id, body, m, "cover", x, y, z, "cover"); return end
     -- No firing position: at least get out of the open (any cover, a little further out).
     x, y, z = firingSpot(id, body, threat, CFG.sightRange + 10, ax, ay,
         ax and ((leash or CFG.leash) + (sticky and 1 or 3)), true)
+    -- (0.80) Nothing on the placement: the nearest covered square round him, of any kind (a wall,
+    -- a doorway, inside a building) - 0.79.1 left men standing in the open 1-3 tiles from cover.
+    if not x and rec and rec.squad and LF.SquadBrain.nearestCover then
+        x, y, z = LF.SquadBrain.nearestCover(id, body:getX(), body:getY(), bz, threat, CFG.nearCoverRadius, false)
+    end
     if x then
+        m.coverMiss = nil
         takeSpot(id, body, m, "cover", x, y, z, "shelter")
         m.cover.loose = true
+    else
+        m.coverMiss, m.missPlaced = (m.coverMiss or 0) + 1, placed
     end
 end
 
@@ -1639,18 +1664,20 @@ local function stepNpc(id, body, rec, lod)
     end
     -- (0.79) On the move or in the middle of something: the usual rate. Settled: his heartbeat,
     -- unless something woke him.
-    local interval
-    if not rec.squad or busyMind(m, body, rec) then interval = CFG.thinkTicks
-    elseif m.state == "idle" then interval = CFG.idleBeatTicks
-    else interval = CFG.heartbeatTicks end
-    local kind = interval == CFG.thinkTicks and "busy" or "beat"
-    interval = interval * (lod or 1)
-    -- (what the 0.78 rule would have done, for the test's count)
+    local interval, kind
     local quiet = (m.state == "idle" or m.state == "guard") and rec.squad and LF.SquadBrain.enabled
         and not LF.SquadBrain.seesAny(rec.squad)
-    if every(m, "oldAt", (quiet and CFG.quietThinkTicks or CFG.thinkTicks) * (lod or 1)) then
+    if not CFG.events then
+        -- (The 0.78 rule: three times a second, once a second when idle or guarding a quiet quarter.)
+        interval, kind = quiet and CFG.quietThinkTicks or CFG.thinkTicks, quiet and "quiet" or "think"
+    elseif not rec.squad or busyMind(m, body, rec) then interval, kind = CFG.thinkTicks, "busy"
+    elseif m.state == "idle" then interval, kind = CFG.idleBeatTicks, "beat"
+    else interval, kind = CFG.heartbeatTicks, "beat" end
+    interval = interval * (lod or 1)
+    if CFG.events and every(m, "oldAt", (quiet and CFG.quietThinkTicks or CFG.thinkTicks) * (lod or 1)) then
         LF.Brain.oldThinks = LF.Brain.oldThinks + 1
     end
+    if not CFG.events then m.wake = nil end
     local woken = m.wake and LF.tick - (m.thinkAt or -100000) >= CFG.wakeGap
     if woken then
         m.thinkAt = LF.tick; LF.Brain.wokenCount = (LF.Brain.wokenCount or 0) + 1

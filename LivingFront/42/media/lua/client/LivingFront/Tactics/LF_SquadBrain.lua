@@ -57,6 +57,13 @@ LF.SquadBrain.CFG = CFG
 
 local S = {}                -- squad id -> state
 local stats = { los = 0, looks = 0, places = 0, spots = 0, at = 0 }
+-- (0.80) Why candidates were turned down in spot searches, for the test: no candidate on his
+-- leash at all, its cover wrong against his own threat, claimed, blocked, inside a building, no view.
+local function noWhy() return { empty = 0, quality = 0, claimed = 0, blocked = 0, building = 0, noView = 0 } end
+stats.why = noWhy()
+function LF.SquadBrain.resetStats()
+    stats.why, stats.near, stats.nearFound, stats.testSpots, stats.testNone = noWhy(), 0, 0, 0, 0
+end
 LF.SquadBrain.stats = stats
 
 local shareTargets           -- (below)
@@ -444,6 +451,7 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
     end
     if stale then buildCands(sid, s, men, n, cx, cy, cz, tx, ty) end
     stats.spots = stats.spots + 1
+    stats.testSpots = (stats.testSpots or 0) + 1
     local bx, by = body:getX(), body:getY()
     local ox, oy = ax or bx, ay or by
     local cell = getCell()
@@ -475,22 +483,27 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
         -- The exact checks, best first: cover against his actual line, free, line of fire.
         local checks = 0
         local best, bestScore, bestQ = nil, nil, nil
+        local W = stats.why
+        if m == 0 then W.empty = W.empty + 1 end
         for i = 1, m do
             if checks >= CFG.exactChecks then break end
             local e = scored[i]
             if best and e.score + CFG.W_FIRE <= bestScore then break end    -- (can't beat it)
             local c = e.c
             local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
-            if (q == LF.Cover.LOW or (loose and q == LF.Cover.HIGH)) and not LF.Brain.hardClaimed(c.x, c.y, bz, id)
-                and not LF.Cover.takenExactly(c.x, c.y, bz, id) then
+            if not (q == LF.Cover.LOW or (loose and q == LF.Cover.HIGH)) then W.quality = W.quality + 1
+            elseif LF.Brain.hardClaimed(c.x, c.y, bz, id) or LF.Cover.takenExactly(c.x, c.y, bz, id) then W.claimed = W.claimed + 1
+            else
                 local sq = cell:getGridSquare(c.x, c.y, bz)
-                if sq and sq:isFree(false) and not sq:getBuilding() then
+                if not (sq and sq:isFree(false)) then W.blocked = W.blocked + 1
+                elseif sq:getBuilding() then W.building = W.building + 1
+                else
                     checks = checks + 1
                     local fire = loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)
                     if loose or fire then
                         local sc = e.score + (fire and CFG.W_FIRE or 0)
                         if not best or sc > bestScore then best, bestScore, bestQ = c, sc, q end
-                    end
+                    else W.noView = W.noView + 1 end
                 end
             end
         end
@@ -504,7 +517,43 @@ function LF.SquadBrain.spotFor(id, body, rec, threat, maxRange, ax, ay, leash, l
     end
     s.spots[id] = nil
     stats.none = (stats.none or 0) + 1
+    stats.testNone = (stats.testNone or 0) + 1
     if #s.cands == 0 then stats.noCands = (stats.noCands or 0) + 1 end
+    return nil
+end
+
+-- (0.80) When the squad last placed (rebuilt its candidates): a man whose search found nothing
+-- looks again at once after a new placement.
+function LF.SquadBrain.placedAt(sid)
+    local s = S[sid]
+    return s and s.placedAt
+end
+
+-- (0.80) The nearest free square with any cover against the threat within r tiles of (x, y), not
+-- claimed by another man - for a man the placement has nothing for (and a gun set up in the open:
+-- view = it must see the threat from there). x, y, z or nil.
+function LF.SquadBrain.nearestCover(id, x, y, z, threat, r, view)
+    local bx, by = math.floor(x), math.floor(y)
+    local tx, ty = threat:getX(), threat:getY()
+    local cell = getCell()
+    stats.near = (stats.near or 0) + 1
+    for d = 1, r do
+        for dx = -d, d do
+            for dy = -d, d do
+                if math.max(math.abs(dx), math.abs(dy)) == d then
+                    local sx, sy = bx + dx, by + dy
+                    local sq = cell:getGridSquare(sx, sy, z)
+                    if sq and sq:isFree(false) and LF.distSq(sx + 0.5, sy + 0.5, tx, ty) > 16
+                        and LF.Cover.quality(sx, sy, z, tx, ty) ~= LF.Cover.NONE
+                        and not LF.Brain.hardClaimed(sx, sy, z, id) and not LF.Cover.takenExactly(sx, sy, z, id)
+                        and (not view or LF.Cover.canSeeFrom(sx, sy, z, threat)) then
+                        stats.nearFound = (stats.nearFound or 0) + 1
+                        return sx, sy, z
+                    end
+                end
+            end
+        end
+    end
     return nil
 end
 

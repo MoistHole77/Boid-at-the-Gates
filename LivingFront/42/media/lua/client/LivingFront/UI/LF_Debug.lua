@@ -497,7 +497,8 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.reactions.shot, LF.Brain.reactions.move = {}, {}
         LF.Brain.thinkCount, LF.Brain.wokenCount, stress.thinkTick = 0, 0, LF.tick
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
-        LF.log("TEST 0.79 reaction: the stress fight - first shots after contact, first moves after orders")
+        if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
+        LF.log("TEST 0.80 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
         LF.log(string.format("TEST 0.76 big fight: %d men, the cap on bodies at %d", #gerMen + #sovMen, LF.Config.maxBodies or 0))
@@ -815,11 +816,11 @@ summary076 = function()
     end
 end
 
--- ---- the 0.79 reaction test -------------------------------------------------------------------------
--- From the stress fight: every man's first shot once an enemy his squad sees is in his range, and
--- every squad's first man moving after a movement order (LF_Brain.reactions). The medians are the
--- verdict, against the 0.78.1 baseline (2.6 s, 0.2 s) now that men think on events: a first shot
--- within 3.1 s, a move within 1 s. Also: how often a man thinks, and how many of those were wake-ups. Also: how spread the fire was (different enemies under fire
+-- ---- the 0.80 open-ground test ----------------------------------------------------------------------
+-- From the stress fight: the verdict is the men left in the open (holding, not pinned, no cover
+-- against the enemy, cover inside 10 tiles, two looks running) - fewer than 2. Alongside: the
+-- reaction times (first shot once an enemy is in range, first move after an order), the thinks by
+-- kind with their cost, the squads' spot searches (how many found nothing, and why), the cost. Also: how spread the fire was (different enemies under fire
 -- for each man firing), from the gate looks, and the mod's cost.
 local function median(list)
     if #list == 0 then return nil end
@@ -835,14 +836,24 @@ reactionSummary = function(modMs, bodies)
     local G = stress.gate or {}
     local spread = (G.firing or 0) > 0 and (G.targets or 0) / G.firing or 0
     local at72 = bodies > 0 and modMs / bodies * 72 or 0
-    local ok = shot ~= nil and move ~= nil and shot <= 3.1 and move <= 1.0
-    LF.log(string.format("TEST 0.79 reaction %s: first shot once an enemy is in his range - median %s over %d men (3.1 s allowed); moving after an order - median %s over %d orders (1 s allowed); fire spread %.2f different targets per man firing; %.2f ms at 72 bodies",
-        ok and "PASS" or "FAIL", shot and string.format("%.1f s", shot) or "none", #R.shot,
-        move and string.format("%.1f s", move) or "none", #R.move, spread, at72))
+    local nOpen = 0
+    for _ in pairs(G.openMen or {}) do nOpen = nOpen + 1 end
+    local ok = nOpen < 2
+    LF.log(string.format("TEST 0.80 open ground %s: %d men left in the open with cover inside 10 tiles (fewer than 2 allowed); %.2f ms at 72 bodies",
+        ok and "PASS" or "FAIL", nOpen, at72))
+    LF.log(string.format("TEST 0.80 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
+        shot and string.format("%.1f s", shot) or "none", #R.shot,
+        move and string.format("%.1f s", move) or "none", #R.move, spread))
     local secs = (LF.tick - (stress.thinkTick or LF.tick)) / 60
-    local thinks, woken = LF.Brain.thinkCount or 0, LF.Brain.wokenCount or 0
-    LF.log(string.format("TEST 0.79 thinking: %d thinks in %.0f s (%.1f a second for every body on average; 3 at the old rate), %d of them wake-ups (%.0f%%)",
-        thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0, woken, thinks > 0 and woken / thinks * 100 or 0))
+    local thinks = LF.Brain.thinkCount or 0
+    LF.log(string.format("TEST 0.80 thinking: %d thinks in %.0f s (%.1f a second for every body on average)",
+        thinks, secs, (secs > 0 and bodies > 0) and thinks / secs / bodies or 0))
+    local SS = LF.SquadBrain.stats
+    local W = SS.why or {}
+    LF.log(string.format("TEST 0.80 spot searches: %d asked for, %d found nothing; candidates turned down - none on his leash %d, wrong cover against his threat %d, claimed %d, blocked %d, inside a building %d, no view %d; nearest-cover fallback %d asked, %d found",
+        SS.testSpots or 0, SS.testNone or 0, W.empty or 0, W.quality or 0, W.claimed or 0, W.blocked or 0, W.building or 0,
+        W.noView or 0, SS.near or 0, SS.nearFound or 0))
+    LF.say(string.format("Open-ground test %s: %d left in the open, %.2f ms at 72 bodies", ok and "PASS" or "FAIL", nOpen, at72))
     -- (0.79.1) What the old rule would have made, and the thinks by kind with their cost.
     local kinds = {}
     for k, v in pairs(LF.Brain.thinkStats or {}) do kinds[#kinds + 1] = { k = k, n = v.n, ms = v.ms } end
@@ -851,11 +862,8 @@ reactionSummary = function(modMs, bodies)
     for _, e in ipairs(kinds) do
         parts[#parts + 1] = string.format("%s %d (%.0f ms, %.2f each)", e.k, e.n, e.ms, e.n > 0 and e.ms / e.n or 0)
     end
-    LF.log(string.format("TEST 0.79 thinks by kind (the 0.78 rule would have made %d): %s", LF.Brain.oldThinks or 0,
-        table.concat(parts, "; ")))
-    LF.log("TEST 0.79 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
-    LF.say(string.format("Reaction test %s: first shot %s, moving %s", ok and "PASS" or "FAIL",
-        shot and string.format("%.1f s", shot) or "-", move and string.format("%.1f s", move) or "-"))
+    LF.log("TEST 0.80 thinks by kind: " .. table.concat(parts, "; "))
+    LF.log("TEST 0.80 moves after orders: " .. table.concat(R.moveWhy or {}, "; "))
 end
 
 local function stressSummary()
@@ -1317,7 +1325,7 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
-            tm:addOption("0.79 reaction test: the stress fight (right-click a building) - first shot within 3.1 s of an enemy coming into range, moving within 1 s of an order", nil,
+            tm:addOption("0.80 open-ground test: the stress fight (right-click a building) - fewer than 2 men left in the open with cover near", nil,
                 function() stressTest(x, y, z, false, { reaction = true }) end)
         end
         tm:addOption("(First: Tools > Delete ALL NPCs)")
