@@ -604,11 +604,11 @@ local function spotOf(id, body, rec, threat, maxRange, ax, ay, leash, loose, gun
         end
         if best then return answer(best.x, best.y, bz, bestQ) end
     end
-    -- (Shelter or a gun) the nearest covered square to where he was sent, within 5 tiles beyond his
-    -- leash. (0.81: 14 tiles whatever his leash - a dug-in man's own check let him hold cover only
-    -- a few tiles past his place, so he left it, walked back, was sent there again: back and forth.)
+    -- (Shelter or a gun) the nearest covered square to where he was sent, within 14 tiles - past
+    -- his leash if that's where the cover is. (0.81.3: he keeps it until his squad moves on - LF_Brain;
+    -- 0.81.2 cut this to 5 past his leash instead, and men were left in the open.)
     if loose or gun then
-        local lim = (leash or 7) + 5
+        local lim = CFG.farLeash + 4
         local bestD, best, bestQ = lim * lim, nil, nil
         for i = 1, #s.cands do
             local c = s.cands[i]

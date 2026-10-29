@@ -382,7 +382,18 @@ planCoverOf = function(id, body, m, threat, ax, ay, leash, sticky)
         if not usable then why = "its cover no longer faces the enemy"
         elseif not reached and LF.tick - m.cover.since > CFG.coverGiveUpTicks then why = "not reached in time"
         elseif not reached and stuckNear(m, m.cover.x + 0.5, m.cover.y + 0.5) then why = "no way there"
-        elseif not withinLeash(m.cover.x, m.cover.y, ax, ay, m.cover.loose and 8 or (reached and 3 or 6), leash) then why = "too far from his place" end
+        else
+            -- (0.81.3) Past his leash only matters when his squad has moved on: the place he was
+            -- given has shifted 6 tiles since he took this cover (or it is beyond any reason, 14
+            -- past his leash). A man who went beyond his leash because that's where the cover was
+            -- keeps it - 0.81.2 sent 281 men out of cover in one fight for being too far.
+            if ax and not m.cover.ax then m.cover.ax, m.cover.ay = ax, ay end
+            local moved = ax and m.cover.ax and LF.dist(ax, ay, m.cover.ax, m.cover.ay) > 6
+            if (moved and not withinLeash(m.cover.x, m.cover.y, ax, ay, reached and 3 or 6, leash))
+                or not withinLeash(m.cover.x, m.cover.y, ax, ay, 14, leash) then
+                why = moved and "his squad moved on" or "beyond any reason from his place"
+            end
+        end
         if why then
             -- (0.81.2, the test: why men left their cover)
             local L = LF.Brain.leftCover
