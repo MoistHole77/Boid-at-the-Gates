@@ -1003,6 +1003,75 @@ LF.onTick("Debug", function()
     end
 end)
 
+-- ---- the command file (0.84) ----------------------------------------------------------------------
+-- So tests can be started from outside the game: every 2 s the mod reads Zomboid/Lua/LivingFront/
+-- command.txt - one line, "<id> <command> [args]" - and runs a command it hasn't run before:
+--   <id> ping                 answers, nothing else
+--   <id> deleteall            Tools > Delete ALL NPCs
+--   <id> test x y z [n]       the release test at (x, y, z), n times in a row (NPCs deleted before each)
+--   <id> stop                 stops a run of tests after the current one
+-- The answer goes to command_ack.txt ("<id> <what happened>"); results go to the log as usual.
+local CMD_FILE, ACK_FILE = "LivingFront/command.txt", "LivingFront/command_ack.txt"
+local lastCmd = nil
+local queue = nil            -- { x, y, z, left, phase, at, id }
+local function ack(text)
+    LF.try("command ack", function()
+        local w = getFileWriter(ACK_FILE, true, false)
+        if not w then return false end
+        w:write(text .. "\n")
+        w:close()
+        return true
+    end)
+end
+local function readCommand()
+    local r = getFileReader(CMD_FILE, false)
+    if not r then return nil end
+    local line = r:readLine()
+    r:close()
+    return line
+end
+local function runCommand(line)
+    local words = {}
+    for w in string.gmatch(line, "%S+") do words[#words + 1] = w end
+    local id, cmd = words[1], words[2]
+    if not id or not cmd or id == lastCmd then return end
+    lastCmd = id
+    LF.log("COMMAND " .. line)
+    if cmd == "ping" then ack(id .. " pong, version " .. tostring(LF.VERSION) .. (stress and ", a test is running" or ""))
+    elseif cmd == "deleteall" then deleteAll(); ack(id .. " deleted all NPCs")
+    elseif cmd == "test" then
+        local x, y, z, n = tonumber(words[3]), tonumber(words[4]), tonumber(words[5] or "0"), tonumber(words[6] or "1")
+        if not (x and y) then ack(id .. " test needs x y z"); return end
+        queue = { x = math.floor(x), y = math.floor(y), z = math.floor(z or 0), left = n or 1, phase = "delete", at = LF.frame, id = id }
+        ack(id .. " queued " .. queue.left .. " test(s) at " .. queue.x .. "," .. queue.y .. "," .. queue.z)
+    elseif cmd == "stop" then
+        if queue then queue.left = 1 end
+        ack(id .. " stopping after the current test")
+    else ack(id .. " unknown command " .. cmd) end
+end
+LF.on("OnTick", "Debug", function()
+    if LF.frame % 120 == 7 then
+        local ok, line = pcall(readCommand)
+        if ok and line and line ~= "" then LF.guard("command", runCommand, line) end
+    end
+    local q = queue
+    if not q then return end
+    if q.phase == "delete" and not stress then
+        deleteAll()
+        q.phase, q.at = "start", LF.frame + 180
+    elseif q.phase == "start" and LF.frame >= q.at then
+        stressTest(q.x, q.y, q.z, false, { reaction = true, fieldOk = true })
+        q.phase = "running"
+    elseif q.phase == "running" and not stress then
+        q.left = q.left - 1
+        if q.left > 0 then q.phase, q.at = "delete", LF.frame + 120
+        else
+            ack(q.id .. " all tests done")
+            queue = nil
+        end
+    end
+end)
+
 -- ---- you, while testing: god mode, and the soldiers leave you alone -------------------------------
 -- On by default while the mod is in debug (Tools to turn it off). Soldiers don't pick you as a
 -- target (when fire at you comes, from 0.72, it is skipped), and nothing can kill you.

@@ -62,7 +62,10 @@ local function onPlayerUpdate(body)
         if id then idOf[body] = id end
         if LF.frame - clearedAt > 3600 then idOf, clearedAt = {}, LF.frame end
     end
-    if not id then return end    -- the real player, or someone else's character
+    if not id then                -- the real player, or someone else's character
+        if LF.Watch and LF.Watch.onUpdate then LF.Watch.onUpdate(body) end
+        return
+    end
     local desired = want[id] == true
     local target = desired
     if canReadKey == nil then

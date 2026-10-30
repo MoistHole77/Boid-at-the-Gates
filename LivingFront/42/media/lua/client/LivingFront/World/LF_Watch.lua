@@ -63,8 +63,10 @@ end
 
 -- (The game fires this for every one of our bodies too - they are player characters. Only the
 -- real player matters: one comparison with him, no call into the game, for each of the others.)
+-- (0.84) Called from the posture fix's handler (LF_Posture) - one handler a character a frame
+-- instead of two: the game charges for each call, even one that does nothing.
 local me = nil
 LF.on("OnTick", "Watch", function() me = getPlayer() end)
-LF.on("OnPlayerUpdate", "Watch", function(p)
+function LF.Watch.onUpdate(p)
     if p == me then LF.guard("player shown", keepShown, p) end
-end, 32)
+end
