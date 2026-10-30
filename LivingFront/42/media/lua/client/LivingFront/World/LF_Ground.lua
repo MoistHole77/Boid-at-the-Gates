@@ -29,6 +29,7 @@ local CFG = {
     maxAge = 300,           -- simulated seconds before an entry is worked out again
     buildRadius = 30,       -- tiles round you filled in the background
     perFrame = 12,          -- squares filled a pass at most (a pass every 3 frames; 0.71 did 40 every 2: 0.6 ms a frame)
+    restSecs = 20,          -- (0.83) everything round you filled and fresh: the fill rests this long (simulated s)
     reachMax = 60,          -- tiles: sight is measured out to this
     reachStep = 5,
 }
@@ -215,7 +216,12 @@ local function fill()
     -- (Moved far: start again round where you are now.)
     if not ring.cx or LF.dist(px, py, ring.cx, ring.cy) > 10 or pz ~= ring.z then
         ring.cx, ring.cy, ring.z, ring.r, ring.i = px, py, pz, 0, 0
+        ring.restUntil, ring.work = nil, 0
     end
+    -- (0.83) A whole round with nothing to fill: rest. Up to 0.82 it walked 400 squares every 3
+    -- frames for good, finding nothing (0.38 ms a frame).
+    if ring.restUntil and LF.simTime < ring.restUntil and ring.restUntil - LF.simTime <= CFG.restSecs then return end
+    ring.restUntil = nil
     local t0 = getTimestampMs()
     local done, looked = 0, 0
     -- (A bounded walk: once everything round you is filled, it moves on 400 squares a pass,
@@ -242,12 +248,17 @@ local function fill()
             if not e or LF.simTime - e.at > CFG.maxAge then
                 coverEntry(ring.cx + x, ring.cy + y, ring.z)
                 done = done + 1
+                ring.work = (ring.work or 0) + 1
                 if getTimestampMs() - t0 >= 1 then return end
             end
         end
     end
     -- (All round you filled: start over, so stale entries are refreshed in their turn.)
-    if ring.r > CFG.buildRadius then ring.r, ring.i = 0, 0 end
+    if ring.r > CFG.buildRadius then
+        ring.r, ring.i = 0, 0
+        if (ring.work or 0) == 0 then ring.restUntil = LF.simTime + CFG.restSecs end
+        ring.work = 0
+    end
 end
 
 LF.onTick("Ground", function()

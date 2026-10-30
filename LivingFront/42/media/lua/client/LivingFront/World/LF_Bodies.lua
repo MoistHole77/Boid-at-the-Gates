@@ -283,9 +283,26 @@ local function onTick()
 end
 
 -- Draw one body, mirroring FBORenderCell.renderPlayer(): shadow, then render.
+-- (0.83) Only the soldiers you can see, as the game does with zombies: a man behind a building or
+-- outside your view isn't drawn (LF.Config.drawSeenOnly; Tools switches it). Within 2 tiles always.
+local function seenBy(sq, playerIndex) return sq:isCanSee(playerIndex) end
+local canSeeOK = nil
 local function drawBody(body, playerIndex)
     local sq = body:getCurrentSquare()
     if not sq or not body:isOnScreen() then return end
+    if LF.Config.drawSeenOnly then
+        if canSeeOK == nil then
+            canSeeOK = pcall(seenBy, sq, playerIndex)
+            LF.log("DRAW only soldiers in your sight: " .. (canSeeOK and "available" or "UNAVAILABLE - drawing all"))
+        end
+        if canSeeOK and not sq:isCanSee(playerIndex) then
+            local p = getSpecificPlayer(playerIndex)
+            if not p or LF.distSq(p:getX(), p:getY(), body:getX(), body:getY()) > 4 then
+                LF.Bodies.hidden = (LF.Bodies.hidden or 0) + 1
+                return
+            end
+        end
+    end
     local light = sq:getLightInfo(playerIndex)
     if not light then return end
     local x, y, z = body:getX(), body:getY(), body:getZ()

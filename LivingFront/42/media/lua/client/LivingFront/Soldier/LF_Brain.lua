@@ -54,6 +54,7 @@ local CFG = {
     idleBeatTicks = 60,     -- ... an idle man (keeping his place round the leader) once a second
     wakeGap = 10,           -- ... and never twice within this many ticks
     actTicks = 3,           -- (0.75) his per-tick steps (aim, fire, crouch) every 3rd tick - 20 a second, plenty for a rifle
+    leanTicks = 30,         -- (0.83) settled in his place with nothing to fire at: he steps twice a second, not 20 times
     -- Level of detail (0.76): the further a man is from you, the less often he steps and thinks.
     lodNear = 30,           -- within this (tiles): every 3rd tick, thinking 3 times a second
     lodFar = 45,            -- within this: every 6th tick, thinking every 2/3 s; beyond: every 9th, once a second
@@ -1865,6 +1866,16 @@ local function stepNpc(id, body, rec, lod)
     local tA = getTimestampMs()
     LF.Brain.act(id, body, rec, m)
     LF.Perf.stop("brain act", tA)
+    -- (0.83) The lean step: a squad soldier settled in his place - watching, covering or idle, no
+    -- target, at his spot (or with none to go to), not moving, not hurt - steps again in half a
+    -- second. Anything that matters wakes him at once (LF.Brain.wake: hit, an enemy in his range or
+    -- new to the squad, an order, a stance, his team's drill).
+    m.leanUntil = nil
+    if rec.squad and not m.targetId and (m.state == "alert" or m.state == "guard" or m.state == "idle")
+        and not body:isPerformingAnAction() and not (m.cover and not isAt(body, m.cover))
+        and not (m.hide and not isAt(body, m.hide)) and not rec.wounded and not m.bumpSince and not m.downSince then
+        m.leanUntil = LF.tick + CFG.leanTicks
+    end
 end
 
 local lodCount = {}     -- record id -> beats counted (level of detail, 0.76)
@@ -1888,7 +1899,10 @@ local function onTick()
                 end
                 local n = (lodCount[id] or 0) + 1
                 lodCount[id] = n
-                if n % lod == 0 then
+                local mm = minds[id]
+                if mm and mm.leanUntil and LF.tick < mm.leanUntil and not mm.wake then
+                    LF.Brain.leanSkips = (LF.Brain.leanSkips or 0) + 1
+                elseif n % lod == 0 then
                     LF.Brain.lodStats[lod] = LF.Brain.lodStats[lod] + 1
                     LF.guard("brain step", stepNpc, id, body, rec, lod)
                 end

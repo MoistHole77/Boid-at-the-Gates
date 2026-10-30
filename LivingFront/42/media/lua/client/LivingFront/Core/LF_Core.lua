@@ -1,7 +1,7 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.82.1"
+LF.VERSION = "0.83"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
@@ -13,7 +13,8 @@ LF.Config = {
     -- Off-screen need rates per 10 in-game minutes, measured from a spawned body in testing.
     rates = { hunger = 0.0037, thirst = 0.0031, fatigue = 0.0042 },
     logShots = false,        -- one log line per shot (debugging; 0.78: off by default)
-    logVerbose = false,      -- (0.78) every soldier's state change, spot taken, target switch and pace measure (debugging)
+    logVerbose = false,
+    drawSeenOnly = true,    -- (0.83) draw only the soldiers you can see (LF_Bodies)      -- (0.78) every soldier's state change, spot taken, target switch and pace measure (debugging)
     logAreaFire = false,     -- one log line per area-fire shot (very chatty)
     logGait = false,         -- running/sprinting checks and measured speed (debugging; very chatty)
     logPerf = true,          -- frame rate and the mod's own cost, every perfWindowMs (stress testing)
