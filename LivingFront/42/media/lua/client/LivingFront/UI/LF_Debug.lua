@@ -1044,6 +1044,28 @@ local function runCommand(line)
         if not (x and y) then ack(id .. " test needs x y z"); return end
         queue = { x = math.floor(x), y = math.floor(y), z = math.floor(z or 0), left = n or 1, phase = "delete", at = LF.frame, id = id }
         ack(id .. " queued " .. queue.left .. " test(s) at " .. queue.x .. "," .. queue.y .. "," .. queue.z)
+    elseif cmd == "goto" then
+        -- (0.85.1) Puts you at (x, y, z) - the arena - with the game's god mode on, so wandering
+        -- zombies can't kill you while tests run unattended (0.85: the character died between runs).
+        local x, y, z = tonumber(words[3]), tonumber(words[4]), tonumber(words[5] or "0")
+        local p = getPlayer()
+        if not (p and x and y) then ack(id .. " goto needs x y z and a player"); return end
+        z = z or 0
+        -- (B42: teleportTo where the game has it; else the position and the last position both, or
+        -- the game moves him back.)
+        local moved = pcall(function() p:teleportTo(x, y, z) end)
+        if not moved then
+            p:setX(x); p:setY(y); p:setZ(z)
+            pcall(function() p:setLastX(x); p:setLastY(y); p:setLastZ(z) end)
+            pcall(function() p:setLx(x); p:setLy(y); p:setLz(z) end)
+        end
+        pcall(function() p:setGodMod(true) end)
+        pcall(function() p:setInvincible(true) end)
+        ack(id .. " moved to " .. x .. "," .. y .. "," .. (z or 0) .. " with god mode")
+    elseif cmd == "god" then
+        local p = getPlayer()
+        if p then pcall(function() p:setGodMod(true) end); pcall(function() p:setInvincible(true) end) end
+        ack(id .. " god mode on")
     elseif cmd == "stop" then
         if queue then queue.left = 1 end
         ack(id .. " stopping after the current test")

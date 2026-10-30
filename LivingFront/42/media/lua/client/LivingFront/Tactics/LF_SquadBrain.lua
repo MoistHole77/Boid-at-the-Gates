@@ -232,13 +232,21 @@ local function squadLook(sid, s)
         -- against him from the spot the man holds - the sergeant moves him (LF_Brain asks again
         -- against that enemy). Checked at most every 2 s a man; one cover-map read. (0.84: men held
         -- shelter a tile from cover that faced the enemy nearest them - 11 left in the open.)
-        local c = near and LF.Brain and LF.Brain.coverOf and LF.Brain.coverOf(man.id)
-        if c and LF.tick - (s.flankAt[man.id] or -100000) >= CFG.flankTicks
-            and LF.SquadBrain.coverQ(c.x, c.y, c.z, near:getX(), near:getY()) == LF.Cover.NONE then
-            s.flankAt[man.id] = LF.tick
-            s.flanked[man.id] = near
+        -- (0.85.2) Against the nearest enemy the squad knows of (seen in the last 10 s, within 45
+        -- tiles) when it sees none near him now - the enemy his cover is judged against in the test.
+        if LF.tick - (s.flankAt[man.id] or -100000) >= CFG.flankTicks then
+        local c = LF.Brain and LF.Brain.coverOf and LF.Brain.coverOf(man.id)
+        local ref = near
+        if c and not ref then
+            local k = LF.Squad.bestContact(sid, bx, by, 600, 45)
+            if k then ref = LF.Tactics.point(k.x, k.y, c.z) end
+        end
+        s.flankAt[man.id] = LF.tick
+        if c and ref and LF.SquadBrain.coverQ(c.x, c.y, c.z, ref:getX(), ref:getY()) == LF.Cover.NONE then
+            s.flanked[man.id] = ref
             stats.flanked = (stats.flanked or 0) + 1
             if LF.Brain.wake then LF.Brain.wake(man.id, "flanked") end
+        end
         end
         if any then
             -- (0.79.1) An enemy has just come within his range: he re-decides at once (0.79 waited
@@ -698,7 +706,7 @@ function LF.SquadBrain.takeFlanked(sid, id)
     local s = S[sid]
     local e = s and s.flanked and s.flanked[id]
     if e then s.flanked[id] = nil end
-    if e and e:isDead() then return nil end
+    if e and e.isDead and e:isDead() then return nil end
     return e
 end
 
