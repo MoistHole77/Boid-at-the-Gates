@@ -235,14 +235,21 @@ local function squadLook(sid, s)
         -- (0.85.2) Against the nearest enemy the squad knows of (seen in the last 10 s, within 45
         -- tiles) when it sees none near him now - the enemy his cover is judged against in the test.
         if LF.tick - (s.flankAt[man.id] or -100000) >= CFG.flankTicks then
+        -- (0.85.3) His own target if he has one, else the nearest enemy the squad knows of; the exact
+        -- edge test, not the 8-direction map (they disagree at an angle).
         local c = LF.Brain and LF.Brain.coverOf and LF.Brain.coverOf(man.id)
-        local ref = near
-        if c and not ref then
-            local k = LF.Squad.bestContact(sid, bx, by, 600, 45)
-            if k then ref = LF.Tactics.point(k.x, k.y, c.z) end
+        local ref = nil
+        if c then
+            local tid = LF.Brain.targetOf and LF.Brain.targetOf(man.id)
+            local tb = tid and LF.Bodies.get(tid)
+            if tb and not tb:isDead() then ref = tb
+            else
+                local k = LF.Squad.bestContact(sid, bx, by, 600, 45)
+                if k then ref = LF.Tactics.point(k.x, k.y, c.z) end
+            end
         end
         s.flankAt[man.id] = LF.tick
-        if c and ref and LF.SquadBrain.coverQ(c.x, c.y, c.z, ref:getX(), ref:getY()) == LF.Cover.NONE then
+        if c and ref and LF.Cover.quality(c.x, c.y, c.z, ref:getX(), ref:getY()) == LF.Cover.NONE then
             s.flanked[man.id] = ref
             stats.flanked = (stats.flanked or 0) + 1
             if LF.Brain.wake then LF.Brain.wake(man.id, "flanked") end

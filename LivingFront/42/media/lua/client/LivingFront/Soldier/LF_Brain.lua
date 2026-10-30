@@ -337,6 +337,12 @@ function LF.Brain.isBlind(id)
     return LF.tick - math.max(m.lastSight or -100000, m.holdingSince) > CFG.blindTicks
 end
 
+-- (0.85.3) The enemy a man is firing at, or nil.
+function LF.Brain.targetOf(id)
+    local m = minds[id]
+    return m and m.targetId
+end
+
 -- (0.85) The cover a man holds (at it), or nil - for the squad's flank check.
 function LF.Brain.coverOf(id)
     local m = minds[id]
@@ -384,7 +390,7 @@ local function stepToCover(id, body, m, threat, sticky, ax, ay, leash)
     local c = m.cover
     local cell = getCell()
     local tx, ty = threat:getX(), threat:getY()
-    local qOf = LF.SquadBrain.coverQ or LF.Cover.quality
+    local qOf = LF.Cover.quality       -- (0.85.3: the exact test - rare, and the map is coarse at an angle)
     for d = 1, 3 do
         for dx = -d, d do
             for dy = -d, d do
