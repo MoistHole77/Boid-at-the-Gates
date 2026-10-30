@@ -42,8 +42,26 @@ end
 -- read once a frame, by the first body updated, not once per body.
 local keyFrame, keyDown = -1, false
 
+-- (0.83.2) The game only flips a body's posture on the crouch key: on a frame the key isn't down,
+-- a body is checked only once in 30 frames (in case anything else stood him up or crouched him),
+-- with no call into the game, and no protected call, for the rest. Up to 0.83.1 every body was
+-- checked every frame (0.4-1.0 ms a frame with 80 bodies). Bodies are known by the object itself
+-- (no mod-data read); the table is emptied once a minute so bodies put away don't pile up.
+local idOf = {}
+local seen, clearedAt = 0, 0
+local function quiet(body)
+    local id = idOf[body]
+    if not id or not canReadKey or keyFrame ~= LF.frame or keyDown then return false end
+    seen = seen + 1
+    return (seen + id) % 30 ~= 0
+end
 local function onPlayerUpdate(body)
-    local id = body:getModData().LF_id
+    local id = idOf[body]
+    if not id then
+        id = body:getModData().LF_id
+        if id then idOf[body] = id end
+        if LF.frame - clearedAt > 3600 then idOf, clearedAt = {}, LF.frame end
+    end
     if not id then return end    -- the real player, or someone else's character
     local desired = want[id] == true
     local target = desired
@@ -59,4 +77,7 @@ local function onPlayerUpdate(body)
     if body:isSneaking() ~= target then body:setSneaking(target) end
 end
 
-LF.on("OnPlayerUpdate", "Posture", function(body) LF.guard("posture", onPlayerUpdate, body) end, 32)
+LF.on("OnPlayerUpdate", "Posture", function(body)
+    if quiet(body) then return end
+    LF.guard("posture", onPlayerUpdate, body)
+end, 32)
