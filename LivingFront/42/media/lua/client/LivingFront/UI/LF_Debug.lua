@@ -518,7 +518,7 @@ local function stressTest(x, y, z, offscreen, opts)
         LF.Brain.thinkStats, LF.Brain.oldThinks, LF.Brain.reactions.moveWhy = {}, 0, {}
         if LF.SquadBrain.resetStats then LF.SquadBrain.resetStats() end
         LF.Brain.coverRuns, LF.Brain.leftCover, LF.Brain.runsBy = 0, {}, {}
-        LF.Brain.leanSkips, LF.Bodies.hidden, stress.frames0 = 0, 0, LF.frame
+        LF.Brain.leanSkips, LF.Bodies.hidden, LF.Bodies.drawn, stress.frames0 = 0, 0, 0, LF.frame
         LF.log("TEST 0.83 open ground: the stress fight - men left in the open with cover near, spot searches, cost")
     end
     if opts.big then
@@ -879,8 +879,8 @@ reactionSummary = function(modMs, bodies)
         #runs < 3 and " - run it again" or ""))
     LF.log(string.format("TEST 0.83 open ground: %d men left in the open with cover inside 10 tiles (0.82.1: 7)", nOpen))
     local frames = math.max(1, LF.frame - (stress.frames0 or LF.frame))
-    LF.log(string.format("TEST 0.83 lean: %d steps skipped by settled men; %d bodies not drawn out of your sight (%.1f a frame)",
-        LF.Brain.leanSkips or 0, LF.Bodies.hidden or 0, (LF.Bodies.hidden or 0) / frames))
+    LF.log(string.format("TEST 0.83 lean: %d steps skipped by settled men; bodies a frame - %.1f drawn, %.1f not drawn out of your sight",
+        LF.Brain.leanSkips or 0, (LF.Bodies.drawn or 0) / frames, (LF.Bodies.hidden or 0) / frames))
     LF.log(string.format("TEST 0.83 reactions: first shot once an enemy is in his range - median %s over %d men (2.6 s in 0.78.1); moving after an order - median %s over %d orders; fire spread %.2f different targets per man firing",
         shot and string.format("%.1f s", shot) or "none", #R.shot,
         move and string.format("%.1f s", move) or "none", #R.move, spread))

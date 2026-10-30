@@ -287,34 +287,47 @@ end
 -- outside your view isn't drawn (LF.Config.drawSeenOnly; Tools switches it). Within 2 tiles always.
 local function seenBy(sq, playerIndex) return sq:isCanSee(playerIndex) end
 local canSeeOK = nil
+local drawPX, drawPY = nil, nil       -- (0.83.1) the player, read once a frame
 local function drawBody(body, playerIndex)
     local sq = body:getCurrentSquare()
-    if not sq or not body:isOnScreen() then return end
+    if not sq then return end
+    -- (0.83.1: the sight check first - a plain flag on the square - then the screen check.)
     if LF.Config.drawSeenOnly then
         if canSeeOK == nil then
             canSeeOK = pcall(seenBy, sq, playerIndex)
             LF.log("DRAW only soldiers in your sight: " .. (canSeeOK and "available" or "UNAVAILABLE - drawing all"))
         end
         if canSeeOK and not sq:isCanSee(playerIndex) then
-            local p = getSpecificPlayer(playerIndex)
-            if not p or LF.distSq(p:getX(), p:getY(), body:getX(), body:getY()) > 4 then
+            if not drawPX or LF.distSq(drawPX, drawPY, body:getX(), body:getY()) > 4 then
                 LF.Bodies.hidden = (LF.Bodies.hidden or 0) + 1
                 return
             end
         end
     end
+    if not body:isOnScreen() then return end
     local light = sq:getLightInfo(playerIndex)
     if not light then return end
     local x, y, z = body:getX(), body:getY(), body:getZ()
+    local t1 = getTimestampMs()
     body:renderShadow(x, y, z)
     body:render(x, y, z, light, true, false, nil)
+    LF.Perf.stop("draw render", t1)
+    LF.Bodies.drawn = (LF.Bodies.drawn or 0) + 1
+end
+local function drawAll(playerIndex)
+    for _, body in pairs(bodies) do drawBody(body, playerIndex) end
 end
 
--- One guarded call per body per frame, with no closures created.
+-- (0.83.1) One protected call for the whole frame, not one per body; only if something fails is
+-- the frame drawn again body by body (so one bad body can't hide the rest).
 local function onRenderOpaque(playerIndex, _x, _y, _z, _square)
     local t0 = LF.Perf.start()
-    for _, body in pairs(bodies) do
-        LF.guard("draw body", drawBody, body, playerIndex)
+    local p = getSpecificPlayer(playerIndex)
+    if p then drawPX, drawPY = p:getX(), p:getY() else drawPX, drawPY = nil, nil end
+    if not pcall(drawAll, playerIndex) then
+        for _, body in pairs(bodies) do
+            LF.guard("draw body", drawBody, body, playerIndex)
+        end
     end
     LF.Perf.stop("draw", t0)
 end
