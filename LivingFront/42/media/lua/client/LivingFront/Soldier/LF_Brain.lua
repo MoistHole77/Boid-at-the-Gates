@@ -337,6 +337,16 @@ function LF.Brain.isBlind(id)
     return LF.tick - math.max(m.lastSight or -100000, m.holdingSince) > CFG.blindTicks
 end
 
+-- (0.85) The cover a man holds (at it), or nil - for the squad's flank check.
+function LF.Brain.coverOf(id)
+    local m = minds[id]
+    local c = m and m.cover
+    if not c then return nil end
+    local b = LF.Bodies.get(id)
+    if not b or not isAt(b, c) then return nil end
+    return c
+end
+
 function LF.Brain.isStuck(id, x, y)
     local m = minds[id]
     return m ~= nil and stuckNear(m, x, y)
@@ -434,6 +444,27 @@ local function heldCover(id, body, m, threat, ax, ay, leash, sticky, rec)
             LF.SquadBrain.forgetAnswer(sid, id)
             leavePosition(id, body, m)
         else
+            -- (0.85) His spot is flanked (LF_SquadBrain): the sergeant moves him - a spot with cover
+            -- against that enemy too, if there is one near.
+            local flank = LF.SquadBrain.takeFlanked and LF.SquadBrain.takeFlanked(sid, id)
+            if flank then
+                LF.SquadBrain.forgetAnswer(sid, id)
+                local x, y, z, loose = askSquad(id, body, m, flank, ax, ay, leash, sticky)
+                if not x or (x == m.cover.x and y == m.cover.y) then
+                    -- (0.85.1) Nothing on the squad's list: a step of up to 3 tiles to cover against him
+                    -- (0.85: 100 of 141 flanked men found nothing on the list, cover a tile away).
+                    x, y, z = stepToCover(id, body, m, flank, true, ax, ay, leash)
+                    loose = true
+                end
+                if x and (x ~= m.cover.x or y ~= m.cover.y) then
+                    LF.SquadBrain.settled(sid, id)
+                    leftFor("flanked - the sergeant moved him")
+                    leavePosition(id, body, m)
+                    takeSpot(id, body, m, "cover", x, y, z, loose and "shelter" or "cover")
+                    m.cover.loose, m.cover.placed = loose, LF.SquadBrain.placedAt(sid)
+                    return
+                end
+            end
             local placed = LF.SquadBrain.placedAt(sid)
             -- (A spot he took on his own under orders - a better shot in his quarter, a post: his,
             -- until the next placement.)

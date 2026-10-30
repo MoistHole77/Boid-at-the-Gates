@@ -38,6 +38,8 @@ LF.SquadBrain.enabled = true
 
 local CFG = {
     lookTicks = 30,         -- the squad looks twice a second
+    flankRange = 30,        -- (0.85) a man's spot is checked against the nearest enemy the squad sees this close to him
+    flankTicks = 120,       -- ... at most this often a man
     sightRange = 30,
     maxEnemies = 8,         -- enemies the squad finds per look
     maxChecks = 16,         -- line-of-sight checks per look, for the whole squad
@@ -68,7 +70,7 @@ stats.why = noWhy()
 function LF.SquadBrain.resetStats()
     stats.why, stats.nearFound, stats.testSpots, stats.testNone = noWhy(), 0, 0, 0
     stats.kept, stats.tableQ, stats.liveQ, stats.tableV, stats.liveV, stats.testPlaces = 0, 0, 0, 0, 0, 0
-    stats.held = 0
+    stats.held, stats.flanked = 0, 0
 end
 LF.SquadBrain.stats = stats
 
@@ -211,6 +213,7 @@ local function squadLook(sid, s)
     -- range (a rifle's 20 tiles, a gun's 30): his reaction is timed from then, not from the squad's
     -- first sighting at 30 tiles and more.
     s.eng = s.eng or {}
+    s.flankAt, s.flanked = s.flankAt or {}, s.flanked or {}
     local rifle = (LF.Brain and LF.Brain.CFG and LF.Brain.CFG.fireRange) or 20
     local gun = (LF.MG and LF.MG.CFG and LF.MG.CFG.range) or 30
     for i = 1, n do
@@ -218,9 +221,24 @@ local function squadLook(sid, s)
         local r = man.rec.mgRole == "gunner" and gun or rifle
         local rsq, any = r * r, false
         local bx, by = man.body:getX(), man.body:getY()
+        local near, nearD = nil, CFG.flankRange * CFG.flankRange
         for j = 1, #seen do
             local v = seen[j]
-            if LF.distSq(bx, by, v.body:getX(), v.body:getY()) <= rsq then any = true; break end
+            local d2 = LF.distSq(bx, by, v.body:getX(), v.body:getY())
+            if d2 <= rsq then any = true end
+            if d2 < nearD then near, nearD = v.body, d2 end
+        end
+        -- (0.85) A spot flanked: the nearest enemy the squad sees within 30 tiles of him has no cover
+        -- against him from the spot the man holds - the sergeant moves him (LF_Brain asks again
+        -- against that enemy). Checked at most every 2 s a man; one cover-map read. (0.84: men held
+        -- shelter a tile from cover that faced the enemy nearest them - 11 left in the open.)
+        local c = near and LF.Brain and LF.Brain.coverOf and LF.Brain.coverOf(man.id)
+        if c and LF.tick - (s.flankAt[man.id] or -100000) >= CFG.flankTicks
+            and LF.SquadBrain.coverQ(c.x, c.y, c.z, near:getX(), near:getY()) == LF.Cover.NONE then
+            s.flankAt[man.id] = LF.tick
+            s.flanked[man.id] = near
+            stats.flanked = (stats.flanked or 0) + 1
+            if LF.Brain.wake then LF.Brain.wake(man.id, "flanked") end
         end
         if any then
             -- (0.79.1) An enemy has just come within his range: he re-decides at once (0.79 waited
@@ -675,6 +693,21 @@ function LF.SquadBrain.replace(sid)
     local s = S[sid]
     if s then s.cands = nil end
 end
+-- (0.85) The enemy a man's spot was found flanked by (and forget it), or nil.
+function LF.SquadBrain.takeFlanked(sid, id)
+    local s = S[sid]
+    local e = s and s.flanked and s.flanked[id]
+    if e then s.flanked[id] = nil end
+    if e and e:isDead() then return nil end
+    return e
+end
+
+-- (0.85.1) A man just moved for a flank: no flank check on him for 10 s (no bouncing between two enemies).
+function LF.SquadBrain.settled(sid, id)
+    local s = S[sid]
+    if s and s.flankAt then s.flankAt[id] = LF.tick + 480 end
+end
+
 -- (0.82) A man can't get to the spot he was given: the squad works his out again.
 function LF.SquadBrain.forgetAnswer(sid, id)
     local s = S[sid]
