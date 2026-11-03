@@ -309,6 +309,10 @@ end
 -- (A machine gun's crew then go to the gun - LF_MG.)
 -- (The platoon headquarters goes where the lieutenant's plan puts it - LF_Platoon.)
 function LF.Tactics.place(rec)
+    if rec.hqRole and LF.Company and rec.squad then
+        local u = LF.Units.get(rec.squad)
+        if u and u.companyHQ then return LF.Company.place(rec) end      -- (0.86: the company radio operator)
+    end
     if rec.hqRole and LF.Platoon then return LF.Platoon.place(rec) end
     if rec.mgRole and LF.MG then return LF.MG.place(rec, placeOf(rec)) end
     return placeOf(rec)

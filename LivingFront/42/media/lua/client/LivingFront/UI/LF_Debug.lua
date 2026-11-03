@@ -1003,6 +1003,74 @@ LF.onTick("Debug", function()
     end
 end)
 
+-- ---- the 0.86 company test ------------------------------------------------------------------------
+-- A German company headquarters and one platoon where you click; then, a step every 10 s:
+--   1  the radio operator speaks for the company (LF.Company.speaker)
+--   2  the captain is killed: the executive officer has command
+--   3  one of the platoon's squads is made broken: the first sergeant rallies it (it is within 40 tiles)
+--   4  the XO is killed too: the first sergeant has command
+-- Each step logs TEST 0.86 ... PASS/FAIL; a summary line at the end.
+local coTest = nil
+local function killRec(id)
+    local b = LF.Bodies.get(id)
+    if b and not b:isDead() then pcall(function() b:setHealth(0); b:Kill(nil) end); return end
+    local r = LF.Records.get(id)          -- (no body: the record dies, as off screen)
+    if r then r.alive = false; if LF.Units.onDeath then pcall(LF.Units.onDeath, r) end end
+end
+local function coStep(name, ok, detail)
+    coTest.results[#coTest.results + 1] = ok
+    LF.log("TEST 0.86 " .. name .. " " .. (ok and "PASS" or "FAIL") .. ": " .. detail)
+end
+local function companyTest(x, y, z)
+    local c = LF.Company.create("GER", x + 0.5, y + 0.5, z, 1, 0)
+    if LF.Company.addPlatoon then LF.Company.addPlatoon(c) end
+    coTest = { c = c, step = 0, at = LF.simTime + 10, results = {} }
+    LF.log("TEST 0.86 company: " .. c.name .. " and a platoon at " .. x .. "," .. y .. " - a step every 10 s")
+    LF.say("0.86 company test started - see the log (TEST 0.86)")
+end
+LF.on("OnTick", "Debug", function()
+    local T = coTest
+    if not T or LF.simTime < T.at then return end
+    T.at = LF.simTime + 10
+    T.step = T.step + 1
+    local c = T.c
+    local cmd, as = LF.Company.commander(c)
+    if T.step == 1 then
+        local sp = LF.Company.speaker(c, cmd)
+        coStep("radio operator", sp ~= nil and sp.hqRole == "rto", "the company's voice on the net is "
+            .. (sp and (LF.Units.title(sp) .. " (" .. tostring(sp.hqRole or "commander") .. ")") or "nobody"))
+        coStep("captain in command", as == "cpt", "commander " .. (cmd and LF.Units.title(cmd) or "none"))
+        if cmd then killRec(cmd.id) end
+    elseif T.step == 2 then
+        coStep("XO takes command", as == "xo", "after the captain fell, commander " .. (cmd and (LF.Units.title(cmd) .. " (" .. tostring(as) .. ")") or "none"))
+        -- A squad of the platoon, broken and out of the fight.
+        for _, p in ipairs(LF.Company.platoons(c)) do
+            for _, sid in ipairs(p.squads or {}) do
+                local sq = LF.Units.get(sid)
+                local st = sq and LF.Tactics.state(sq)
+                if st and not T.broken then
+                    st.broken, st.intent = true, "HOLD"
+                    T.broken = sq
+                end
+            end
+        end
+        LF.log("TEST 0.86 made " .. (T.broken and T.broken.name or "no squad (no tactics state yet)") .. " broken")
+    elseif T.step == 3 then
+        local st = T.broken and LF.Tactics.state(T.broken)
+        coStep("first sergeant rallies", st ~= nil and not st.broken, (T.broken and T.broken.name or "no squad")
+            .. (st and (st.broken and " is still broken" or " was rallied") or ""))
+        if cmd then killRec(cmd.id) end
+    elseif T.step == 4 then
+        coStep("first sergeant takes command", as == "firstsgt", "after the XO fell, commander "
+            .. (cmd and (LF.Units.title(cmd) .. " (" .. tostring(as) .. ")") or "none"))
+        local pass, n = 0, #T.results
+        for _, ok in ipairs(T.results) do if ok then pass = pass + 1 end end
+        LF.log(string.format("TEST 0.86 company %s: %d of %d steps passed", pass == n and "PASS" or "FAIL", pass, n))
+        LF.say(string.format("0.86 company test: %d of %d passed", pass, n))
+        coTest = nil
+    end
+end)
+
 -- ---- the command file (0.84) ----------------------------------------------------------------------
 -- So tests can be started from outside the game: every 2 s the mod reads Zomboid/Lua/LivingFront/
 -- command.txt - one line, "<id> <command> [args]" - and runs a command it hasn't run before:
@@ -1066,6 +1134,11 @@ local function runCommand(line)
         local p = getPlayer()
         if p then pcall(function() p:setGodMod(true) end); pcall(function() p:setInvincible(true) end) end
         ack(id .. " god mode on")
+    elseif cmd == "cotest" then
+        local x, y, z = tonumber(words[3]), tonumber(words[4]), tonumber(words[5] or "0")
+        if not (x and y) then ack(id .. " cotest needs x y z"); return end
+        companyTest(math.floor(x), math.floor(y), math.floor(z or 0))
+        ack(id .. " company test started")
     elseif cmd == "stop" then
         if queue then queue.left = 1 end
         ack(id .. " stopping after the current test")
@@ -1562,6 +1635,8 @@ local function onMenu(playerNum, context, worldObjects, test)
         if stress then
             tm:addOption("Test running - the verdict goes to the log when done (TEST line)")
         else
+            tm:addOption("0.86 company test: a company HQ and a platoon here; the captain falls, then the XO - who commands, the first sergeant rallying a broken squad, the radio operator's voice (about 40 s)", nil,
+                function() companyTest(math.floor(x), math.floor(y), math.floor(z or 0)) end)
             tm:addOption("0.85 cost test: the stress fight - under 3 ms at 72 bodies, averaged over 3 runs (on a building: it holds the building; in the open: a field fight, the Germans dug in where you clicked)", nil,
                 function() stressTest(x, y, z, false, { reaction = true, fieldOk = true }) end)
         end

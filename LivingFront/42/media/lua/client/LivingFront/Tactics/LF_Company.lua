@@ -11,7 +11,10 @@
 --   Sgt.     surgeon                   }                      white apron, no weapon
 --   (a sixth billet, to come)
 --   a 4-man security fire team: a corporal and three privates, armed as usual
--- What each billet does comes later; for now they are there, dressed and in place.
+-- (0.86) The XO takes command when the captain falls (the first sergeant if the XO is gone too); the
+-- first sergeant looks after the men - replacements, refits - and rallies broken squads (LF_XO); the
+-- radio operator stays at the commander's side and speaks for the company on the net. The sixth
+-- billet (an armorer) is still to come.
 -- A company is always the same four platoons (CFG.platoons), kept with the save: right-click its
 -- captain to spawn the next one under his command. Units spawned any other way stand outside
 -- every chain of command, as before.
@@ -45,6 +48,75 @@ local function nextNumber(faction)
         if u.kind == "company" and u.faction == faction then n = n + 1 end
     end
     return n + 1
+end
+
+-- ---- who commands (0.86) ----------------------------------------------------------------------------
+-- The captain while he is alive and fit to command; else the executive officer; else the first
+-- sergeant (no new captain is sent: the XO keeps the company; a new XO or first sergeant comes up
+-- with a supply run - LF_XO). A change is logged and said on
+-- the radio net ("I have command"). Up to 0.85 the company had no commander once the captain fell.
+local function fitToCommand(r)
+    return r and r.alive and not r.wounded and not r.aid and not r.captured
+end
+local function staffOf(c, role)
+    local hq = LF.Company.hq(c)
+    if not hq then return nil end
+    for _, rid in ipairs(LF.Units.members(hq.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.hqRole == role and fitToCommand(r) then return r end
+    end
+    return nil
+end
+LF.Company.staff = staffOf
+function LF.Company.commander(c)
+    local hq = LF.Company.hq(c)
+    if not hq then return nil end
+    local cap = hq.leader and LF.Records.get(hq.leader)
+    local who, as = nil, nil
+    if cap and cap.rank == "CPT" and fitToCommand(cap) then who, as = cap, "cpt"
+    else
+        -- (A captain may also be found among the members after a succession moved the lead.)
+        for _, rid in ipairs(LF.Units.members(hq.id)) do
+            local r = LF.Records.get(rid)
+            if r and r.rank == "CPT" and fitToCommand(r) then who, as = r, "cpt"; break end
+        end
+    end
+    if not who then who = staffOf(c, "xo"); as = who and "xo" end
+    if not who then who = staffOf(c, "firstsgt"); as = who and "firstsgt" end
+    local prev = c.acting
+    c.acting = who and who.id or nil
+    if prev ~= c.acting then
+        local words = { cpt = "the captain", xo = "the executive officer", firstsgt = "the first sergeant" }
+        LF.log("COMPANY " .. c.name .. ": " .. (who and (LF.Units.title(who) .. " (" .. words[as] .. ") has command")
+            or "nobody left to command"))
+        if who and prev and LF.Radio and LF.Radio.broadcast then
+            LF.Radio.broadcast(c.faction, LF.Units.title(LF.Company.speaker(c, who)), c.name,
+                "All stations, this is " .. LF.Units.title(who) .. ". I have command of the company. Over.", who)
+        end
+    end
+    return who, as
+end
+
+-- (0.86) Who speaks for the company on the radio: its radio operator, as a platoon's does (with the
+-- commander, or near him); with no radio operator, the commander himself.
+function LF.Company.speaker(c, cmd)
+    local rto = staffOf(c, "rto")
+    return rto or cmd
+end
+
+-- (0.86) The company radio operator's place: at the commander's side, as a platoon's radio operator
+-- stands by his lieutenant. Others of the headquarters: nil (their squad places them).
+function LF.Company.place(rec)
+    if rec.hqRole ~= "rto" then return nil end
+    local hq = rec.squad and LF.Units.get(rec.squad)
+    local c = hq and LF.Company.of(hq)
+    local cmd = c and LF.Units.get(c.id) and LF.Company.commander(c)
+    local cb = cmd and cmd.id ~= rec.id and LF.Bodies.get(cmd.id)
+    local body = LF.Bodies.get(rec.id)
+    if not (cb and body) or cb:isDead() then return nil end
+    local tx, ty = cb:getX() - 1.8, cb:getY() + 0.6
+    local far = LF.dist(body:getX(), body:getY(), tx, ty) > 6
+    return far and "move" or "hold", tx, ty, math.floor(cb:getZ()), LF.Tactics.point(cb:getX() + 10, cb:getY(), cb:getZ())
 end
 
 function LF.Company.of(unit)

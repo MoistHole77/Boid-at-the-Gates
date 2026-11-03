@@ -37,6 +37,9 @@ local CFG = {
     kitLow = 4,             -- a medic with this many dressings or fewer needs more
     waitHours = 1.5,        -- game hours a squad waits at headquarters for its wounded
     refitAgain = 600,       -- simulated seconds before a squad is sent back again (nothing urgent)
+    rallyRange = 40,        -- (0.86) tiles: a broken squad this close to the first sergeant is rallied
+    rallyAgain = 600,       -- ... not the same squad again within this (simulated seconds)
+    rallyMorale = 15,       -- ... its men's morale up by this
 }
 LF.XO.CFG = CFG
 
@@ -46,6 +49,19 @@ local function short(u) return u and (u.name:gsub("^.* / ", "")) or "?" end
 
 local function xoOf(c) return LF.AidPost.staff(c, "xo") end
 LF.XO.of = xoOf
+
+-- (0.86) The company's men are the first sergeant's: where each replacement goes, and which squads
+-- come back to headquarters for wounded, men or dressings. With no first sergeant the XO does it
+-- (up to 0.85 the XO did it all). Commanding the company himself, a man doesn't do it.
+local function adminOf(c)
+    local acting = c.acting
+    local s = LF.AidPost.staff(c, "firstsgt")
+    if s and s.id ~= acting then return s, "1SG" end
+    local x = xoOf(c)
+    if x and x.id ~= acting then return x, "XO" end
+    return nil
+end
+LF.XO.admin = adminOf
 
 local function state(c)
     c.xo = c.xo or {}
@@ -133,6 +149,10 @@ local function supplyRun(c)
         newMan(c, rx, ry, z, { rank = "LT", hqRole = "xo" })
         extra[#extra + 1] = "a new executive officer"
     end
+    if staffGone(c, "firstsgt") then                                -- (0.86)
+        newMan(c, rx, ry, z, { rank = "1SG", hqRole = "firstsgt", unarmed = true })
+        extra[#extra + 1] = "a new first sergeant"
+    end
     local P = LF.AidPost.post(c)
     local before = P.supplies
     P.supplies = math.min(LF.AidPost.CFG.maxSupplies, P.supplies + CFG.runSupplies)
@@ -171,12 +191,12 @@ local function allocate(c)
             end
         end
     end
-    local xo = xoOf(c)
+    local xo, who = adminOf(c)
     for _, r in ipairs(pool) do
         if r.aid.arrived and not r.aid.squad then
             -- The headquarters' own places first: he's here already.
             if hq and LF.AidPost.short(hq) > 0 and LF.AidPost.join(r, hq) then
-                LF.log("XO " .. c.name .. ": " .. title(r) .. " joins the headquarters' security team")
+                LF.log((who or "XO") .. " " .. c.name .. ": " .. title(r) .. " joins the headquarters' security team")
             elseif xo then
                 local best, bn = nil, 0
                 for _, sq in ipairs(squads) do
@@ -186,9 +206,38 @@ local function allocate(c)
                 if best then
                     r.aid.squad = best.id
                     promised[best.id] = (promised[best.id] or 0) + 1
-                    LF.log(string.format("XO %s: %s is for %s (%d short) - it must come in to pick him up", c.name, title(r),
+                    LF.log(string.format("%s %s: %s is for %s (%d short) - it must come in to pick him up", who, c.name, title(r),
                         best.name, LF.AidPost.short(best)))
                 end
+            end
+        end
+    end
+end
+
+-- ---- the first sergeant rallies broken squads (0.86) ---------------------------------------------
+-- A squad of the company that has broken (LF_Command: fallen back shot up or with its nerve gone) and
+-- is out of the fight within CFG.rallyRange of the first sergeant is rallied by him: he shouts it
+-- together, its men's morale comes up and it is a squad again - it can advance and flank again
+-- (up to 0.85 a squad that broke stayed broken for good). Not the same squad twice in
+-- CFG.rallyAgain simulated seconds, and not while he commands the company.
+local function rally(c)
+    local sgt = LF.AidPost.staff(c, "firstsgt")
+    if not sgt or sgt.id == c.acting then return end
+    local gb = LF.Bodies.get(sgt.id)
+    local gx, gy = sgt.x, sgt.y
+    if gb and not gb:isDead() then gx, gy = gb:getX(), gb:getY() end
+    for _, sq in ipairs(squadsOf(c)) do
+        local st = LF.Tactics.state(sq)
+        if st and st.broken and (st.intent == "HOLD" or st.intent == "REGROUP")
+            and LF.simTime - (sq.rallyAt or -100000) >= CFG.rallyAgain then
+            local sx, sy = LF.Platoon.posOf(sq)
+            if sx and LF.dist(sx, sy, gx, gy) <= CFG.rallyRange then
+                sq.rallyAt = LF.simTime
+                st.broken = nil
+                if LF.Morale and LF.Morale.unitEvent then LF.Morale.unitEvent(sq.id, CFG.rallyMorale, "rallied by the first sergeant") end
+                if LF.Tactics.shout then LF.Tactics.shout(sgt.id, short(sq) .. ", on me! Form up - you're not finished yet!") end
+                LF.log(string.format("1SG %s: %s rallies %s, %.0f tiles off - morale +%d, no longer broken", c.name, title(sgt),
+                    sq.name, LF.dist(sx, sy, gx, gy), CFG.rallyMorale))
             end
         end
     end
@@ -201,6 +250,7 @@ LF.on("OnTick", "XO", function()
             local S = state(c)
             if hours() >= S.nextRun then LF.guard("supply run", supplyRun, c) end
             LF.guard("allocate", allocate, c)
+            LF.guard("rally", rally, c)
         end
     end
 end)
@@ -257,9 +307,10 @@ local function sendRefit(c, cap, e, why)
     local o = { squad = sq.id, kind = "refit", x = hx, y = hy, z = hz,
                 words = short(sq) .. ", back to company headquarters - " .. why .. "!" }
     if home and home.kind == "platoon" then LF.Platoon.issue(home, o) else LF.Platoon.apply({ name = c.name }, o) end
-    LF.log(string.format("XO %s: %s comes back to headquarters (%s) - %d tiles%s", c.name, sq.name, why,
+    local admin, who = adminOf(c)
+    LF.log(string.format("%s %s: %s comes back to headquarters (%s) - %d tiles%s", who or "XO", c.name, sq.name, why,
         math.floor(LF.dist(sx, sy, hx, hy)), sq.garrison and ", leaving its objective for now" or ""))
-    radio(c, cap, short(home) .. ", send " .. short(sq) .. " back to me - " .. why .. ". Over.")
+    radio(c, LF.Company.speaker(c, admin or cap) or cap, short(home) .. ", send " .. short(sq) .. " back to headquarters - " .. why .. ". Over.")
     return true
 end
 
@@ -267,6 +318,7 @@ end
 -- fit); take(e) takes one off his free list; safe(obj) - may a garrison leave this objective now?
 function LF.XO.refits(c, cap, all, take, safe)
     if not LF.Company.hq(c) then return end
+    if not adminOf(c) then return end        -- (0.86: no first sergeant or XO free to see to it)
     local out = refitCount(c)
     for _, e in ipairs(all) do
         if out >= CFG.maxRefits then return end

@@ -60,11 +60,9 @@ local ENEMY = { GER = "SOV", SOV = "GER" }
 local function title(rec) return rec and LF.Units.title(rec) or "?" end
 local function short(u) return u and (u.name:gsub("^.* / ", "")) or "?" end
 
+-- (0.86) The captain, or whoever has command after him (LF_Company: the XO, then the first sergeant).
 local function captainOf(c)
-    local hq = LF.Company.hq(c)
-    local r = hq and hq.leader and LF.Records.get(hq.leader)
-    if r and r.alive and r.rank == "CPT" then return r end
-    return nil
+    return (LF.Company.commander(c))
 end
 
 local function recPos(id)
@@ -91,8 +89,10 @@ end
 
 local function isMG(sq) return sq.mg or (sq.name and sq.name:find("MG squad", 1, true) ~= nil) end
 
+-- (0.86: said by the company radio operator when he is there, as the platoons' are.)
 local function radio(c, cap, text)
-    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, title(cap), c.name, text, cap) end
+    local who = LF.Company.speaker(c, cap) or cap
+    if LF.Radio and LF.Radio.broadcast then LF.Radio.broadcast(c.faction, title(who), c.name, text, who) end
 end
 
 local function intelOf(c) c.intel = c.intel or {}; return c.intel end
