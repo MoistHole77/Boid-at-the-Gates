@@ -1043,18 +1043,27 @@ LF.on("OnTick", "Debug", function()
         if cmd then killRec(cmd.id) end
     elseif T.step == 2 then
         coStep("XO takes command", as == "xo", "after the captain fell, commander " .. (cmd and (LF.Units.title(cmd) .. " (" .. tostring(as) .. ")") or "none"))
-        -- A squad of the platoon, broken and out of the fight.
+        -- The platoon's squad nearest the first sergeant, broken and out of the fight.
+        local sgt = LF.Company.staff(c, "firstsgt")
+        local gb = sgt and LF.Bodies.get(sgt.id)
+        local best, bd = nil, math.huge
         for _, p in ipairs(LF.Company.platoons(c)) do
             for _, sid in ipairs(p.squads or {}) do
                 local sq = LF.Units.get(sid)
                 local st = sq and LF.Tactics.state(sq)
-                if st and not T.broken then
-                    st.broken, st.intent = true, "HOLD"
-                    T.broken = sq
+                local sx, sy = sq and LF.Platoon.posOf(sq)
+                if st and sx and gb then
+                    local d = LF.dist(sx, sy, gb:getX(), gb:getY())
+                    if d < bd then best, bd = sq, d end
                 end
             end
         end
-        LF.log("TEST 0.86 made " .. (T.broken and T.broken.name or "no squad (no tactics state yet)") .. " broken")
+        if best then
+            LF.Tactics.state(best).broken = true
+            T.broken = best
+        end
+        LF.log("TEST 0.86 made " .. (best and (best.name .. ", " .. math.floor(bd) .. " tiles from the first sergeant (he rallies within "
+            .. LF.XO.CFG.rallyRange .. ")") or "no squad (no tactics state yet)") .. " broken")
     elseif T.step == 3 then
         local st = T.broken and LF.Tactics.state(T.broken)
         coStep("first sergeant rallies", st ~= nil and not st.broken, (T.broken and T.broken.name or "no squad")

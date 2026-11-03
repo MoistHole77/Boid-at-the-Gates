@@ -67,7 +67,13 @@ local function pow16(d) return 16 ^ d end
 
 local function computeCover(x, y, z)
     local sq = getCell():getGridSquare(x, y, z)
-    if not sq then return nil end
+    -- (0.86.1: no square there (nothing built at that height, or the edge of the loaded ground): no
+    -- cover, kept like any other - up to 0.86 it was left unknown, so the background fill found
+    -- "work" there every round and never rested: 0.35 ms a frame for good.)
+    if not sq then
+        local ok, ch = pcall(function() return getCell():getChunkForGridSquare(x, y, z) end)
+        return (ok and ch) and 0 or nil
+    end
     local inside = sq:getBuilding() ~= nil
     local v = 0
     for d = 0, 7 do

@@ -136,6 +136,13 @@ function POINT:getY() return self.y end
 function POINT:getZ() return self.z end
 function POINT:isDead() return false end
 function LF.Tactics.point(x, y, z) return setmetatable({ x = x, y = y, z = z or 0 }, POINT) end
+-- (0.86.1) A point only to face, not where any enemy is: nobody fires at it (LF_Brain's area fire
+-- skips it). 0.86 gave the company radio operator one, and he shot into the ground in front of him.
+function LF.Tactics.facing(x, y, z)
+    local p = LF.Tactics.point(x, y, z)
+    p.face = true
+    return p
+end
 
 local ELEMENT_NAME = { A = "First pair", B = "Second pair" }   -- (a team's two pairs)
 local OTHER = { A = "B", B = "A" }

@@ -228,7 +228,9 @@ local function rally(c)
     if gb and not gb:isDead() then gx, gy = gb:getX(), gb:getY() end
     for _, sq in ipairs(squadsOf(c)) do
         local st = LF.Tactics.state(sq)
-        if st and st.broken and (st.intent == "HOLD" or st.intent == "REGROUP")
+        -- (0.86.1: broken and not falling back now - with no enemy about the squad has no intent at
+        -- all, and 0.86 waited for HOLD or REGROUP: the test's squad was never rallied.)
+        if st and st.broken and st.intent ~= "FALLBACK"
             and LF.simTime - (sq.rallyAt or -100000) >= CFG.rallyAgain then
             local sx, sy = LF.Platoon.posOf(sq)
             if sx and LF.dist(sx, sy, gx, gy) <= CFG.rallyRange then

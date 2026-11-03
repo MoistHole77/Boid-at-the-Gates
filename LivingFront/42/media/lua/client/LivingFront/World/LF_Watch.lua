@@ -25,7 +25,9 @@ end
 local function watch()
     local p = getPlayer()
     if not p or p:isDead() then return end
-    local inList = getCell():getObjectList():contains(p)
+    local cell = getCell()
+    if not cell then return end          -- (0.86.1: loading - 24 errors in the log at every start)
+    local inList = cell:getObjectList():contains(p)
     local a, ta = p:getAlpha(0), p:getTargetAlpha(0)
     local faded = a < 0.5 or ta < 0.5
     -- Only build a description when something we watch has changed (or needs fixing).

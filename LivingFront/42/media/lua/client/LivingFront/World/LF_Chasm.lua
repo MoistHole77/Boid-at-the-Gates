@@ -168,6 +168,7 @@ local function pollAnswers()
 end
 
 -- Where you are and who is speaking, for the bridge's voices.
+local lastState = nil
 local function writeState()
     local p = getPlayer()
     if not p then return end
@@ -179,17 +180,22 @@ local function writeState()
             local r = LF.Records.get(id)
             local x, y = r and r.x, r and r.y
             if b and not b:isDead() then x, y = b:getX(), b:getY() end
-            if x then spk[tostring(id)] = { x = x, y = y } end
+            if x then spk[tostring(id)] = { x = math.floor(x * 2) / 2, y = math.floor(y * 2) / 2 } end
         end
     end
     local paused = false
     pcall(function() paused = isGamePaused() or getGameSpeed() == 0 end)
     local state = {
-        listener = { x = p:getX(), y = p:getY(), z = p:getZ() },
+        listener = { x = math.floor(p:getX() * 2) / 2, y = math.floor(p:getY() * 2) / 2, z = p:getZ() },
         paused = paused,
         speakers = spk,
     }
-    writeFile(DIR .. "state.json", encode(state))
+    -- (0.86.1) Written only when it has changed (you moved, a speaker moved, a voice started or
+    -- ended): a file write every half second cost 0.2-0.4 ms a frame on average.
+    local text = encode(state)
+    if text == lastState then return end
+    lastState = text
+    writeFile(DIR .. "state.json", text)
 end
 
 LF.on("OnTick", "Chasm", function()

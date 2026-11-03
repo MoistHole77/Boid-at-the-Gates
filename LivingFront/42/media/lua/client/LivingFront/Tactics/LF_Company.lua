@@ -90,8 +90,10 @@ function LF.Company.commander(c)
         LF.log("COMPANY " .. c.name .. ": " .. (who and (LF.Units.title(who) .. " (" .. words[as] .. ") has command")
             or "nobody left to command"))
         if who and prev and LF.Radio and LF.Radio.broadcast then
+            -- (Said as written - no speaker passed, so the voice bridge doesn't re-word it: in 0.86 it
+            -- turned "I have command" into "command is yours".)
             LF.Radio.broadcast(c.faction, LF.Units.title(LF.Company.speaker(c, who)), c.name,
-                "All stations, this is " .. LF.Units.title(who) .. ". I have command of the company. Over.", who)
+                "All stations, this is " .. LF.Units.title(who) .. ". I have command of the company. Over.", nil)
         end
     end
     return who, as
@@ -116,7 +118,13 @@ function LF.Company.place(rec)
     if not (cb and body) or cb:isDead() then return nil end
     local tx, ty = cb:getX() - 1.8, cb:getY() + 0.6
     local far = LF.dist(body:getX(), body:getY(), tx, ty) > 6
-    return far and "move" or "hold", tx, ty, math.floor(cb:getZ()), LF.Tactics.point(cb:getX() + 10, cb:getY(), cb:getZ())
+    -- (Facing where the enemy is known to be, if anywhere near; else only facing the way the
+    -- headquarters faces - a point nobody fires at.)
+    local z = math.floor(cb:getZ())
+    local k = LF.Squad.bestContact(hq.id, cb:getX(), cb:getY(), 600, 40)
+    local point = k and LF.Tactics.point(k.x, k.y, z)
+        or LF.Tactics.facing(cb:getX() + (hq.facingX or 1) * 10, cb:getY() + (hq.facingY or 0) * 10, z)
+    return far and "move" or "hold", tx, ty, z, point
 end
 
 function LF.Company.of(unit)

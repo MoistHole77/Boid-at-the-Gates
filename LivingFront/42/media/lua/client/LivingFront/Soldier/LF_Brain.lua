@@ -1572,8 +1572,9 @@ local function act(id, body, rec, m)
     if (st == "engage" or st == "alert") and LF.Suppress.isSuppressed(body) and not gunUp then hunkerDown(body) end
     -- Holding with no cover at all: crouch rather than stand in the open.
     if (st == "engage" or st == "alert") and not m.cover and m.order and not isMoving(body) then hunkerDown(body) end
-    if st == "alert" and m.point then
+    if st == "alert" and m.point and not m.point.face then
         -- Covering: area fire on where the enemy was last seen (not from a blind shelter).
+        -- (0.86.1: not at a point he only faces.)
         if m.cover then
             if not onSpot(body, m.cover) then return end
             if not standing then hunkerDown(body) end

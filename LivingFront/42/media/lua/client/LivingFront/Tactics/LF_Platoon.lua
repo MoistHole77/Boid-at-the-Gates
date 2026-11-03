@@ -1498,7 +1498,7 @@ function LF.Platoon.place(rec)
     local tx, ty = cb:getX(), cb:getY()
     if point then tx, ty = behind(cb, point:getX(), point:getY(), off) else tx = tx - off end
     local far = LF.dist(body:getX(), body:getY(), tx, ty) > 6
-    return far and "move" or "hold", tx, ty, math.floor(cb:getZ()), point or LF.Tactics.point(tx + 10, ty, z)
+    return far and "move" or "hold", tx, ty, math.floor(cb:getZ()), point or LF.Tactics.facing(tx + 10, ty, z)
 end
 
 -- ---- report -----------------------------------------------------------------------------------
