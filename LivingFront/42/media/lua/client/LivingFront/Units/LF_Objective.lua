@@ -182,6 +182,7 @@ local ALPHABET = {
 
 -- Its name now (also kept in obj.name for the logs and the shouted orders).
 local function nameOf(obj)
+    if obj.title then return obj.title end          -- (a district's objectives have names - LF_District)
     local n = obj.letter or obj.id
     local idx = (n - 1) % 26 + 1
     local word = obj.holder and ALPHABET[obj.holder] and ALPHABET[obj.holder][idx] or string.char(64 + idx)
@@ -197,6 +198,7 @@ local function rename(obj)
         obj.name = new
     end
 end
+LF.Objective.rename = rename
 
 -- The map's definition of the building at (x, y) anywhere in the world, loaded or not, or nil.
 local function metaDefAt(x, y)
@@ -265,6 +267,26 @@ function LF.Objective.create(x, y, z, name)
     data.objectives[id] = obj
     LF.log("OBJECTIVE created " .. obj.name .. " (#" .. id .. ") at " .. math.floor(obj.x) .. "," .. math.floor(obj.y)
         .. " - " .. (obj.kind or "a building") .. ", " .. (obj.rects and #obj.rects or 0) .. " room areas on the map")
+    return obj
+end
+
+-- (0.87) A site: a box of ground (x1, y1)-(x2, y2) rather than a building - a square, a works yard,
+-- a plot - held by whoever has the only fit men in it. kind: what to call it ("square", "site").
+function LF.Objective.createArea(x1, y1, x2, y2, z, kind)
+    z = math.floor(z or 0)
+    x1, y1, x2, y2 = math.floor(x1), math.floor(y1), math.floor(x2), math.floor(y2)
+    if x2 <= x1 or y2 <= y1 then return nil, "an empty box" end
+    local data = store()
+    local id = data.nextObjectiveId
+    data.nextObjectiveId = id + 1
+    data.nextLetter = (data.nextLetter or 0) + 1
+    local obj = { id = id, letter = data.nextLetter, x = (x1 + x2) / 2, y = (y1 + y2) / 2, z = z, holder = nil,
+                  rects = { { x1, y1, x2 - x1, y2 - y1 } }, bounds = { x1, y1, x2, y2 }, kind = kind or "site", site = true }
+    obj.reach = math.ceil(math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)) / 2) + 5
+    obj.name = nameOf(obj)
+    data.objectives[id] = obj
+    LF.log("OBJECTIVE created " .. obj.name .. " (#" .. id .. ") - a " .. obj.kind .. " " .. (x2 - x1) .. "x" .. (y2 - y1)
+        .. " at " .. x1 .. "," .. y1)
     return obj
 end
 
@@ -445,7 +467,7 @@ local function whoIsThere(obj, fitOnly)
     for k in pairs(counts) do counts[k] = nil end
     for _, r in pairs(LF.Records.all()) do
         if r.alive and r.faction ~= "CIV" and (not fitOnly or not (r.wounded or r.offWound))
-            and LF.dist(r.x, r.y, obj.x, obj.y) < 30 then
+            and LF.dist(r.x, r.y, obj.x, obj.y) < (obj.reach or 30) then
             local b = LF.Bodies.get(r.id)
             local x, y, z = r.x, r.y, r.z
             if b then x, y, z = b:getX(), b:getY(), b:getZ() end

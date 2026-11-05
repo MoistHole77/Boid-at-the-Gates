@@ -29,6 +29,7 @@ require "LivingFront/World/LF_Building"
 require "LivingFront/Units/LF_Stance"
 require "LivingFront/Units/LF_March"
 require "LivingFront/Units/LF_Objective"
+require "LivingFront/World/LF_District"
 require "LivingFront/Soldier/LF_Weapons"
 require "LivingFront/UI/LF_Inspect"
 require "LivingFront/Units/LF_Join"
@@ -1148,6 +1149,9 @@ local function runCommand(line)
         if not (x and y) then ack(id .. " cotest needs x y z"); return end
         companyTest(math.floor(x), math.floor(y), math.floor(z or 0))
         ack(id .. " company test started")
+    elseif cmd == "dtest" then
+        local ok = LF.District.startTest()
+        ack(id .. (ok and " district test started" or " district test: no district on this map"))
     elseif cmd == "stop" then
         if queue then queue.left = 1 end
         ack(id .. " stopping after the current test")
@@ -1649,12 +1653,27 @@ local function onMenu(playerNum, context, worldObjects, test)
             tm:addOption("0.85 cost test: the stress fight - under 3 ms at 72 bodies, averaged over 3 runs (on a building: it holds the building; in the open: a field fight, the Germans dug in where you clicked)", nil,
                 function() stressTest(x, y, z, false, { reaction = true, fieldOk = true }) end)
         end
+        if #LF.District.all() > 0 then
+            local d = LF.District.all()[1]
+            if LF.District.test() then
+                tm:addOption("District test running (" .. LF.District.clock(LF.simTime - LF.District.test().start) .. ") - the clock and who holds what are on the world map")
+            else
+                tm:addOption("0.87 district test: " .. d.name .. " - a Soviet company holding it, a German company attacking from the west, captains in command; every objective taken is timed (TEST district in the log). Best at 40x with the world map open", nil,
+                    function() LF.District.startTest(d) end)
+            end
+        end
         tm:addOption("(First: Tools > Delete ALL NPCs)")
     end)
 
     -- Tools.
     LF.guard("menu: tools", function()
     local tools = sub(main, "Tools")
+    for _, d in ipairs(LF.District.all()) do
+        tools:addOption("Make " .. d.name .. "'s objectives again (as listed for the district)", nil, function()
+            local n = LF.District.reset(d)
+            LF.say(d.name .. ": " .. n .. " objectives made")
+        end)
+    end
     do
         local safe = LF.Debug.playerSafe()
         tools:addOption("You: god mode, ignored by soldiers: " .. (safe and "ON (click to turn off)" or "OFF (click to turn on)"), nil, function()

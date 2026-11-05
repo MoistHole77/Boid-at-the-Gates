@@ -20,6 +20,7 @@ require "LivingFront/Units/LF_Objective"
 require "LivingFront/Tactics/LF_Platoon"
 require "LivingFront/Units/LF_March"
 require "LivingFront/World/LF_Front"
+require "LivingFront/World/LF_District"
 
 LF.Map = LF.Map or {}
 
@@ -385,6 +386,7 @@ end
 
 local function drawAll(ui, api, mini)
     LF.guard("map front", drawFront, ui, api, mini)
+    LF.guard("map districts", LF.District.drawMap, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end
     if CFG.trackers and not mini then LF.guard("map aid posts", drawAidPosts, ui, api) end
     if CFG.platoonPicture and not mini then LF.guard("map pictures", drawPictures, ui, api) end
