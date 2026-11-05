@@ -1,7 +1,8 @@
 -- Living Front: districts - the city fought over a district at a time (Stalingrad map).
 --
--- A DISTRICT is a stretch of the city with its own named objectives, each worth 1 or 2 (a
--- landmark, a station, a factory: 2). The district is held by the side holding more than half
+-- A DISTRICT is a stretch of the city cut into SECTORS of about the same size - rectangles where
+-- they can be - each with one named objective somewhere in it, worth 1 or 2 (the famous places: 2).
+-- A district objective's sector is its rectangle, not the ground nearest it (LF_Front). The district is held by the side holding more than half
 -- its worth, contested while neither does. Its objectives are ordinary objectives (LF_Objective)
 -- - the captains fight for them, sectors and the front line follow from them - only named
 -- ("Pavlov's House") rather than lettered.
@@ -38,17 +39,23 @@ local DATA = {
         map = "Stalingrad",
         districts = {
             {
-                id = "downtown_north", name = "Downtown North",
-                bounds = { 75, 0, 972, 1456 },
+                -- 12 sectors of about the same ground (each within 7% of the mean), rectangles on
+                -- the 10-tile grid the front is drawn on; one objective somewhere in each.
+                id = "downtown_north", name = "Downtown North", version = 2,
+                bounds = { 80, 0, 970, 1450 },
                 objectives = {
-                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 209, 1172 } },
-                    { key = "pavlov", title = "Pavlov's House", weight = 1, at = { 593, 370 } },
-                    { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 880, 346 } },
-                    { key = "square", title = "9 January Square", weight = 2, area = { 457, 324, 505, 372 }, kind = "square" },
-                    { key = "zabolotny", title = "Zabolotny's House", weight = 1, at = { 616, 420 } },
-                    { key = "lhouse", title = "L-shaped House", weight = 1, area = { 829, 25, 853, 49 }, kind = "site" },
-                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, area = { 821, 168, 845, 192 }, kind = "site" },
-                    { key = "nails", title = "Nail Factory", weight = 2, area = { 155, 1274, 203, 1322 }, kind = "works" },
+                    { key = "raildepot", title = "Rail Depot", weight = 1, at = { 264, 78 }, sector = { 80, 0, 590, 230 } },
+                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, area = { 821, 168, 845, 192 }, kind = "site", sector = { 590, 0, 970, 230 } },
+                    { key = "square", title = "9 January Square", weight = 2, area = { 447, 324, 495, 372 }, kind = "square", sector = { 80, 230, 500, 590 } },
+                    { key = "pavlov", title = "Pavlov's House", weight = 2, area = { 560, 358, 627, 432 }, kind = "houses", sector = { 500, 230, 730, 590 } },
+                    { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 880, 346 }, sector = { 730, 230, 970, 590 } },
+                    { key = "engworks", title = "Engineering Works", weight = 1, at = { 371, 707 }, sector = { 80, 590, 470, 980 } },
+                    { key = "workshops", title = "Central Workshops", weight = 1, at = { 523, 840 }, sector = { 470, 590, 700, 980 } },
+                    { key = "warehouses", title = "Riverside Warehouses", weight = 1, at = { 887, 848 }, sector = { 700, 590, 970, 980 } },
+                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 209, 1172 }, sector = { 80, 980, 580, 1230 } },
+                    { key = "depot", title = "Depot", weight = 1, at = { 825, 1172 }, sector = { 580, 980, 970, 1230 } },
+                    { key = "nails", title = "Nail Factory", weight = 1, area = { 155, 1274, 203, 1322 }, kind = "works", sector = { 80, 1230, 530, 1450 } },
+                    { key = "machworks", title = "Machine Works", weight = 1, at = { 734, 1369 }, sector = { 530, 1230, 970, 1450 } },
                 },
             },
         },
@@ -142,19 +149,34 @@ function LF.District.seed(d)
             if makeOne(d, e) then n = n + 1 end
         end
     end
-    store().seeded[d.id] = true
+    store().seeded[d.id] = d.version or 1
     LF.log("DISTRICT " .. d.name .. ": " .. n .. " objective(s) made, " .. #d.objectives .. " in all")
     return n
 end
 
--- Debug: the district's objectives made afresh (any made from its list are removed first).
+-- The district's objectives made afresh (every objective of the district is removed first - those
+-- of an older list too). Debug tools, and a save made with an older list of the district.
 function LF.District.reset(d)
-    for _, e in ipairs(d.objectives) do
-        local o = objectiveOf(d, e)
-        if o then LF.Objective.remove(o.id) end
+    local gone = {}
+    for id, o in pairs(LF.Objective.all()) do
+        if o.district == d.id then gone[#gone + 1] = id end
     end
+    for _, id in ipairs(gone) do LF.Objective.remove(id) end
     store().holder[d.id] = nil
     return LF.District.seed(d)
+end
+
+-- The sectors of the district objectives there are: { { key = objective id as a string, x1, y1,
+-- x2, y2 } } (LF_Front gives them their ground first; other objectives get theirs round them).
+function LF.District.sectors()
+    local out = {}
+    for _, d in ipairs(LF.District.all()) do
+        for _, e in ipairs(d.objectives) do
+            local o = e.sector and objectiveOf(d, e)
+            if o then out[#out + 1] = { key = tostring(o.id), e.sector[1], e.sector[2], e.sector[3], e.sector[4] } end
+        end
+    end
+    return out
 end
 
 -- ---- who holds it -------------------------------------------------------------------------------
@@ -289,7 +311,11 @@ LF.on("OnTick", "District", function()
         -- (Made once per save - and again if every objective was cleared away, as Delete ALL NPCs does.)
         local any = false
         for _, e in ipairs(d.objectives) do if objectiveOf(d, e) then any = true; break end end
-        if not s.seeded[d.id] or not any then LF.guard("district seed", LF.District.seed, d) end
+        local v = s.seeded[d.id]
+        if v and v ~= true and v < (d.version or 1) or v == true and (d.version or 1) > 1 then
+            LF.log("DISTRICT " .. d.name .. ": the save has an older list of its objectives - made afresh")
+            LF.guard("district reset", LF.District.reset, d)
+        elseif not v or not any then LF.guard("district seed", LF.District.seed, d) end
         local t = LF.District.tally(d)
         if t.holder ~= s.holder[d.id] then
             LF.log("DISTRICT " .. d.name .. " is now " .. LF.District.holderWords(t.holder)

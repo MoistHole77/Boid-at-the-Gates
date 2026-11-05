@@ -87,8 +87,18 @@ local function rebuild()
         local x, y = centreOf(obj)
         objs[#objs + 1] = { key = tostring(id), x = x, y = y }
     end
-    -- Each cell within reach of an objective: the nearest one's.
     local cells = {}
+    -- (0.87.1) A district objective's sector is the rectangle drawn for it (LF_District): its cells first.
+    for _, sct in ipairs(LF.District and LF.District.sectors() or {}) do
+        for cy = math.floor(sct[2] / C), math.ceil(sct[4] / C) - 1 do
+            local row = cells[cy]
+            if not row then row = {}; cells[cy] = row end
+            for cx = math.floor(sct[1] / C), math.ceil(sct[3] / C) - 1 do
+                if row[cx] == nil then row[cx] = sct.key end
+            end
+        end
+    end
+    -- Each cell within reach of an objective: the nearest one's.
     local reachSq = R * R
     for _, o in ipairs(objs) do
         local cx1, cy1 = math.floor((o.x - R) / C), math.floor((o.y - R) / C)
