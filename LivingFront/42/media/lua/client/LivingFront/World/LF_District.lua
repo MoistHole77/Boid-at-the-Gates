@@ -39,23 +39,24 @@ local DATA = {
         map = "Stalingrad",
         districts = {
             {
-                -- 12 sectors of about the same ground (each within 7% of the mean), rectangles on
-                -- the 10-tile grid the front is drawn on; one objective somewhere in each.
+                -- 12 sectors of about the same ground (each within 12% of the mean), their borders
+                -- along the streets where there are streets; one objective somewhere in each. Each
+                -- sector is an outline of corners (x, y) in order.
                 id = "downtown_north", name = "Downtown North", version = 2,
                 bounds = { 80, 0, 970, 1450 },
                 objectives = {
-                    { key = "raildepot", title = "Rail Depot", weight = 1, at = { 264, 78 }, sector = { 80, 0, 590, 230 } },
-                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, area = { 821, 168, 845, 192 }, kind = "site", sector = { 590, 0, 970, 230 } },
-                    { key = "square", title = "9 January Square", weight = 2, area = { 447, 324, 495, 372 }, kind = "square", sector = { 80, 230, 500, 590 } },
-                    { key = "pavlov", title = "Pavlov's House", weight = 2, area = { 560, 358, 627, 432 }, kind = "houses", sector = { 500, 230, 730, 590 } },
-                    { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 880, 346 }, sector = { 730, 230, 970, 590 } },
-                    { key = "engworks", title = "Engineering Works", weight = 1, at = { 371, 707 }, sector = { 80, 590, 470, 980 } },
-                    { key = "workshops", title = "Central Workshops", weight = 1, at = { 523, 840 }, sector = { 470, 590, 700, 980 } },
-                    { key = "warehouses", title = "Riverside Warehouses", weight = 1, at = { 887, 848 }, sector = { 700, 590, 970, 980 } },
-                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 209, 1172 }, sector = { 80, 980, 580, 1230 } },
-                    { key = "depot", title = "Depot", weight = 1, at = { 825, 1172 }, sector = { 580, 980, 970, 1230 } },
-                    { key = "nails", title = "Nail Factory", weight = 1, area = { 155, 1274, 203, 1322 }, kind = "works", sector = { 80, 1230, 530, 1450 } },
-                    { key = "machworks", title = "Machine Works", weight = 1, at = { 734, 1369 }, sector = { 530, 1230, 970, 1450 } },
+                    { key = "raildepot", title = "Rail Depot", weight = 1, at = { 264, 78 }, sector = { { 80, 0 }, { 427, 0 }, { 427, 120 }, { 522, 120 }, { 522, 282 }, { 427, 282 }, { 427, 350 }, { 80, 350 } } },
+                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, area = { 821, 168, 845, 192 }, kind = "site", sector = { { 427, 0 }, { 970, 0 }, { 970, 210 }, { 777, 210 }, { 777, 120 }, { 427, 120 } } },
+                    { key = "square", title = "9 January Square", weight = 2, area = { 447, 324, 495, 372 }, kind = "square", sector = { { 80, 350 }, { 427, 350 }, { 427, 282 }, { 522, 282 }, { 522, 307 }, { 555, 307 }, { 555, 393 }, { 548, 393 }, { 548, 437 }, { 562, 437 }, { 562, 591 }, { 465, 591 }, { 465, 649 }, { 80, 649 } } },
+                    { key = "pavlov", title = "Pavlov's House", weight = 2, area = { 560, 358, 627, 432 }, kind = "houses", sector = { { 522, 120 }, { 777, 120 }, { 777, 210 }, { 730, 210 }, { 730, 567 }, { 562, 567 }, { 562, 437 }, { 548, 437 }, { 548, 393 }, { 555, 393 }, { 555, 307 }, { 522, 307 } } },
+                    { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 880, 346 }, sector = { { 730, 210 }, { 970, 210 }, { 970, 591 }, { 730, 591 } } },
+                    { key = "engworks", title = "Engineering Works", weight = 1, at = { 371, 707 }, sector = { { 80, 649 }, { 465, 649 }, { 465, 1036 }, { 80, 1036 } } },
+                    { key = "workshops", title = "Central Workshops", weight = 1, at = { 523, 840 }, sector = { { 465, 591 }, { 562, 591 }, { 562, 567 }, { 730, 567 }, { 730, 591 }, { 640, 591 }, { 640, 837 }, { 694, 837 }, { 694, 1082 }, { 576, 1082 }, { 576, 1036 }, { 465, 1036 } } },
+                    { key = "warehouses", title = "Riverside Warehouses", weight = 1, at = { 887, 848 }, sector = { { 640, 591 }, { 970, 591 }, { 970, 893 }, { 694, 893 }, { 694, 837 }, { 640, 837 } } },
+                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 209, 1172 }, sector = { { 80, 1036 }, { 576, 1036 }, { 576, 1272 }, { 80, 1272 } } },
+                    { key = "depot", title = "Depot", weight = 1, at = { 825, 1172 }, sector = { { 694, 893 }, { 970, 893 }, { 970, 1368 }, { 855, 1368 }, { 855, 1186 }, { 736, 1186 }, { 736, 1082 }, { 694, 1082 } } },
+                    { key = "nails", title = "Nail Factory", weight = 1, area = { 155, 1274, 203, 1322 }, kind = "works", sector = { { 80, 1272 }, { 620, 1272 }, { 620, 1450 }, { 80, 1450 } } },
+                    { key = "machworks", title = "Machine Works", weight = 1, at = { 734, 1369 }, sector = { { 576, 1082 }, { 736, 1082 }, { 736, 1186 }, { 855, 1186 }, { 855, 1368 }, { 970, 1368 }, { 970, 1450 }, { 620, 1450 }, { 620, 1272 }, { 576, 1272 } } },
                 },
             },
         },
@@ -166,14 +167,14 @@ function LF.District.reset(d)
     return LF.District.seed(d)
 end
 
--- The sectors of the district objectives there are: { { key = objective id as a string, x1, y1,
--- x2, y2 } } (LF_Front gives them their ground first; other objectives get theirs round them).
+-- The sectors of the district objectives there are: { { key = objective id as a string, poly =
+-- { { x, y }, ... } } } (LF_Front gives them their ground first; other objectives get theirs round them).
 function LF.District.sectors()
     local out = {}
     for _, d in ipairs(LF.District.all()) do
         for _, e in ipairs(d.objectives) do
             local o = e.sector and objectiveOf(d, e)
-            if o then out[#out + 1] = { key = tostring(o.id), e.sector[1], e.sector[2], e.sector[3], e.sector[4] } end
+            if o then out[#out + 1] = { key = tostring(o.id), poly = e.sector } end
         end
     end
     return out

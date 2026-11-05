@@ -30,7 +30,8 @@ LF.Front = LF.Front or {}
 
 local CFG = {
     reach = 120,            -- tiles: an objective's sector reaches this far at most
-    cell = 10,              -- tiles: the grid the sector shapes are worked out on
+    cell = 4,               -- tiles: the grid the sector shapes are worked out on (0.87.2: was 10 - district
+                            -- borders follow the streets)
     passTicks = 300,        -- how often sectors and sightings are brought up to date
     sight = 40,             -- tiles: a unit sees an enemy unit (or an objective) this close
     fresh = 600,            -- simulated seconds a sighting counts as fresh ...
@@ -88,13 +89,29 @@ local function rebuild()
         objs[#objs + 1] = { key = tostring(id), x = x, y = y }
     end
     local cells = {}
-    -- (0.87.1) A district objective's sector is the rectangle drawn for it (LF_District): its cells first.
+    -- (0.87.2) A district objective's sector is the outline drawn for it (LF_District): a polygon of
+    -- straight sides along the streets. Its cells first, row by row: a cell is in it if its middle is.
     for _, sct in ipairs(LF.District and LF.District.sectors() or {}) do
-        for cy = math.floor(sct[2] / C), math.ceil(sct[4] / C) - 1 do
+        local poly = sct.poly
+        local y1, y2 = math.huge, -math.huge
+        for _, v in ipairs(poly) do y1, y2 = math.min(y1, v[2]), math.max(y2, v[2]) end
+        for cy = math.floor(y1 / C), math.ceil(y2 / C) - 1 do
+            local py = (cy + 0.5) * C
+            local xs = {}
+            local n = #poly
+            for i = 1, n do
+                local a, b = poly[i], poly[i % n + 1]
+                if (a[2] > py) ~= (b[2] > py) then
+                    xs[#xs + 1] = a[1] + (py - a[2]) * (b[1] - a[1]) / (b[2] - a[2])
+                end
+            end
+            table.sort(xs)
             local row = cells[cy]
             if not row then row = {}; cells[cy] = row end
-            for cx = math.floor(sct[1] / C), math.ceil(sct[3] / C) - 1 do
-                if row[cx] == nil then row[cx] = sct.key end
+            for i = 1, #xs - 1, 2 do
+                for cx = math.ceil(xs[i] / C - 0.5), math.floor(xs[i + 1] / C - 0.5) do
+                    if row[cx] == nil then row[cx] = sct.key end
+                end
             end
         end
     end
@@ -139,6 +156,19 @@ local function rebuild()
         end
         flush()
     end
+    -- (0.87.2) Strips of the same width one above the other joined into one box: fewer to fill.
+    table.sort(runs, function(p, q)
+        if p.x1 ~= q.x1 then return p.x1 < q.x1 end
+        if p.x2 ~= q.x2 then return p.x2 < q.x2 end
+        return p.y1 < q.y1
+    end)
+    local boxes = {}
+    for _, r in ipairs(runs) do
+        local l = boxes[#boxes]
+        if l and l.key == r.key and l.x1 == r.x1 and l.x2 == r.x2 and l.y2 == r.y1 then l.y2 = r.y2
+        else boxes[#boxes + 1] = r end
+    end
+    runs = boxes
     -- Borders between two sectors (a, b), joined into straight runs.
     local edges = {}
     local function keyAtCell(cx, cy) local row = cells[cy]; return row and row[cx] or false end
