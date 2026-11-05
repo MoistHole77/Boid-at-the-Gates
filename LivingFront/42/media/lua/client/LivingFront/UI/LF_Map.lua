@@ -317,8 +317,9 @@ local function drawFront(ui, api, mini)
     end
     -- Which view this is.
     local title = VIEW_WORDS[view] or ""
-    ui:drawText(title, 21, 61, 0, 0, 0, 0.8, UIFont.Medium)
-    ui:drawText(title, 20, 60, 1, 1, 1, 1, UIFont.Medium)
+    local tx = ui.width / 2 - getTextManager():MeasureStringX(UIFont.Medium, title) / 2
+    ui:drawText(title, tx + 1, 51, 0, 0, 0, 0.8, UIFont.Medium)
+    ui:drawText(title, tx, 50, 1, 1, 1, 1, UIFont.Medium)
 end
 
 -- What each lieutenant believes of his squads: a hollow square where he thinks each is, with how
@@ -556,7 +557,7 @@ function ISWorldMap.ShowWorldMap(...)
     if CFG.revealAll then applyReveal(ISWorldMap_instance) end
 end
 
--- Speed buttons along the top of the world map.
+-- Speed buttons along the top middle of the world map (the game's map key is at the top left).
 local function speedButtons(map)
     if map.lfSpeedButtons then return map.lfSpeedButtons end
     local list = {}
@@ -567,6 +568,7 @@ local function speedButtons(map)
         b:initialise()
         b:instantiate()
         b.lfSpeed = n
+        b.lfSlot = #list + 1
         map:addChild(b)
         list[#list + 1] = b
         x = x + 58
@@ -580,6 +582,8 @@ local function updateSpeedButtons(map)
     for _, b in ipairs(speedButtons(map)) do
         local on = b.lfSpeed == cur
         b.backgroundColor = on and { r = 0.25, g = 0.45, b = 0.25, a = 0.9 } or { r = 0, g = 0, b = 0, a = 0.6 }
+        b:setX(math.floor(map.width / 2 - #SPEEDS * 58 / 2) + (b.lfSlot - 1) * 58)
+        b:setY(20)
         b:bringToTop()
     end
 end

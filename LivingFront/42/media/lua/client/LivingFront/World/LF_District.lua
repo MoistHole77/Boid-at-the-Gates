@@ -339,13 +339,14 @@ local function shadowText(ui, text, x, y, c, font)
     ui:drawText(text, x, y, c[1], c[2], c[3], 1, font)
 end
 
--- The outline of each district in its holder's colour; on the world map, a panel at the top right:
+-- The outline of each district in its holder's colour; on the world map, a panel at the bottom left
+-- (the game's own map key and symbols panels take the top corners):
 -- the district, who holds it, and each objective with its holder (and the test's clock).
 function LF.District.drawMap(ui, api, mini)
     local districts = LF.District.all()
     if #districts == 0 then return end
     local tm = getTextManager()
-    local py = 20
+    local py = nil
     for _, d in ipairs(districts) do
         local t = LF.District.tally(d)
         local c = COLORS[t.holder or "none"] or COLORS.none
@@ -374,15 +375,16 @@ function LF.District.drawMap(ui, api, mini)
             end
             local w = 0
             for _, l in ipairs(lines) do w = math.max(w, tm:MeasureStringX(l[3], l[1])) end
-            local px = ui.width - w - 30
+            local px = 30
             local h = 0
             for _, l in ipairs(lines) do h = h + tm:getFontHeight(l[3]) + 2 end
+            py = py or (ui.height - 30 - h)
             ui:drawRect(px - 10, py - 6, w + 20, h + 12, 0.55, 0, 0, 0)
             for _, l in ipairs(lines) do
                 shadowText(ui, l[1], px, py, l[2], l[3])
                 py = py + tm:getFontHeight(l[3]) + 2
             end
-            py = py + 20
+            py = py - h - 12 - 20 - h     -- (another district's panel above this one)
         end
     end
 end
