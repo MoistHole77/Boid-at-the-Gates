@@ -42,13 +42,13 @@ local DATA = {
                 -- 12 sectors of about the same ground (each within 12% of the mean), their borders
                 -- along the streets where there are streets; one objective somewhere in each. Each
                 -- sector is an outline of corners (x, y) in order.
-                id = "downtown_north", name = "Downtown North", version = 3,
+                id = "downtown_north", name = "Downtown North", version = 4,
                 bounds = { 52, 0, 630, 942 },
                 objectives = {
                     { key = "raildepot", title = "Rail Depot", weight = 1, at = { 172, 51 }, sector = { { 52, 0 }, { 278, 0 }, { 278, 78 }, { 339, 78 }, { 339, 183 }, { 278, 183 }, { 278, 228 }, { 52, 228 } } },
-                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, area = { 534, 109, 549, 125 }, kind = "site", sector = { { 278, 0 }, { 630, 0 }, { 630, 136 }, { 505, 136 }, { 505, 78 }, { 278, 78 } } },
+                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, at = { 542, 115 }, sector = { { 278, 0 }, { 630, 0 }, { 630, 136 }, { 505, 136 }, { 505, 78 }, { 278, 78 } } },
                     { key = "square", title = "9 January Square", weight = 2, area = { 291, 211, 322, 242 }, kind = "square", sector = { { 52, 228 }, { 278, 228 }, { 278, 183 }, { 339, 183 }, { 339, 200 }, { 361, 200 }, { 361, 255 }, { 356, 255 }, { 356, 284 }, { 365, 284 }, { 365, 384 }, { 302, 384 }, { 302, 422 }, { 52, 422 } } },
-                    { key = "pavlov", title = "Pavlov's House", weight = 2, area = { 364, 233, 408, 281 }, kind = "houses", sector = { { 339, 78 }, { 505, 78 }, { 505, 136 }, { 474, 136 }, { 474, 369 }, { 365, 369 }, { 365, 284 }, { 356, 284 }, { 356, 255 }, { 361, 255 }, { 361, 200 }, { 339, 200 } } },
+                    { key = "pavlov", title = "Pavlov's House", weight = 2, at = { 386, 241 }, sector = { { 339, 78 }, { 505, 78 }, { 505, 136 }, { 474, 136 }, { 474, 369 }, { 365, 369 }, { 365, 284 }, { 356, 284 }, { 356, 255 }, { 361, 255 }, { 361, 200 }, { 339, 200 } } },
                     { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 572, 225 }, sector = { { 474, 136 }, { 630, 136 }, { 630, 384 }, { 474, 384 } } },
                     { key = "engworks", title = "Engineering Works", weight = 1, at = { 241, 460 }, sector = { { 52, 422 }, { 302, 422 }, { 302, 673 }, { 52, 673 } } },
                     { key = "workshops", title = "Central Workshops", weight = 1, at = { 340, 546 }, sector = { { 302, 384 }, { 365, 384 }, { 365, 369 }, { 474, 369 }, { 474, 384 }, { 416, 384 }, { 416, 543 }, { 451, 543 }, { 451, 703 }, { 374, 703 }, { 374, 673 }, { 302, 673 } } },
