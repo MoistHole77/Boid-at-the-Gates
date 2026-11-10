@@ -440,6 +440,21 @@ local function kindWord(obj, def)
     return def and "building" or nil
 end
 
+-- (debug) put the player at (x, y, z) and close the map
+function LF.Map.teleport(x, y, z)
+    local p = getSpecificPlayer(0)
+    if not p then return end
+    x, y, z = math.floor(x) + 0.5, math.floor(y) + 0.5, z or 0
+    local moved = pcall(function() p:teleportTo(x, y, z) end)
+    if not moved then
+        p:setX(x); p:setY(y); p:setZ(z)
+        pcall(function() p:setLastX(x); p:setLastY(y); p:setLastZ(z) end)
+        pcall(function() p:setLx(x); p:setLy(y); p:setLz(z) end)
+    end
+    pcall(function() if ISWorldMap_instance then ISWorldMap_instance:close() end end)
+    LF.say(string.format("Teleported to %d, %d", math.floor(x), math.floor(y)))
+end
+
 -- Add the Living Front options for world point (wx, wy) to a context menu.
 local function addMapOptions(ctx, wx, wy)
     local z = 0
@@ -457,6 +472,35 @@ local function addMapOptions(ctx, wx, wy)
     end
     local head = obj and (obj.name .. " - " .. kindWord(obj) .. ", " .. holderWords(obj):lower())
         or (isBuilding and "Living Front: this building" or "Living Front: here")
+    -- (debug) teleport: to the objective under the mouse, or to the point clicked
+    local tx, ty, tname = x, y, "here"
+    if obj then
+        tx, ty, tname = obj.x, obj.y, obj.name
+        if obj.bounds then tx, ty = (obj.bounds[1] + obj.bounds[3]) / 2, (obj.bounds[2] + obj.bounds[4]) / 2 end
+    end
+    -- a district objective (made yet or not): its square, or the middle of its site; clicked on or near
+    local best = 13 * 13
+    for _, d in ipairs(LF.District and LF.District.all() or {}) do
+        for _, e in ipairs(d.objectives or {}) do
+            local ex, ey, hit
+            if e.area then
+                ex, ey = (e.area[1] + e.area[3]) / 2, (e.area[2] + e.area[4]) / 2
+                hit = x >= e.area[1] - 4 and x <= e.area[3] + 4 and y >= e.area[2] - 4 and y <= e.area[4] + 4
+            elseif e.at then
+                ex, ey = e.at[1], e.at[2]
+            end
+            if ex then
+                local d2 = (ex - x) * (ex - x) + (ey - y) * (ey - y)
+                local mine = obj and obj.districtKey == e.key
+                if hit or mine or d2 < best then
+                    best = (hit or mine) and -1 or d2
+                    tx, ty, tname = ex, ey, e.title
+                end
+            end
+        end
+    end
+    local add = ctx.addOptionOnTop or ctx.addOption
+    add(ctx, "Teleport to " .. tname .. " (debug)", nil, function() LF.Map.teleport(tx, ty, 0) end)
     local lf = sub(ctx, head)
     if obj then
         local id = obj.id
