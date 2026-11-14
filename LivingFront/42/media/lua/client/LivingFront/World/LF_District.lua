@@ -42,18 +42,18 @@ local DATA = {
                 -- 12 sectors of about the same ground (each within 12% of the mean), their borders
                 -- along the streets where there are streets; one objective somewhere in each. Each
                 -- sector is an outline of corners (x, y) in order.
-                id = "downtown_north", name = "Downtown North", version = 4,
+                id = "downtown_north", name = "Downtown North", version = 5,
                 bounds = { 52, 0, 630, 942 },
                 objectives = {
-                    { key = "raildepot", title = "Rail Depot", weight = 1, at = { 172, 51 }, sector = { { 52, 0 }, { 278, 0 }, { 278, 78 }, { 339, 78 }, { 339, 183 }, { 278, 183 }, { 278, 228 }, { 52, 228 } } },
-                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, at = { 542, 115 }, sector = { { 278, 0 }, { 630, 0 }, { 630, 136 }, { 505, 136 }, { 505, 78 }, { 278, 78 } } },
+                    { key = "raildepot", title = "Rail Depot", weight = 1, at = { 127, 45 }, sector = { { 52, 0 }, { 278, 0 }, { 278, 78 }, { 339, 78 }, { 339, 183 }, { 278, 183 }, { 278, 228 }, { 52, 228 } } },
+                    { key = "railwaymen", title = "Railwaymen's House", weight = 1, at = { 540, 62 }, sector = { { 278, 0 }, { 630, 0 }, { 630, 136 }, { 505, 136 }, { 505, 78 }, { 278, 78 } } },
                     { key = "square", title = "9 January Square", weight = 2, area = { 291, 211, 322, 242 }, kind = "square", sector = { { 52, 228 }, { 278, 228 }, { 278, 183 }, { 339, 183 }, { 339, 200 }, { 361, 200 }, { 361, 255 }, { 356, 255 }, { 356, 284 }, { 365, 284 }, { 365, 384 }, { 302, 384 }, { 302, 422 }, { 52, 422 } } },
                     { key = "pavlov", title = "Pavlov's House", weight = 2, at = { 386, 241 }, sector = { { 339, 78 }, { 505, 78 }, { 505, 136 }, { 474, 136 }, { 474, 369 }, { 365, 369 }, { 365, 284 }, { 356, 284 }, { 356, 255 }, { 361, 255 }, { 361, 200 }, { 339, 200 } } },
                     { key = "mill", title = "Gerhardt's Mill", weight = 2, at = { 572, 225 }, sector = { { 474, 136 }, { 630, 136 }, { 630, 384 }, { 474, 384 } } },
                     { key = "engworks", title = "Engineering Works", weight = 1, at = { 241, 460 }, sector = { { 52, 422 }, { 302, 422 }, { 302, 673 }, { 52, 673 } } },
-                    { key = "workshops", title = "Central Workshops", weight = 1, at = { 340, 546 }, sector = { { 302, 384 }, { 365, 384 }, { 365, 369 }, { 474, 369 }, { 474, 384 }, { 416, 384 }, { 416, 543 }, { 451, 543 }, { 451, 703 }, { 374, 703 }, { 374, 673 }, { 302, 673 } } },
+                    { key = "workshops", title = "Central Workshops", weight = 1, at = { 325, 546 }, sector = { { 302, 384 }, { 365, 384 }, { 365, 369 }, { 474, 369 }, { 474, 384 }, { 416, 384 }, { 416, 543 }, { 451, 543 }, { 451, 703 }, { 374, 703 }, { 374, 673 }, { 302, 673 } } },
                     { key = "warehouses", title = "Riverside Warehouses", weight = 1, at = { 577, 551 }, sector = { { 416, 384 }, { 630, 384 }, { 630, 580 }, { 451, 580 }, { 451, 543 }, { 416, 543 } } },
-                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 136, 762 }, sector = { { 52, 673 }, { 374, 673 }, { 374, 827 }, { 52, 827 } } },
+                    { key = "station", title = "Stalingrad-1 Station", weight = 2, at = { 90, 748 }, sector = { { 52, 673 }, { 374, 673 }, { 374, 827 }, { 52, 827 } } },
                     { key = "depot", title = "Depot", weight = 1, at = { 536, 762 }, sector = { { 451, 580 }, { 630, 580 }, { 630, 889 }, { 556, 889 }, { 556, 771 }, { 478, 771 }, { 478, 703 }, { 451, 703 } } },
                     { key = "nails", title = "Nail Factory", weight = 1, area = { 101, 828, 132, 859 }, kind = "works", sector = { { 52, 827 }, { 403, 827 }, { 403, 942 }, { 52, 942 } } },
                     { key = "machworks", title = "Machine Works", weight = 1, at = { 477, 890 }, sector = { { 374, 703 }, { 478, 703 }, { 478, 771 }, { 556, 771 }, { 556, 889 }, { 630, 889 }, { 630, 942 }, { 403, 942 }, { 403, 827 }, { 374, 827 } } },
