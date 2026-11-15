@@ -386,6 +386,7 @@ local function drawAidPosts(ui, api)
 end
 
 local function drawAll(ui, api, mini)
+    if LF.Control then LF.guard("map control", LF.Control.drawMap, ui, api, mini) end      -- (0.88: debug tools)
     LF.guard("map front", drawFront, ui, api, mini)
     LF.guard("map districts", LF.District.drawMap, ui, api, mini)
     if CFG.trackers then LF.guard("map units", drawUnits, ui, api, mini) end

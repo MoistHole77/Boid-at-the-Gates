@@ -51,6 +51,7 @@ local CFG = {
     probeOut = 900,         -- ... gives up getting there after this
     probes = 1000,          -- probes out at once: no limit (one per objective he has no news of)
     maxRange = 700,         -- tiles: objectives further than this from his squads are out of his reach
+    holdProbeEvery = 4 * 3600,  -- (0.88) holding: simulated seconds between probes at most
     releaseAfter = 300,     -- simulated seconds an objective must be off the front before its garrison goes
 }
 LF.Captain.CFG = CFG
@@ -181,9 +182,11 @@ local function squadsOf(c)
             local g = u.garrison and u.garrison.company == c.id
             local pr = u.probe and u.probe.company == c.id
             local rf = u.refit and u.refit.company == c.id
-            if p or g or pr or rf then
+            local po = u.post and u.post.company == c.id
+            if p or g or pr or rf or po then
                 local state = "free"
-                if pr then state = "probe"
+                if u.post and u.post.company == c.id then state = "post"      -- (0.88: a post on the line, a reserve - LF_Battle)
+                elseif pr then state = "probe"
                 elseif g then state = "garrison"
                 elseif rf then state = "refit"
                 elseif p.mission and BUSY[p.mission.kind] and not (p.mission.kind == "take" and p.mission.phase == "taken") then state = "busy"
@@ -468,7 +471,7 @@ local function decide(c, cap)
                     end
                     gs[#gs + 1] = e
                 end
-            elseif #gs > 0 then
+            elseif #gs > 0 and not gs[1].sq.garrison.fixed then
                 obj.lfOffFront = obj.lfOffFront or {}
                 obj.lfOffFront[side] = obj.lfOffFront[side] or LF.simTime
                 if LF.simTime - obj.lfOffFront[side] >= CFG.releaseAfter then
@@ -483,6 +486,12 @@ local function decide(c, cap)
         end
     end
 
+    -- (0.88) Holding (the district battle, until battalion command - S2 - gives orders): no
+    -- assaults; at most a probe now and then.
+    local holdOnly = c.posture == "hold"
+    if holdOnly then
+        if LF.simTime - (c.lastProbe or -math.huge) < CFG.holdProbeEvery and (c.lastProbe or 0) <= LF.simTime then return end
+    end
     -- Targets: what isn't his side's, best first (worth over distance from his free squads).
     local cx, cy, n = 0, 0, 0
     for _, e in ipairs(free) do
@@ -532,11 +541,14 @@ local function decide(c, cap)
             return a.d < b.d
         end)
         local lead = leads[1] and leads[1].p
+        if holdOnly then lead = nil end
         if E == nil then
             if not probing[obj.id] and nProbes < CFG.probes then
                 local e = nearestOf(free, obj.x, obj.y, function(x) return not x.mg end)
                 if e and sendProbe(c, cap, e, obj) then
                     takeFrom(free, e)
+                    c.lastProbe = LF.simTime
+                    if holdOnly then return end
                     probing[obj.id] = true
                     nProbes = nProbes + 1
                 end

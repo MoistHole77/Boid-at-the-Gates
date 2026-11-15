@@ -30,6 +30,7 @@ require "LivingFront/Units/LF_Stance"
 require "LivingFront/Units/LF_March"
 require "LivingFront/Units/LF_Objective"
 require "LivingFront/World/LF_District"
+require "LivingFront/World/LF_Battle"
 require "LivingFront/Soldier/LF_Weapons"
 require "LivingFront/UI/LF_Inspect"
 require "LivingFront/Units/LF_Join"
@@ -1672,6 +1673,25 @@ local function onMenu(playerNum, context, worldObjects, test)
         tools:addOption("Make " .. d.name .. "'s objectives again (as listed for the district)", nil, function()
             local n = LF.District.reset(d)
             LF.say(d.name .. ": " .. n .. " objectives made")
+        end)
+    end
+    if LF.Battle and LF.District.get(LF.Battle.CFG.district) then
+        local st = LF.Battle.store()
+        tools:addOption((st.version and "Set up the district battle again" or "Set up the district battle") .. " (" .. LF.Battle.CFG.date
+            .. ": every company of it is taken away and placed afresh)", nil, function()
+            LF.Battle.clear()
+            local ok, why = LF.Battle.seed()
+            LF.say(ok and ("The battle is set up as on " .. LF.Battle.CFG.date) or ("Can't: " .. tostring(why)))
+        end)
+        tools:addOption("Battle report to the log now (BATTLE line: men, bodies, control, cost)", nil, function()
+            LF.Battle.report(); LF.say("BATTLE line written to the log")
+        end)
+    end
+    if LF.Control then
+        local on = LF.Control.CFG.show
+        tools:addOption("Control map on the world map (sections and ground, the truth): " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()
+            LF.Control.CFG.show = not LF.Control.CFG.show
+            LF.say("Control map: " .. (LF.Control.CFG.show and "ON" or "OFF"))
         end)
     end
     do

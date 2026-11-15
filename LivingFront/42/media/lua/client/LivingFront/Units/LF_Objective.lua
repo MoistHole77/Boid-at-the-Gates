@@ -466,8 +466,10 @@ local function whoIsThere(obj, fitOnly)
     local counts = fitOnly and fitCounts or counts
     for k in pairs(counts) do counts[k] = nil end
     for _, r in pairs(LF.Records.all()) do
-        if r.alive and r.faction ~= "CIV" and (not fitOnly or not (r.wounded or r.offWound))
-            and LF.dist(r.x, r.y, obj.x, obj.y) < (obj.reach or 30) then
+        local rr = obj.reach or 30
+        if r.alive and r.faction ~= "CIV" and math.abs(r.x - obj.x) < rr and math.abs(r.y - obj.y) < rr
+            and (not fitOnly or not (r.wounded or r.offWound))
+            and LF.dist(r.x, r.y, obj.x, obj.y) < rr then
             local b = LF.Bodies.get(r.id)
             local x, y, z = r.x, r.y, r.z
             if b then x, y, z = b:getX(), b:getY(), b:getZ() end

@@ -367,7 +367,16 @@ function LF.District.drawMap(ui, api, mini)
             for _, e in ipairs(d.objectives) do
                 local o = objectiveOf(d, e)
                 local h = o and (o.contested and "contested" or o.holder) or nil
-                lines[#lines + 1] = { string.format("%s (%d) - %s", e.title, e.weight or 1, LF.District.holderWords(h)),
+                local words = (not h and o and o.noMans) and "no-man's land" or LF.District.holderWords(h)
+                -- (0.88) How much of the sector's buildings each side holds (LF_Control).
+                local sh = LF.Control and LF.Control.share and LF.Control.share(e.key)
+                if sh and sh.total > 0 and (sh.GER > 0 or sh.SOV > 0) then
+                    local parts = {}
+                    if sh.GER > 0 then parts[#parts + 1] = string.format("German %d%%", math.floor(sh.GER * 100 / sh.total + 0.5)) end
+                    if sh.SOV > 0 then parts[#parts + 1] = string.format("Soviet %d%%", math.floor(sh.SOV * 100 / sh.total + 0.5)) end
+                    words = words .. " (" .. table.concat(parts, ", ") .. " of its buildings)"
+                end
+                lines[#lines + 1] = { string.format("%s (%d) - %s", e.title, e.weight or 1, words),
                                       COLORS[h or "none"] or COLORS.none, font }
             end
             if test and test.d == d then

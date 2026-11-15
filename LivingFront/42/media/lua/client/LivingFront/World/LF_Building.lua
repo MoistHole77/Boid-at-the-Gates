@@ -403,6 +403,50 @@ function LF.Building.isInside(L, x, y)
     return L.insideSet[key(math.floor(x), math.floor(y))] ~= nil
 end
 
+-- (0.88) Part of a building: the layout L cut down to one section (box = { x1, y1, x2, y2 },
+-- inclusive) - for a unit holding its own stair section of a building the enemy holds the rest of.
+-- Its openings are the building's windows and doors in that part; the squares where the part
+-- meets the rest of the building become its edge on that side, so a man watches the cut (the
+-- stairs and rooms the enemy holds). Cached with the layout. nil if the part has no squares.
+function LF.Building.part(L, box)
+    if not (L and box) then return L end
+    local k = box[1] .. "," .. box[2] .. "," .. box[3] .. "," .. box[4]
+    L.parts = L.parts or {}
+    if L.parts[k] ~= nil then return L.parts[k] or nil end
+    local function inBox(x, y) return x >= box[1] and x <= box[3] and y >= box[2] and y <= box[4] end
+    local P = { id = L.id, z = L.z, inside = {}, insideSet = {}, openings = {}, edges = { {}, {}, {}, {} }, part = box }
+    local tx, ty = 0, 0
+    for _, s in ipairs(L.inside) do
+        if inBox(s.x, s.y) then
+            P.inside[#P.inside + 1] = s
+            P.insideSet[key(s.x, s.y)] = L.insideSet[key(s.x, s.y)]
+            tx, ty = tx + s.x, ty + s.y
+        end
+    end
+    if #P.inside == 0 then L.parts[k] = false; return nil end
+    P.cx, P.cy = tx / #P.inside + 0.5, ty / #P.inside + 0.5
+    for _, o in ipairs(L.openings) do
+        if inBox(o.x, o.y) then P.openings[#P.openings + 1] = o end
+    end
+    P.cut = 0
+    for _, s in ipairs(P.inside) do
+        for w, d in ipairs(WALL_DIR) do
+            local nk = key(s.x + d[1], s.y + d[2])
+            if not P.insideSet[nk] then
+                P.edges[w][#P.edges[w] + 1] = { x = s.x, y = s.y }
+                if L.insideSet[nk] then P.cut = P.cut + 1 end
+            end
+        end
+    end
+    local counts = { 0, 0, 0, 0 }
+    for _, o in ipairs(P.openings) do counts[o.wall] = counts[o.wall] + 1 end
+    P.wallOpenings = counts
+    L.parts[k] = P
+    LF.log("BUILDING #" .. tostring(L.id) .. " floor " .. L.z .. ": part " .. k .. " - " .. #P.inside .. " squares, "
+        .. #P.openings .. " openings, " .. P.cut .. " square(s) on the cut to the rest of the building")
+    return P
+end
+
 -- A defender pushes the furniture out of his window (LF.Tactics.shoveWindow does the moving): both
 -- hands on it and heave (LF_Shove), with the scrape of it going across the floor. A big piece
 -- takes longer.

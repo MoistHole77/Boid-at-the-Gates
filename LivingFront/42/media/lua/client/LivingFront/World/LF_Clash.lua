@@ -56,6 +56,11 @@ local CFG = {
     pinPerSecond = 0.25,    -- morale lost per second under heavy fire
     contactHold = 10,       -- a march stays halted this many seconds after the last contact
     eventsKept = 400,
+    -- (0.88) A static front: two units facing each other from held positions - neither attacking,
+    -- neither on the move - don't fight it out, they harass: snipers, a mortar round, the odd
+    -- grenade. Each such unit loses a man (hit) about this often per game hour, whatever its size.
+    staticHitsPerHour = 0.012,
+    staticLog = 600,        -- simulated seconds between the log lines of a static pair
 }
 LF.Clash.CFG = CFG
 local deploy               -- (below)
@@ -145,6 +150,7 @@ local function coverOf(e)
     local t = u.objTask
     local obj = t and t.kind == "hold" and LF.Objective and LF.Objective.get(t.obj)
     if obj and LF.Objective.at(obj, e.x, e.y, e.z) then return "building" end
+    if u.post and not (M and not M.arrived) then return "building" end     -- (0.88: its post in a building - LF_Battle)
     if u.stance == "defensive" or u.platoonTask == "dig" or u.platoonTask == "reserve" then return "dug" end
     return "open"
 end
@@ -316,6 +322,61 @@ deploy = function(e, enemy)
     end
 end
 
+-- ---- the static front (0.88) -------------------------------------------------------------------
+
+-- Is this unit holding a position - not attacking, not on the move, not broken?
+local function holding(e)
+    local u = e.u
+    if fleeing(u) then return false end
+    local M = LF.March.get(u.id)
+    if M and not M.arrived then return false end
+    local t = u.objTask
+    if t and t.kind == "take" then return false end
+    if u.probe or u.platoonTask == "withdraw" then return false end
+    local p = u.platoon and LF.Units.get(u.platoon)
+    if p and p.mission and p.mission.kind == "take" then return false end
+    if u.kind == "hq" then return true end
+    return u.post ~= nil or (u.garrison ~= nil) or (t ~= nil and t.kind == "hold")
+end
+LF.Clash.holding = holding
+
+local gameHours = nil
+local function hoursNow() local ok, h = pcall(function() return getGameTime():getWorldAgeHours() end); return ok and h or nil end
+
+-- A static pair: the odd man hit, both kept knowing where the other is; no suppression, no
+-- deploying, no ammunition spent, morale untouched.
+local function harass(pr, dh)
+    for _, side in ipairs({ { pr.a, pr.b }, { pr.b, pr.a } }) do
+        local e, t = side[1], side[2]
+        local u = e.u
+        u.offStaticAt = LF.simTime
+        u.offStaticBy = t.u.id
+        if e.fit == nil then firepower(e) end
+        -- (By chance, not adding up: a sniper's round comes when it comes, not every 80 hours on the dot.)
+        if (t.fit or firepower(t)) > 0 and ZombRandFloat(0, 1) < CFG.staticHitsPerHour * dh * math.min(1, (t.fit or 0) / 4) then
+            u.staticHits = (u.staticHits or 0) + 1
+        end
+        if not u.staticLogged or u.staticLogged > LF.simTime or LF.simTime - u.staticLogged > CFG.staticLog then
+            u.staticLogged = LF.simTime
+            LF.log(string.format("CLASH %s faces %s across the line (%.0f tiles): a static front - harassing fire only",
+                u.name, t.u.name, pr.d))
+            -- (Each knows where the other's men are, as in a fight.)
+            local n = 0
+            for _, r in ipairs(t.men) do
+                if r.alive and n < 6 and LF.Tactics and LF.Tactics.point then
+                    n = n + 1
+                    LF.Squad.report(u.id, r.id, LF.Tactics.point(r.x, r.y, r.z or 0))
+                end
+            end
+        end
+        while (u.staticHits or 0) >= 1 do
+            u.staticHits = u.staticHits - 1
+            LF.log("CLASH " .. u.name .. ": a man hit by harassing fire from " .. t.u.name)
+            hit(e, t, CLASS[coverAgainst(e, t)])
+        end
+    end
+end
+
 -- ---- each simulated second -------------------------------------------------------------------
 
 local lastSim = nil
@@ -327,19 +388,37 @@ local function update()
     dt = math.min(dt, 5)
     local units = survey()
     -- Contacts: every hostile pair in range.
+    -- (0.88: by buckets of CFG.range tiles - a district battle has ~300 units, and every pair of
+    -- them was tested twice a second.)
     local pairs_ = {}
-    for i = 1, #units do
-        local a = units[i]
-        for j = i + 1, #units do
-            local b = units[j]
-            if LF.isHostile(a.u.faction, b.u.faction) then
-                local d = LF.dist(a.x, a.y, b.x, b.y)
-                if d <= CFG.range then pairs_[#pairs_ + 1] = { a = a, b = b, d = d } end
+    local R = CFG.range
+    local grid = {}
+    for i, a in ipairs(units) do
+        a.i = i
+        local k = math.floor(a.x / R) * 4096 + math.floor(a.y / R)
+        local g = grid[k]
+        if not g then g = {}; grid[k] = g end
+        g[#g + 1] = a
+    end
+    for _, a in ipairs(units) do
+        local bx, by = math.floor(a.x / R), math.floor(a.y / R)
+        for gx = bx - 1, bx + 1 do
+            for gy = by - 1, by + 1 do
+                local g = grid[gx * 4096 + gy]
+                if g then
+                    for _, b in ipairs(g) do
+                        if b.i > a.i and LF.isHostile(a.u.faction, b.u.faction) then
+                            local d = LF.dist(a.x, a.y, b.x, b.y)
+                            if d <= R then pairs_[#pairs_ + 1] = { a = a, b = b, d = d } end
+                        end
+                    end
+                end
             end
         end
     end
+    table.sort(pairs_, function(p, q) if p.a.i ~= q.a.i then return p.a.i < q.a.i end return p.b.i < q.b.i end)
     local incoming = {}             -- unit -> firepower landing on it (for suppression)
-    local fights = {}
+    local fights, statics = {}, {}
     for _, pr in ipairs(pairs_) do
         local a, b = pr.a, pr.b
         local capA = a.bodies == 0 and LF.Bodies.capped and LF.Bodies.capped(a.u.id)
@@ -348,9 +427,18 @@ local function update()
             -- Near you: fought for real. Give the side with no bodies its bodies where it can.
             if a.bodies == 0 and LF.Bodies.want then LF.Bodies.want(a.u.id) end
             if b.bodies == 0 and LF.Bodies.want then LF.Bodies.want(b.u.id) end
+        elseif holding(a) and holding(b) then
+            statics[#statics + 1] = pr
         else
             fights[#fights + 1] = pr
         end
+    end
+    -- (0.88) The static front, by game time.
+    local hn = hoursNow()
+    local dh = (hn and gameHours and hn > gameHours) and math.min(hn - gameHours, 1) or 0
+    gameHours = hn
+    if dh > 0 then
+        for _, pr in ipairs(statics) do LF.guard("clash static", harass, pr, dh) end
     end
     if #fights == 0 then
         -- Quiet units get some ammunition back.
@@ -479,7 +567,7 @@ LF.on("OnTick", "Clash", function()
     if not LF.due(CFG.updateTicks, 17) then return end
     LF.guard("clash", update)
 end)
-Events.OnInitGlobalModData.Add(function() lastSim = nil end)
+Events.OnInitGlobalModData.Add(function() lastSim = nil; gameHours = nil end)
 
 -- Is this unit still in an off-screen fight (a march stays halted)?
 function LF.Clash.inContact(u)

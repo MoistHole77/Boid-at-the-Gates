@@ -71,6 +71,8 @@ Control works at three levels, finest to coarsest, and the front line is drawn f
 
 #### S1 in detail: Downtown North on 18 November 1942
 
+_Status: built in 0.88 (`LF_Battle`, `LF_Control`, `LF_Sites_DowntownNorth`; the sites file comes from `buildings/sites.py` in the map pipeline). Awaiting in-game test._
+
 The first time a save runs on the Stalingrad map, the district is set up as it stood on 18 November 1942, the eve of Operation Uranus, when the Germans held about 90% of the city. From then on only gameplay moves the front; no historical events are scripted.
 
 **Start state**

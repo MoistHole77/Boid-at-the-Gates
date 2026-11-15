@@ -717,6 +717,8 @@ updateDefensiveInner = function(squad, sq, cid, cmd)
                 end
             end
         end
+        -- (0.88) Holding only its own section of the building (LF_Battle, LF_Control).
+        if L and h and h.part then L = LF.Building.part(L, h.part) or L end
         if L then
             sq.perim.layout = L
             LF.guard("unlock inner doors", LF.Building.unlockInside, L)

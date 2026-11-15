@@ -331,6 +331,17 @@ local function see(side, e, how, o)
     if not old or entry.reportAt < old.reportAt then P[e.u.id] = entry end
 end
 
+-- (0.88) Known from before the save began (LF_Battle: after weeks facing each other each side knows
+-- the other's front-line posts): unit u of the enemy at (x, y), straight into side's picture.
+function LF.Front.know(side, u, x, y)
+    local men = 0
+    for _, rid in ipairs(LF.Units.members(u.id)) do
+        local r = LF.Records.get(rid)
+        if r and r.alive and not r.wounded then men = men + 1 end
+    end
+    store().sight[side][u.id] = { x = math.floor(x), y = math.floor(y), men = men, at = LF.simTime, how = "known", kind = u.kind }
+end
+
 -- Word that has arrived goes into the picture.
 local function promoteSightings()
     for _, side in ipairs(SIDES) do
