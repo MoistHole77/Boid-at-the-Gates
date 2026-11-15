@@ -59,7 +59,7 @@ local CFG = {
     -- (0.88) A static front: two units facing each other from held positions - neither attacking,
     -- neither on the move - don't fight it out, they harass: snipers, a mortar round, the odd
     -- grenade. Each such unit loses a man (hit) about this often per game hour, whatever its size.
-    staticHitsPerHour = 0.012,
+    staticHitsPerHour = 0.005,  -- (headless day test: 0.012 gave ~11 dead a side a day; this ~5)
     staticLog = 600,        -- simulated seconds between the log lines of a static pair
 }
 LF.Clash.CFG = CFG
