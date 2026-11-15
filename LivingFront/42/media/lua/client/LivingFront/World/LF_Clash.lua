@@ -345,6 +345,7 @@ local function hoursNow() local ok, h = pcall(function() return getGameTime():ge
 
 -- A static pair: the odd man hit, both kept knowing where the other is; no suppression, no
 -- deploying, no ammunition spent, morale untouched.
+local rolls = 0
 local function harass(pr, dh)
     for _, side in ipairs({ { pr.a, pr.b }, { pr.b, pr.a } }) do
         local e, t = side[1], side[2]
@@ -353,7 +354,11 @@ local function harass(pr, dh)
         u.offStaticBy = t.u.id
         if e.fit == nil then firepower(e) end
         -- (By chance, not adding up: a sniper's round comes when it comes, not every 80 hours on the dot.)
-        if (t.fit or firepower(t)) > 0 and ZombRandFloat(0, 1) < CFG.staticHitsPerHour * dh * math.min(1, (t.fit or 0) / 4) then
+        -- (Once per unit per update however many enemy posts face it: 0.88's first cut rolled per pair,
+        -- and units facing three posts lost three times the men - 20 dead a side a day.)
+        local first = u.staticRolled ~= rolls
+        u.staticRolled = rolls
+        if first and (t.fit or firepower(t)) > 0 and ZombRandFloat(0, 1) < CFG.staticHitsPerHour * dh * math.min(1, (t.fit or 0) / 4) then
             u.staticHits = (u.staticHits or 0) + 1
         end
         if not u.staticLogged or u.staticLogged > LF.simTime or LF.simTime - u.staticLogged > CFG.staticLog then
@@ -438,6 +443,7 @@ local function update()
     local dh = (hn and gameHours and hn > gameHours) and math.min(hn - gameHours, 1) or 0
     gameHours = hn
     if dh > 0 then
+        rolls = rolls + 1
         for _, pr in ipairs(statics) do LF.guard("clash static", harass, pr, dh) end
     end
     if #fights == 0 then
