@@ -15,6 +15,52 @@ The strategic layer's foundations are already in place:
 
 What's missing is everything above a single company. Today a war only exists if you spawn two companies from the debug menu and point them at each other. The strategic layer's job is a district that fights its own battle for the whole of a save, over days, without you.
 
+## Control and the front line
+
+Control works at three levels, finest to coarsest, and the front line is drawn from the finest one that covers the whole city. Today control is all-or-nothing per sector, so the line barely moves in a slow battle; these levels let it creep building by building.
+
+**1. Inside buildings: sections**
+
+- Every building in the sites file is split into sections: its stair sections or wings, or the whole building if it's small.
+- A section belongs to the side whose fit men hold posts in it; both sides inside, it's contested; nobody there, it keeps its last owner until someone moves in.
+- A section changes hands only when it's cleared in an assault and the attackers take up posts in it. Walking through doesn't count.
+- Men keep their posts off-screen, so a building can stay split between the sides for weeks.
+
+**2. Across the city: the control map**
+
+- A grid over the district at 4 tiles a cell (the grid the sector borders already use). Each cell is German, Soviet, contested or no-man's land.
+- A building's cells follow its sections. Open ground belongs to whoever's held buildings cover it; where both sides' posts cover it, it's no-man's land (9 January Square).
+- Ground isn't taken by standing on it, only by holding the buildings around it.
+
+**3. Sectors and the district: scoring**
+
+- As now: a sector belongs to whoever holds its objective, the district to whoever holds more than half its 16 points.
+- The district panel also shows how much of each sector each side controls ("Central Workshops: German, 70% of its buildings"), so progress shows before an objective falls.
+
+**The line**
+
+- Drawn along the edge between German and Soviet ground on the control map, with no-man's land as a shaded band and shared buildings striped; sector borders stay as thin dashed lines. On the world map it's inked in red and blue pencil, to match the hand-drawn style.
+
+**Fog of war**
+
+- Each side plans on what it believes (`LF_Front` already keeps a picture per side): its own sections it knows, the enemy's only as last seen.
+- The player is neutral for now: his map shows the line as last reported, and a debug view shows the truth.
+
+**How the AI uses it**
+
+- The battalion and captains choose the next building to take next to ground they already hold, so attacks creep instead of leaping.
+- They keep posts manned along their edge of the line and route men through their own ground; reinforcements and supply runs come in only through it.
+
+**Cost and saves**
+
+- Sections and cells are worked out again only for buildings with men in or near them, about every 5 simulated seconds; the rest keep their last state.
+- All of it is saved, so a split building is still split after a reload.
+
+**Where it's built**
+
+- S1: sections and their posts (holding part of a building), the control map, and its start state on 18 November 1942.
+- S6: the line on the world map and the per-sector shares in the district panel.
+
 ## The plan, in build order
 
 ### S1. Order of battle and starting positions
@@ -113,7 +159,7 @@ The Germans hold 9 of the district's 16 points, so the district starts German. T
 
 ### S6. What you can see
 
-- The front line drawn on the world map, a feed of battle reports ("Stalingrad-1 fell to the Germans, 14:20"), and warnings when you enter an active sector.
+- The front line drawn on the world map from the control map, a feed of battle reports ("Stalingrad-1 fell to the Germans, 14:20"), and warnings when you enter an active sector.
 - A debug view comparing what's really there with each side's picture of the battle.
 
 ### S7. How it ends
