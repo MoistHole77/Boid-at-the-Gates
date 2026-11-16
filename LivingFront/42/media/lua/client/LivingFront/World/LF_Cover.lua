@@ -33,12 +33,42 @@ local reserved = {}         -- "x,y,z" -> { id, until }
 
 local function key(x, y, z) return x .. "," .. y .. "," .. z end
 
+-- (0.89) Is the edge between sq and its neighbour nb (one square N/S/E/W) a window FRAME - a wall
+-- with a window hole in it but no window: smashed out, burnt out, the ruins of Stalingrad (the
+-- map's ruined walls are frame sprites, "WindowN" / "WindowW")? The game's isWindowTo only knows
+-- frames that still hold a window, so up to 0.88 every empty frame was a blank wall: buildings
+-- had no openings to defend from and men behind a sill counted as behind a wall.
+local function frameProp(owner, prop)
+    if not owner then return false end
+    local objs = owner:getObjects()
+    for i = 0, objs:size() - 1 do
+        local o = objs:get(i)
+        local spr = o and o:getSprite()
+        local pr = spr and spr:getProperties()
+        if pr and pr:Is(prop) then return true end
+    end
+    return false
+end
+function LF.Cover.frameTo(sq, nb)
+    if not (sq and nb) then return false end
+    local dx, dy = nb:getX() - sq:getX(), nb:getY() - sq:getY()
+    if dy == -1 and dx == 0 then return frameProp(sq, "WindowN") end
+    if dy == 1 and dx == 0 then return frameProp(nb, "WindowN") end
+    if dx == -1 and dy == 0 then return frameProp(sq, "WindowW") end
+    if dx == 1 and dy == 0 then return frameProp(nb, "WindowW") end
+    return false
+end
+local function frameTo(sq, nb)
+    local ok, r = pcall(LF.Cover.frameTo, sq, nb)
+    return ok and r
+end
+
 -- What one edge (from sq into its neighbour nb) offers as cover.
 local function edgeCover(sq, nb)
     if not nb then return NONE end
     if sq:isWallTo(nb) then
-        -- A wall with a window in it is something you can shoot through.
-        if sq:isWindowTo(nb) then return LOW end
+        -- A wall with a window in it (or an empty frame) is something you can shoot through.
+        if sq:isWindowTo(nb) or frameTo(sq, nb) then return LOW end
         return HIGH
     end
     if sq:isWindowTo(nb) or sq:isHoppableTo(nb) then return LOW end
@@ -167,16 +197,6 @@ function LF.Cover.release(id)
     end
 end
 
--- Is the square free to stand in (walkable, nobody else on it)?
-local function standable(sq, body)
-    if not sq:isFree(false) then return false end
-    local movers = sq:getMovingObjects()
-    for i = 0, movers:size() - 1 do
-        if movers:get(i) ~= body then return false end
-    end
-    return true
-end
-
 -- How many walls, fences, hedges or windows a straight walk from (x1, y1) to (x2, y2) crosses
 -- (stepping square by square). A man who has to vault or climb to get somewhere isn't moving
 -- tactically, so the searches prefer spots with nothing in the way. Stops counting at `cap`.
@@ -210,171 +230,15 @@ function LF.Cover.crossings(x1, y1, x2, y2, z, cap)
     return n
 end
 
-local fireCands = {}
-local function byFireScore(a, b) return a.score > b.score end
-local FIRE_CHECKS = 120     -- at most this many candidate squares get the (costly) cover checks
-
--- Is anyone else's spot within a tile of (x, y)? (Two wounded men don't share a corner.)
-local function crowded(x, y, z, id)
-    for dx = -1, 1 do
-        for dy = -1, 1 do
-            if isTaken(x + dx, y + dy, z, id) then return true end
-        end
-    end
-    return false
-end
-
--- Is another soldier standing (not passing) right beside (x, y)?
-local function mateBeside(x, y, z, body)
-    for _, b in pairs(LF.Bodies.all()) do
-        if b ~= body and not b:isDead() and math.abs(b:getZ() - z) < 0.5
-            and math.abs(b:getX() - (x + 0.5)) < 1.5 and math.abs(b:getY() - (y + 0.5)) < 1.5 then
-            return true
-        end
-    end
-    return false
-end
-
--- Best firing position for a fighter against a threat: LOW cover toward the threat, line of
--- sight over it, within maxRange of the threat, preferring nearby squares and ones that don't
--- walk toward the enemy. With an anchor (ax, ay) and leash, only squares within leash tiles of
--- the anchor count, and the search is centred there (a soldier stays near his team).
--- `threat` may be a body or anything with getX/getY/getZ (a last-known position).
--- Squares are ranked by distance alone first (cheap), and the cover and sight-line checks run
--- from the best down until one passes, so most squares never cost an engine call.
--- With `loose`, any cover (LOW or HIGH) will do and no line of sight is needed: somewhere to get
--- out of the open when no firing position exists.
--- Returns x, y, z, quality or nil.
+-- (0.89) Firing positions and hiding spots come from the tactical position system (LF_TPS); these
+-- two keep their old names for the callers that ask them.
 function LF.Cover.findFiringPosition(id, body, threat, maxRange, ax, ay, leash, loose)
-    local cell = getCell()
-    local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
-    local tx, ty = threat:getX(), threat:getY()
-    local r = CFG.searchRadius
-    local cx, cy = bx, by
-    local leashSq = nil
-    if ax and leash then
-        cx, cy = math.floor(ax), math.floor(ay)
-        leashSq = leash * leash
-        if leash < r then r = math.ceil(leash) end
-    end
-    local maxRangeSq = maxRange * maxRange
-    -- "Toward the enemy" is measured from his anchor when he has one (the spot his team was
-    -- sent to), so a soldier sent forward doesn't pick the squares behind it.
-    local myThreatDist = (ax and LF.dist(ax, ay, tx, ty)) or LF.dist(bx, by, tx, ty)
-    local n = 0
-    for x = cx - r, cx + r do
-        for y = cy - r, cy + r do
-            local tdsq = LF.distSq(x + 0.5, y + 0.5, tx, ty)
-            if tdsq <= maxRangeSq and tdsq > 9
-                and (not leashSq or LF.distSq(x + 0.5, y + 0.5, ax, ay) <= leashSq) then
-                local travel = LF.dist(bx, by, x, y)
-                local closer = myThreatDist - math.sqrt(tdsq)   -- > 0 means toward the enemy
-                n = n + 1
-                local c = fireCands[n]
-                if not c then c = {}; fireCands[n] = c end
-                c.x, c.y, c.score = x, y, -travel - math.max(0, closer) * 0.5
-            end
-        end
-    end
-    for i = #fireCands, n + 1, -1 do fireCands[i] = nil end
-    table.sort(fireCands, byFireScore)
-    -- Never into the building the enemy is in (unless he's in it already - clearing it): a man
-    -- looking for cover outside its door doesn't wander in among the defenders.
-    local tsq = cell:getGridSquare(math.floor(tx), math.floor(ty), bz)
-    local tb = tsq and tsq:getBuilding()
-    local enemyB = tb and tb:getID() or nil
-    if enemyB then
-        local msq = cell:getGridSquare(bx, by, bz)
-        local mb = msq and msq:getBuilding()
-        if mb and mb:getID() == enemyB then enemyB = nil end
-    end
-    -- The best spot he can walk straight to; failing that, the best one behind a fence or wall.
-    -- Not right beside another man's spot either, if there's anywhere else (0.47: four men took
-    -- shelter on two squares of the same corner and stood pushing each other about under fire).
-    local fallX, fallY, fallQ = nil, nil, nil
-    local packX, packY, packQ = nil, nil, nil
-    for i = 1, math.min(n, FIRE_CHECKS) do
-        local c = fireCands[i]
-        local q = LF.Cover.quality(c.x, c.y, bz, tx, ty)
-        if (q == LOW or (loose and q == HIGH)) and not isTaken(c.x, c.y, bz, id) then
-            local sq = cell:getGridSquare(c.x, c.y, bz)
-            local sb = sq and enemyB and sq:getBuilding()
-            if sq and not (sb and sb:getID() == enemyB) and standable(sq, body) and (loose or LF.Cover.canSeeFrom(c.x, c.y, bz, threat)) then
-                local straight = LF.Cover.crossings(bx, by, c.x, c.y, bz, 1) == 0
-                if crowded(c.x, c.y, bz, id) or mateBeside(c.x, c.y, bz, body) then
-                    if not packX and straight then packX, packY, packQ = c.x, c.y, q end
-                else
-                    if straight then return c.x, c.y, bz, q end
-                    if not fallX then fallX, fallY, fallQ = c.x, c.y, q end
-                end
-            end
-        end
-    end
-    if fallX then return fallX, fallY, bz, fallQ end
-    if packX then return packX, packY, bz, packQ end
-    return nil
+    return LF.TPS.spot(id, body, threat, maxRange, ax, ay, leash, loose and "shelter" or "fight")
 end
-
-local hideCands = {}
-local function byScoreDesc(a, b) return a.score > b.score end
-
--- Best hiding spot for a wounded or unarmed NPC. It must be hidden (behind HIGH cover or out of
--- sight) from the threat AND from every other known enemy position in `others` (points with
--- getX/getY/getZ), no closer to the threat, and - when (rx, ry), the squad's rear, is given -
--- no further from the rear than the soldier already is: the wounded fall back toward their own
--- men, never across the field. Candidates are scored cheaply first and sight lines are only
--- checked from the best down, so extra enemies cost little. Returns x, y, z or nil.
 function LF.Cover.findHidingSpot(id, body, threat, rx, ry, others)
-    local cell = getCell()
-    local bx, by, bz = math.floor(body:getX()), math.floor(body:getY()), math.floor(body:getZ())
-    local tx, ty = threat:getX(), threat:getY()
-    local r = CFG.searchRadius
-    local myThreatDistSq = LF.distSq(bx, by, tx, ty)
-    local myRear = rx and LF.dist(bx, by, rx, ry)
-    -- Never hide in the building the enemy is in.
-    local tsq = cell:getGridSquare(math.floor(tx), math.floor(ty), math.floor(threat:getZ()))
-    local tb = tsq and tsq:getBuilding()
-    local enemyBuilding = tb and tb:getID() or nil
-    local n = 0
-    for x = bx - r, bx + r do
-        for y = by - r, by + r do
-            if LF.distSq(x + 0.5, y + 0.5, tx, ty) >= myThreatDistSq
-                and (not rx or LF.dist(x, y, rx, ry) <= myRear + 1)
-                and not crowded(x, y, bz, id) then
-                local sq = cell:getGridSquare(x, y, bz)
-                local sb = sq and enemyBuilding and sq:getBuilding()
-                if sq and standable(sq, body) and not (sb and sb:getID() == enemyBuilding) then
-                    n = n + 1
-                    local c = hideCands[n]
-                    if not c then c = {}; hideCands[n] = c end
-                    c.x, c.y = x, y
-                    c.score = -LF.dist(bx, by, x, y) - (rx and 0.5 * LF.dist(x, y, rx, ry) or 0)
-                end
-            end
-        end
-    end
-    for i = #hideCands, n + 1, -1 do hideCands[i] = nil end
-    table.sort(hideCands, byScoreDesc)
-    for i = 1, math.min(n, 25) do        -- sight checks only for the 25 best candidates
-        local c = hideCands[i]
-        local hidden = LF.Cover.quality(c.x, c.y, bz, tx, ty) == HIGH or not LF.Cover.canSeeFrom(c.x, c.y, bz, threat)
-        if hidden and others then
-            for j = 1, #others do
-                local o = others[j]
-                if not (LF.Cover.quality(c.x, c.y, bz, o:getX(), o:getY()) == HIGH or not LF.Cover.canSeeFrom(c.x, c.y, bz, o)) then
-                    hidden = false
-                    break
-                end
-            end
-        end
-        if hidden then return c.x, c.y, bz end
-    end
-    return nil
+    return LF.TPS.hideSpot(id, body, threat, rx, ry, others)
 end
 
--- ---- Incoming fire ----------------------------------------------------------------------
-
--- Is the target hunkered down (crouched and not up aiming / reacting)?
 local function hunkered(target)
     return target:isSneaking() and not target:isPerformingAnAction()
 end

@@ -1687,6 +1687,14 @@ local function onMenu(playerNum, context, worldObjects, test)
             LF.Battle.report(); LF.say("BATTLE line written to the log")
         end)
     end
+    if LF.TPS then
+        local on = LF.TPS.CFG.logBest
+        tools:addOption("Positions: log every choice (TPS lines - where each man chose to stand, and why): " .. (on and "ON" or "OFF"), nil, function()
+            LF.TPS.CFG.logBest = not LF.TPS.CFG.logBest
+            LF.TPS.report()
+            LF.say("TPS log: " .. (LF.TPS.CFG.logBest and "ON" or "OFF"))
+        end)
+    end
     if LF.Control then
         local on = LF.Control.CFG.show
         tools:addOption("Control map on the world map (sections and ground, the truth): " .. (on and "ON (click to hide)" or "OFF (click to show)"), nil, function()

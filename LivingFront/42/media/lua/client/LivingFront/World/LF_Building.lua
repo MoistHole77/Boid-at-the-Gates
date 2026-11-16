@@ -199,6 +199,15 @@ function LF.Building.at(x, y, z)
                         L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "window", wall = w }
                     elseif sq:isDoorTo(nb) then
                         L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "door", wall = w }
+                    elseif LF.Cover and LF.Cover.frameTo and select(2, pcall(LF.Cover.frameTo, sq, nb)) == true then
+                        -- (0.89) An empty window frame: a window to fire from (no glass to smash).
+                        L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "window", wall = w, frame = true }
+                        L.frames = (L.frames or 0) + 1
+                    elseif not sq:isWallTo(nb) and not sq:isBlockedTo(nb) then
+                        -- (0.89) No wall there at all - a shell hole, a fallen stretch of wall: fired
+                        -- from like a window (a ruin with no windows left still has these).
+                        L.openings[#L.openings + 1] = { x = s.x, y = s.y, dx = d[1], dy = d[2], kind = "window", wall = w, breach = true }
+                        L.breaches = (L.breaches or 0) + 1
                     end
                 end
             end
@@ -211,10 +220,12 @@ function LF.Building.at(x, y, z)
     cache[ck] = L
     LF.log("BUILDING #" .. tostring(id) .. " floor " .. z .. ": " .. #L.inside .. " squares inside, openings north "
         .. counts[1] .. ", west " .. counts[2] .. ", south " .. counts[3] .. ", east " .. counts[4]
+        .. ((L.frames or L.breaches) and (" (" .. (L.frames or 0) .. " empty frames, " .. (L.breaches or 0) .. " breaches)") or "")
         .. (stairSquares > 0 and (", " .. stairSquares .. " stairwell square(s) left out") or ""))
     for _, o in ipairs(L.openings) do
         LF.log("BUILDING #" .. tostring(id) .. "   " .. o.kind .. " at " .. o.x .. "," .. o.y .. " in the "
-            .. LF.Building.WALL_NAME[o.wall] .. " wall" .. (o.blocked and " (furniture in it)" or ""))
+            .. LF.Building.WALL_NAME[o.wall] .. " wall" .. (o.blocked and " (furniture in it)" or "")
+            .. (o.frame and " (empty frame)" or "") .. (o.breach and " (breach)" or ""))
     end
     return L
 end
