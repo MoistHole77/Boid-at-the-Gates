@@ -682,11 +682,14 @@ local function talkTarget()
             local d = math.sqrt(dx * dx + dy * dy)
             local rec = d <= CFG.talkRange and LF.Records.get(id)
             if rec and rec.alive and rec.faction ~= "CIV" and not rec.captured and not LF.Talk.busy(rec) then
-                -- The mouse on him (his figure on screen, feet to head) ...
-                local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
-                local top = sy - (LF.headHeight(body) + 10) / zoom
-                if math.abs(mx - sx) <= 22 / zoom and my >= top and my <= sy + 10 / zoom then
-                    if not hoverD or d < hoverD then hover, hoverD = id, d end
+                -- The mouse on him (his figure on screen, feet to head) - in the isometric view; in
+                -- Viewpoint's the man you look at is the one in front of you.
+                if not LF.viewpoint() then
+                    local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
+                    local top = sy - (LF.headHeight(body) + 10) / zoom
+                    if math.abs(mx - sx) <= 22 / zoom and my >= top and my <= sy + 10 / zoom then
+                        if not hoverD or d < hoverD then hover, hoverD = id, d end
+                    end
                 end
                 -- ... or him in front of you.
                 local dot = d > 0.01 and (dx * fx + dy * fy) / d or 1
@@ -739,9 +742,11 @@ LF.on("OnPostUIDraw", "Talk", function()
         -- Over his head, in the font of the game's messages: "[E] Talk", or "[E] Talk to Pvt. Moroz"
         -- once you know him, his name in his side's colour.
         local body = LF.Bodies.get(facingId)
-        if not (body and body:isOnScreen()) then return end
+        local vp = LF.viewpoint()
+        if not (body and (vp or body:isOnScreen())) then return end
         local rec = LF.Records.get(facingId)
-        local sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ())
+        local sx, sy = 0, 0
+        if not vp then sx, sy = LF.screenOf(body:getX(), body:getY(), body:getZ()) end
         local zoom = getCore():getZoom(0)
         local head = LF.headHeight(body)
         local key = "E"
@@ -758,6 +763,12 @@ LF.on("OnPostUIDraw", "Talk", function()
         local n, lh = 0, 0
         if LF.Tactics and LF.Tactics.speechLines then n, lh = LF.Tactics.speechLines(facingId) end
         local ty = math.floor(sy - head / zoom - math.max(0, n - 1) * lh - tm:getFontHeight(font) - (n > 0 and 4 or 0) + 0.5)
+        -- (0.90) Viewpoint's view: under the middle of the screen, where you're looking.
+        if vp then
+            local core = getCore()
+            left = math.floor(core:getScreenWidth() / 2 - (w1 + w2) / 2 + 0.5)
+            ty = math.floor(core:getScreenHeight() * 0.58)
+        end
         tm:DrawString(font, left + 1, ty + 1, lead, 0, 0, 0, 0.8)
         tm:DrawString(font, left, ty, lead, 1, 1, 1, 1)
         if name then

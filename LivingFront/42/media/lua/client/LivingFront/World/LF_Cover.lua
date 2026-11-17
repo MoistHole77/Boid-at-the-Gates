@@ -38,14 +38,18 @@ local function key(x, y, z) return x .. "," .. y .. "," .. z end
 -- map's ruined walls are frame sprites, "WindowN" / "WindowW")? The game's isWindowTo only knows
 -- frames that still hold a window, so up to 0.88 every empty frame was a blank wall: buildings
 -- had no openings to defend from and men behind a sill counted as behind a wall.
+-- (0.89.1: B42's PropertyContainer has has(IsoFlagType), not the old Is(name) - 0.89 threw on
+-- every edge it asked about.)
 local function frameProp(owner, prop)
     if not owner then return false end
+    local flag = IsoFlagType and IsoFlagType[prop]
+    if not flag then return false end
     local objs = owner:getObjects()
     for i = 0, objs:size() - 1 do
         local o = objs:get(i)
         local spr = o and o:getSprite()
         local pr = spr and spr:getProperties()
-        if pr and pr:Is(prop) then return true end
+        if pr and pr:has(flag) then return true end
     end
     return false
 end

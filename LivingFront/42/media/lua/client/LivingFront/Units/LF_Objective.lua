@@ -785,6 +785,23 @@ local function drawLabels()
     if not p then return end
     local zoom = getCore():getZoom(0)
     local tm = getTextManager()
+    -- (0.90) In Viewpoint's first / third person view: the nearest objective in range as one line at
+    -- the top of the screen, not a label pinned (by the isometric maths) to where nothing is.
+    if LF.viewpoint() then
+        local best, bd = nil, CFG.labelRange * CFG.labelRange
+        for _, obj in pairs(LF.Objective.all()) do
+            local d = LF.distSq(obj.x, obj.y, p:getX(), p:getY())
+            if d < bd then best, bd = obj, d end
+        end
+        if best then
+            local col = COLORS[best.holder] or { 1, 1, 0.6 }
+            local text = best.name .. (best.holder and (" - held by the " .. (FACTION[best.holder] or best.holder)) or " - contested")
+            local w = getCore():getScreenWidth()
+            tm:DrawStringCentre(UIFont.Medium, w / 2 + 1, 41, text, 0, 0, 0, 0.8)
+            tm:DrawStringCentre(UIFont.Medium, w / 2, 40, text, col[1], col[2], col[3], 0.9)
+        end
+        return
+    end
     for _, obj in pairs(LF.Objective.all()) do
         if LF.distSq(obj.x, obj.y, p:getX(), p:getY()) < CFG.labelRange * CFG.labelRange then
             local sx, sy = isoToScreenX(0, obj.x, obj.y, obj.z), isoToScreenY(0, obj.x, obj.y, obj.z)

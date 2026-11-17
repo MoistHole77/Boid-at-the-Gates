@@ -1,11 +1,16 @@
 -- Living Front: core config, factions, and small shared helpers.
 
 LF = LF or {}
-LF.VERSION = "0.89.0"
+LF.VERSION = "0.90.0"
 
 LF.Config = {
     spawnRadius = 50,        -- a record gets a body when the player is within this many tiles
     despawnRadius = 58,      -- a body is put away beyond this distance (gap prevents flapping)
+    -- (0.90) In Project Viewpoint's first / third person view you see down a whole street, not a
+    -- screen's width round you: men get their bodies further out (where the ground is loaded), so
+    -- they don't appear out of nothing 50 tiles off.
+    vpSpawnRadius = 68,
+    vpDespawnRadius = 76,
     managerInterval = 30,    -- ticks between body-manager passes (about twice a second)
     maxSpawnsPerPass = 4,    -- spread spawns over frames to avoid hitches
     maxBodies = 0,           -- (0.76) at most this many soldiers with bodies near you - whole squads, nearest
@@ -174,6 +179,25 @@ end
 
 function LF.pick(list)
     return list[ZombRand(#list) + 1]
+end
+
+-- ---- Project Viewpoint (0.90) -------------------------------------------------------------------------
+-- Is the game drawn in Viewpoint's first or third person view right now (not the isometric one)?
+-- Then the isometric screen maths (LF.screenOf, isoToScreenX) puts nothing where it belongs: text
+-- over characters goes through the game's own chat lines instead (Viewpoint places those), and
+-- labels pinned to the ground are left out. Asked once a frame; false without Viewpoint.
+local vpFrame, vpOn = -1, false
+local function vpAsk()
+    local L = Viewpoint and Viewpoint.Loot
+    return L ~= nil and L.viewOn ~= nil and L.viewOn() == true
+end
+function LF.viewpoint()
+    if LF.frame ~= vpFrame then
+        vpFrame = LF.frame
+        local ok, on = pcall(vpAsk)
+        vpOn = ok and on or false
+    end
+    return vpOn
 end
 
 -- ---- text over a character ---------------------------------------------------------------------------

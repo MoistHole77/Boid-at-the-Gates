@@ -334,6 +334,7 @@ end
 
 local function draw()
     if OV.mode == "off" then return end
+    if LF.viewpoint() then return end            -- (0.90: labels on squares need the isometric view)
     local p = getPlayer()
     if not p then return end
     local pz = math.floor(p:getZ())

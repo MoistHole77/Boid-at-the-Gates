@@ -161,9 +161,23 @@ local function wrap(text, n)
 end
 LF.Tactics.wrap = wrap
 
+-- (0.90) In Viewpoint's first / third person view the words go to the game's own chat line over the
+-- body, which Viewpoint draws where he stands; our own text (drawShouts) is drawn only in the
+-- isometric view.
+local SAY_COLORS = { GER = { 0.75, 0.8, 0.9 }, SOV = { 1.0, 0.55, 0.5 }, CIV = { 0.9, 0.9, 0.7 } }
+local function chatLine(id, text, rec)
+    if not LF.viewpoint() then return end
+    local body = LF.Bodies.get(id)
+    if not (body and not body:isDead()) then return end
+    local c = SAY_COLORS[rec and rec.faction or "CIV"] or SAY_COLORS.CIV
+    local ok = pcall(function() body:addLineChatElement(text, c[1], c[2], c[3]) end)
+    if not ok then pcall(function() body:Say(text) end) end
+end
+
 function LF.Tactics.shout(id, text)
     local rec = LF.Records.get(id)
     shouts[id] = { text = text, untilTick = LF.tick + CFG.shoutTicks }
+    chatLine(id, text, rec)
     LF.log("SHOUT #" .. id .. " " .. (rec and LF.Units.title(rec) or "?") .. ": " .. text)
 end
 
@@ -182,6 +196,7 @@ function LF.Tactics.say(id, text, seconds, quiet)
     local rec = LF.Records.get(id)
     seconds = seconds or math.max(4, math.min(20, #text / 12))
     shouts[id] = { text = text, lines = wrap(text, 48), untilTick = LF.tick + seconds * 60, dur = seconds * 60 }
+    if not quiet then chatLine(id, text, rec) end
     if quiet then return end
     LF.log("SAYS #" .. id .. " " .. (rec and LF.Units.title(rec) or "?") .. ": " .. text)
 end
@@ -189,6 +204,7 @@ end
 local COLORS = { GER = { 0.75, 0.8, 0.9 }, SOV = { 1.0, 0.55, 0.5 }, CIV = { 0.9, 0.9, 0.7 } }
 
 local function drawShouts()
+    if LF.viewpoint() then return end           -- (Viewpoint shows them as the game's chat lines)
     local core = getCore()
     local zoom = core:getZoom(0)
     local tm = getTextManager()

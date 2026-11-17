@@ -224,8 +224,12 @@ local function managerPass()
     if not player or player:isDead() then return end
     local px, py = player:getX(), player:getY()
     local cfg = LF.Config
-    local spawnSq = cfg.spawnRadius * cfg.spawnRadius
-    local despawnSq = cfg.despawnRadius * cfg.despawnRadius
+    local vp = LF.viewpoint and LF.viewpoint()
+    local spawnR = vp and (cfg.vpSpawnRadius or cfg.spawnRadius) or cfg.spawnRadius
+    local despawnR = vp and (cfg.vpDespawnRadius or cfg.despawnRadius) or cfg.despawnRadius
+    local spawnSq = spawnR * spawnR
+    local despawnSq = despawnR * despawnR
+    local isoSq = cfg.spawnRadius * cfg.spawnRadius
     local spawned = 0
     -- A squad stays together: while any of its men is within range of the player, the rest of
     -- them keep (or get) their bodies too, as long as the ground under them is loaded - so a long
@@ -242,7 +246,7 @@ local function managerPass()
     for sid, untilTick in pairs(wanted) do
         if untilTick > LF.tick then near[sid] = true else wanted[sid] = nil end
     end
-    local capOn = capPass(px, py, cfg.despawnRadius * 1.5)
+    local capOn = capPass(px, py, despawnR * 1.5)
     local cell = getCell()
     local function loaded(x, y, z)
         return cell:getGridSquare(math.floor(x), math.floor(y), math.floor(z or 0)) ~= nil
@@ -267,7 +271,9 @@ local function managerPass()
             end
         elseif rec.alive and not rec.noBody and spawned < cfg.maxSpawnsPerPass and not (capOn and not capAllows(rec)) then      -- (noBody: the off-screen stress test)
             local d2 = LF.distSq(rec.x, rec.y, px, py)
-            if d2 < spawnSq or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
+            -- (Beyond the isometric radius - Viewpoint's further one - only where the ground is loaded.)
+            if (d2 < spawnSq and (d2 < isoSq or loaded(rec.x, rec.y, rec.z)))
+                or (rec.squad and near[rec.squad] and d2 < despawnSq * 2.25 and loaded(rec.x, rec.y, rec.z)) then
                 if LF.Bodies.spawn(rec) then spawned = spawned + 1 end
             end
         end
